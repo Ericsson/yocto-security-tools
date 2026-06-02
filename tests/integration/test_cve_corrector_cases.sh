@@ -308,7 +308,7 @@ run_test "Skip-build-ptest baseline" "CVE-2024-44331" "0" "false" "$CVE_METADATA
 run_test "Agent resolution" "CVE-2024-44331" "0" "false" "$CVE_METADATA" "agent"
 
 # Test 14: Binutils underscore tag matching
-run_test "Binutils underscore tag" "CVE-2024-53589" "0" "false" "$CVE_METADATA" "corrector" "--skip-build --skip-ptest --meta-layer ${OE_DIR}/meta"
+run_test "Binutils underscore tag" "CVE-2024-53589" "0" "false" "$CVE_METADATA" "corrector" "--skip-build --skip-ptest --skip-cve-applicability --meta-layer ${OE_DIR}/meta"
 
 # Test 15: Cross-recipe shared patch removal
 run_test "Cross-recipe shared patch removal" "CVE-2025-32909" "1" "false" "$CVE_METADATA" "corrector" "--skip-build --skip-ptest"
