@@ -158,8 +158,17 @@ def finish_cve_workflow(state: WorkflowState) -> None:
                 logger.warning("devtool reset failed, continuing anyway")
         else:
             logger.info("Running devtool finish %s %s", state.recipe, state.meta_layer)
-            if run_cmd(['devtool', 'finish', '-f', '-n',
-                        state.recipe, str(state.meta_layer)]) != 0:
+            ret = run_cmd(['devtool', 'finish', '-f', '-n',
+                           state.recipe, str(state.meta_layer)],
+                          timeout=300)
+            if ret == -1:
+                logger.warning("devtool finish timed out — killing bitbake "
+                               "server and retrying")
+                run_cmd(['bitbake', '--kill-server'], timeout=30)
+                ret = run_cmd(['devtool', 'finish', '-f', '-n',
+                               state.recipe, str(state.meta_layer)],
+                              timeout=300)
+            if ret != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
         restore_bbappend_extras(state.meta_layer, state.recipe, saved_extras)

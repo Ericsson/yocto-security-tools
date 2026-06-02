@@ -163,6 +163,8 @@ run_test() {
     sed -i '\|/workspace|d' "${BUILD_DIR}/conf/bblayers.conf" 2>/dev/null || true
     # Invalidate bitbake parse cache so recipe modifications are picked up
     rm -rf "${BUILD_DIR}"/tmp*/cache 2>/dev/null || true
+    # Stop any resident bitbake server to avoid stale in-memory state
+    bitbake --kill-server >> "$log_file" 2>&1 || true
     bitbake -c cleansstate "$recipe" >> "$log_file" 2>&1 || true
 
     cd "$SCRIPT_DIR"
