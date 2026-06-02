@@ -216,17 +216,18 @@ def deduce_repo_from_patches(patches: list[str]) -> Optional[str]:
                 new_url = f'https://sourceware.org/git/{repo_name}'
             else:
                 new_url = f'{parsed.scheme}://{parsed.netloc}/{repo_name}'
-        elif 'savannah.gnu.org' in url:
+        else:
             from urllib.parse import urlparse
             parsed = urlparse(url)
             host = parsed.hostname or ''
-            if not (host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org')):
-                continue
-            if '/cgit/' in url:
-                repo_name = url.split('/cgit/')[1].split('/')[0]
-            else:
-                repo_name = url.split('/git/')[1].split('/')[0]
-            new_url = f'https://git.savannah.gnu.org/git/{repo_name}'
+            if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
+                if '/cgit/' in parsed.path:
+                    repo_name = parsed.path.split('/cgit/')[1].split('/')[0]
+                elif '/git/' in parsed.path:
+                    repo_name = parsed.path.split('/git/')[1].split('/')[0]
+                else:
+                    continue
+                new_url = f'https://git.savannah.gnu.org/git/{repo_name}'
         skip_patterns = ("bugzilla", "viewtopic", "inbox.", "mail.python.org",
                          "openwall.com", "cve.org", "nvd.nist.gov",
                          "/archives/", "/advisories/", "/lists/",
