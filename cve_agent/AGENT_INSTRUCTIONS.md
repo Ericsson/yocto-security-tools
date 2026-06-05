@@ -129,5 +129,6 @@ Rules:
 - Do NOT add a "Changes from upstream" section (the agent generates that)
 - If you adapted the patch (not a verbatim cherry-pick), add a trailer line
   after a blank line at the end of the commit message:
-  `Assisted-by: Claude:<model>` where `<model>` is the **Model** value from
-  the context header (e.g. `Assisted-by: Claude:claude-sonnet-4-20250514`)
+  `Assisted-by: <backend>:<model>` where `<backend>` and `<model>` are the
+  **Backend** and **Model** values from the context header (e.g.
+  `Assisted-by: kiro:claude-sonnet-4-20250514`)

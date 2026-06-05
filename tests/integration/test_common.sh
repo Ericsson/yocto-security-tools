@@ -47,6 +47,16 @@ source_build_env() {
         set -u
     fi
     [[ -n "${BBPATH:-}" ]] || die "BBPATH not set after sourcing build environment"
+
+    # Activate project venv so python3 resolves to our installed packages
+    # (oe-init-build-env prepends buildtools SDK python to PATH)
+    local venv_activate="${BUILD_DIR}/venv/bin/activate"
+    if [[ -f "$venv_activate" ]]; then
+        set +u
+        # shellcheck disable=SC1090
+        source "$venv_activate"
+        set -u
+    fi
 }
 
 reset_oe_tree() {

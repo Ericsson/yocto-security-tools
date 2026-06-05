@@ -21,6 +21,7 @@ RESUME_DIR=""
 TEST_TIMEOUT=3600  # 60 minutes per CVE
 MIN_YEAR="${MIN_YEAR:-2024}"  # Skip CVEs older than this year
 SKIP_MIRRORS=false
+FULL_ONLY=false
 COMPONENTS=()  # empty = all
 
 # shellcheck source=test_common.sh
@@ -54,7 +55,7 @@ test_single_cve() {
         [[ -n "$extra_flags" ]] && read -ra flags_arr <<< "$extra_flags"
         # Run agent with timeout — kill entire process group on expiry
         AGENT_LOG="$agent_log" setsid bash -c '
-            echo "y" | python3 cve_agent.py \
+            echo "y" | python3 -m cve_agent \
                 --cve-info "$1" \
                 --cve-id "$2" \
                 --meta-layer "$3" \
@@ -326,7 +327,7 @@ run_tests() {
     FAILED_RECIPES=""
     verify_fetch "$cve_list"
 
-    run_loop "skip-build-ptest" "--skip-build --skip-ptest" "$cve_list" "$FAILED_RECIPES"
+    [[ "$FULL_ONLY" != true ]] && run_loop "skip-build-ptest" "--skip-build --skip-ptest" "$cve_list" "$FAILED_RECIPES"
     run_loop "full" "" "$cve_list" "$FAILED_RECIPES"
 }
 
@@ -335,6 +336,7 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --skip-mirrors) SKIP_MIRRORS=true ;;
+            --full-only) FULL_ONLY=true ;;
             --resume)
                 shift
                 [[ $# -gt 0 ]] || die "--resume requires a directory argument"

@@ -539,9 +539,16 @@ MIRROR_MAP = {
     'sqlite': 'sqlite3',
     'libpam': 'linux-pam',
     'gstreamer1.0-rtsp-server': 'gst-plugins-bad',
+    'python3-cryptography': 'cryptography',
+    'python3-pip': 'pip',
+    'python3-pyasn1': 'pyasn1',
+    'python3-pyopenssl': 'pyopenssl',
+    'python3-wheel': 'wheel',
+    'rust-llvm': 'llvm-project',
+    'vim-tiny': 'vim',
 }
 
-SKIP_RECIPES = {'linux-dummy', 'network_security_services'}
+SKIP_RECIPES = {'linux-dummy', 'network_security_services', 'rust-llvm'}
 
 
 def list_cves(metadata_path, min_year):
