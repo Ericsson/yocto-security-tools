@@ -28,7 +28,7 @@ from .git import get_all_upstream_shas, get_upstream_sha, run_git_capture
 
 def build_context(workspace_path: Path, exit_code: int, cve_id: str,
                   cve_info: dict, knowledge_base: KnowledgeBase | None = None,
-                  model: str = "") -> Path:
+                  model: str = "", backend: str = "") -> Path:
     """Build a context file for kiro-cli with all relevant information.
 
     Args:
@@ -38,6 +38,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
         cve_info: Metadata dict for this CVE from the JSON file.
         knowledge_base: Optional KnowledgeBase instance for similar patterns.
         model: Model name for the Assisted-by commit trailer.
+        backend: Backend name for the Assisted-by commit trailer.
 
     Returns:
         Path to the generated context.md file.
@@ -48,7 +49,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
 
     sections = [
         _build_header(cve_id, recipe, exit_code, workspace_path, cve_info,
-                      model),
+                      model, backend),
         _build_phase_instructions(),
         _gather_context_for_exit_code(workspace_path, exit_code, cve_info),
     ]
@@ -77,7 +78,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
 
 def _build_header(cve_id: str, recipe: str, exit_code: int,
                   workspace_path: Path, cve_info: dict,
-                  model: str = "") -> str:
+                  model: str = "", backend: str = "") -> str:
     """Build the context file header with CVE and workspace info.
 
     Args:
@@ -87,6 +88,7 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
         workspace_path: Path to workspace.
         cve_info: CVE metadata dict (used to resolve upstream SHA).
         model: Model name for the Assisted-by commit trailer.
+        backend: Backend name for the Assisted-by commit trailer.
 
     Returns:
         Formatted header string.
@@ -135,6 +137,7 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
         f"# CVE Agent Context: {cve_id}\n\n"
         f"- **Recipe**: {recipe}\n"
         f"- **Phase**: {phase}\n"
+        f"- **Backend**: {backend}\n"
         f"- **Model**: {model}\n"
         f"- **Workspace**: `{workspace_path}`\n"
         f"- **Working directory**: `cd {workspace_path}`\n"
