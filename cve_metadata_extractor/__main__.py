@@ -12,9 +12,10 @@ import os
 import sys
 
 # Import source modules so they register themselves in SOURCE_REGISTRY.
+from . import cve_sources as _cve_sources
 from . import cvelistv5 as _cvelistv5  # noqa: F401
 from . import debian as _debian  # noqa: F401
-from . import load_cves_from_sources, load_pr_cache, process_cve
+from . import load_pr_cache, process_cve
 from . import osv as _osv  # noqa: F401
 from . import ubuntu as _ubuntu  # noqa: F401
 from .config import load_config
@@ -272,7 +273,7 @@ def main():
     if args.check_oe and oe_token and not os.path.isdir(args.repo_dir):
         os.makedirs(args.repo_dir)
 
-    known_affected = load_cves_from_sources(
+    known_affected = _cve_sources.load_cves_from_sources(
         args.cve_id,
         args.cve_component_name, args.cve_component_version,
         args.historical, args.yocto_summary

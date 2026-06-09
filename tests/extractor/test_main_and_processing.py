@@ -120,7 +120,7 @@ class TestMain:
 
         with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [fake]):
             with patch('cve_metadata_extractor.__main__.load_pr_cache'):
-                with patch('cve_metadata_extractor.__main__.load_cves_from_sources',
+                with patch('cve_metadata_extractor.cve_sources.load_cves_from_sources',
                            return_value=[]):
                     from cve_metadata_extractor.__main__ import main
                     main()
@@ -128,7 +128,7 @@ class TestMain:
 
     @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
     @patch('cve_metadata_extractor.__main__.load_pr_cache')
-    @patch('cve_metadata_extractor.__main__.load_cves_from_sources')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
     @patch('cve_metadata_extractor.__main__.process_cve')
     def test_cve_id_flow(self, mock_process, mock_load, mock_pr, tmp_path, monkeypatch):
         mock_load.return_value = [{'id': 'CVE-2025-0001', 'name': 'foo'}]

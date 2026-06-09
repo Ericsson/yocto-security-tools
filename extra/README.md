@@ -7,6 +7,12 @@ need modification.
 
 ## Writing a CveSource Plugin
 
+### Data enrichment source
+
+Sources that enrich CVE results with additional metadata (hashes, patches).
+These do not provide CVE input — they augment CVEs loaded from `--yocto-summary`
+or `--cve-id`.
+
 ```python
 # extra/my_source.py
 from cve_metadata_extractor.sources import CveSource, SOURCE_REGISTRY
@@ -25,18 +31,50 @@ class MySource(CveSource):
         self._token = getattr(args, 'my_source_token', None)
 
     def is_enabled(self, args):
-        return bool(self._url and self._token)
+        return bool(getattr(args, 'my_source_url', None))
 
     def extract(self, cve_id, stats):
         # Return (hashes, patches, series, references)
-        # hashes: [{'hash': 'abc123', 'url': '...'}]
-        # patches: [{'url': '...', 'tags': 'patch'}]
-        # series: [{'pull_url': '...', 'commits': [...]}]
-        # references: ['url1', 'url2']
         return [], [], [], []
 
 
 SOURCE_REGISTRY.append(MySource())
+```
+
+### Input source plugin
+
+Sources that provide CVE IDs to the extractor (like `--yocto-summary` or
+`--cve-id` but from a plugin-defined flag). Set `is_input_source = True` so
+the input validation recognizes the plugin before `setup()` is called.
+
+**Important:** `is_enabled(args)` must work purely from the parsed args — do
+not rely on state set during `setup()`.
+
+```python
+# extra/my_input.py
+from cve_metadata_extractor.sources import CveSource, SOURCE_REGISTRY
+
+
+class MyInputSource(CveSource):
+    """Plugin that provides CVE input from a custom file format."""
+    name = 'my_input'
+    is_input_source = True
+    cli_args = [
+        (['--my-cve-file'], {'help': 'Path to custom CVE file'}),
+    ]
+
+    def setup(self, args, cfg):
+        self._path = getattr(args, 'my_cve_file', None)
+
+    def is_enabled(self, args):
+        # Must work from args alone (called before setup)
+        return bool(getattr(args, 'my_cve_file', None))
+
+    def extract(self, cve_id, stats):
+        return [], [], [], []
+
+
+SOURCE_REGISTRY.append(MyInputSource())
 ```
 
 ## Writing an AI Backend Plugin
