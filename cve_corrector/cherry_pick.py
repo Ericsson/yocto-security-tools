@@ -69,7 +69,7 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
         logger.info("Generated %s patch(es) for devtool", len(patches))
         for p in patches:
             logger.info("  Patch: %s (first 3 diff lines: %s)", p.name,
-                        [l for l in p.read_text().splitlines() if l.startswith('diff ')][:3])
+                        [ln for ln in p.read_text().splitlines() if ln.startswith('diff ')][:3])
 
         strip_level = detect_strip_level(patches)
         if strip_level == 1 and subdir:

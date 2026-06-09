@@ -73,7 +73,7 @@ def update_patches_with_metadata(state: WorkflowState) -> None:
     # Scope to the recipe's directory to avoid patches from other recipes
     from .recipe_ops import _find_recipe_file
     recipe_file = _find_recipe_file(state.meta_layer, state.recipe)
-    recipe_dir = str(recipe_file.parent.relative_to(state.meta_layer)) + '/' if recipe_file else None
+    recipe_dir = str(recipe_file.parent.relative_to(state.meta_layer)) + '/' if recipe_file and state.meta_layer else None
 
     original_patches = sorted(
         p for p in result.stdout.splitlines()

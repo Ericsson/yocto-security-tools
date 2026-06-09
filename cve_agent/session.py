@@ -63,8 +63,7 @@ def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
                 expanded.add(stripped)
         else:
             # Try adding subprojects/<name>/ prefix by finding matching dirs
-            subprojects_dir = workspace_path.parent  # Don't scan — too expensive
-            # Instead, just check if stripped path exists at workspace root
+            # Don't scan workspace_path.parent — too expensive
             pass
 
         for prefix in _COMMON_PREFIXES:

@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for cve_corrector.patch_ops — patch metadata injection."""
+from unittest.mock import MagicMock
 from unittest.mock import patch as mock_patch
 
 from cve_corrector.patch_ops import modify_patch
@@ -66,8 +67,6 @@ def test_modify_patch_preserves_diff(tmp_path):
 
 
 # --- Tests for update_patches_with_metadata recipe scoping ---
-
-from unittest.mock import MagicMock, patch as mock_patch
 
 from cve_corrector.patch_ops import update_patches_with_metadata
 
