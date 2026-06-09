@@ -24,9 +24,12 @@ class CveSource:
     Attributes:
         name: Short identifier used in stats keys and log messages.
         cli_args: List of (flags, kwargs) tuples passed to argparse.
+        is_input_source: If True, this source provides CVE input (not just
+            enrichment). Used for input validation before setup() is called.
     """
     name = ''
     cli_args: Any = ()
+    is_input_source: bool = False
 
     def setup(self, args, cfg) -> None:
         '''Prepare the source for extraction (auth, clone, load data).'''

@@ -295,7 +295,10 @@ def get_repo_subdir(workspace_path: Path) -> Optional[str]:
     if result.returncode != 0:
         return None
     top_entries = result.stdout.strip().splitlines()
-    build_files = {'CMakeLists.txt', 'configure.ac', 'configure', 'meson.build'}
+    # If the root has any build system marker, it's not a monorepo
+    build_files = {'CMakeLists.txt', 'configure.ac', 'configure', 'meson.build',
+                   'setup.py', 'setup.cfg', 'pyproject.toml', 'Makefile.am',
+                   'Makefile', 'Cargo.toml', 'go.mod'}
     if build_files & set(top_entries):
         return None
     for entry in sorted(top_entries):

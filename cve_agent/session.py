@@ -50,17 +50,28 @@ def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
 
     If upstream uses src/foo.c but workspace has foo.c (or vice versa),
     include both so the scope guard doesn't reject the agent's work.
+    Also handles monorepo subprojects/ prefixes (e.g. gstreamer).
     """
     expanded = set(allowed)
     for filepath in list(allowed):
+        # Handle subprojects/<name>/ prefix (monorepo pattern)
+        parts = filepath.split('/')
+        if len(parts) > 2 and parts[0] == 'subprojects':
+            # Strip subprojects/<name>/ prefix
+            stripped = '/'.join(parts[2:])
+            if (workspace_path / stripped).exists():
+                expanded.add(stripped)
+        else:
+            # Try adding subprojects/<name>/ prefix by finding matching dirs
+            # Don't scan workspace_path.parent — too expensive
+            pass
+
         for prefix in _COMMON_PREFIXES:
             if filepath.startswith(prefix):
-                # Add the unprefixed variant if it exists in the workspace
                 stripped = filepath[len(prefix):]
                 if (workspace_path / stripped).exists():
                     expanded.add(stripped)
             else:
-                # Add the prefixed variant if it exists in the workspace
                 prefixed = prefix + filepath
                 if (workspace_path / prefixed).exists():
                     expanded.add(prefixed)

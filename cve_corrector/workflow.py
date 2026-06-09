@@ -278,8 +278,14 @@ def continue_from_conflict() -> WorkflowState:
     git_clean_workspace(state.workspace_path)
 
     if state.current_step != 'ptest_after_patch':
+        # Check for actual unmerged (conflicted) files, not just any dirty file.
+        # Modified files (e.g. autotools-generated configure) are normal.
         result = run_cmd_capture(['git', 'status', '--porcelain'], cwd=state.workspace_path)
-        if result.stdout.strip():
+        has_conflicts = any(
+            line and len(line) >= 2 and ('U' in line[:2] or line[:2] == 'DD' or line[:2] == 'AA')
+            for line in result.stdout.splitlines()
+        )
+        if has_conflicts:
             logger.error("Conflicts still present. Please resolve first.")
             raise ConflictError("Conflict detected")
 

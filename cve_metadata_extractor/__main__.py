@@ -237,12 +237,9 @@ def main():
 
     # Check if at least one input source is provided (built-in or plugin)
     has_builtin_input = any([args.cve_id, args.yocto_summary])
-    # Only count plugins that provide CVE IDs as input sources, not data
-    # enrichment sources like OSV/Ubuntu/Debian which are always enabled
-    _DATA_SOURCE_NAMES = {'osv', 'ubuntu', 'debian', 'cvelistv5', 'nvd'}
     has_plugin_input = any(
-        s.is_enabled(args) for s in SOURCE_REGISTRY
-        if s.name and s.name not in _DATA_SOURCE_NAMES
+        s.is_input_source and s.is_enabled(args)
+        for s in SOURCE_REGISTRY
     )
     if not has_builtin_input and not has_plugin_input:
         print("ERROR: At least one input source required "

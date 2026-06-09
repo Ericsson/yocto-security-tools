@@ -37,18 +37,39 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
     subdir = get_repo_subdir(state.workspace_path)
 
     with tempfile.TemporaryDirectory() as patch_dir:
+        # Only format CVE-specific commits, not devtool prep commits.
+        # Count commits between original-version and the CVE branch tip,
+        # then subtract the devtool prep commits to find the CVE-only ones.
+        all_commits = run_cmd_capture(
+            ['git', 'rev-list', '--count', f'original-version..{state.cve_id}'],
+            cwd=state.workspace_path)
+        devtool_commits = run_cmd_capture(
+            ['git', 'rev-list', '--count', 'original-version..devtool'],
+            cwd=state.workspace_path)
+        total = int(all_commits.stdout.strip()) if all_commits.returncode == 0 else 0
+        devtool_count = int(devtool_commits.stdout.strip()) if devtool_commits.returncode == 0 else 0
+        cve_count = max(1, total - devtool_count)
+
         fmt_result = run_cmd_capture(
-            ['git', 'format-patch', '-o', patch_dir,
-             f'original-version..{state.cve_id}'],
+            ['git', 'format-patch', '-o', patch_dir, f'-{cve_count}', state.cve_id],
             cwd=state.workspace_path)
         if fmt_result.returncode != 0:
-            raise PatchError(f"format-patch failed: {fmt_result.stderr}")
+            # Fall back to full range
+            fmt_result = run_cmd_capture(
+                ['git', 'format-patch', '-o', patch_dir,
+                 f'original-version..{state.cve_id}'],
+                cwd=state.workspace_path)
+            if fmt_result.returncode != 0:
+                raise PatchError(f"format-patch failed: {fmt_result.stderr}")
         patches = sorted(Path(patch_dir).glob('*.patch'))
         if not patches:
             logger.info("format-patch produced no patches — fix already in tree")
             handle_empty_cherry_pick(state)
             raise AlreadyAppliedError("format-patch produced no patches")
         logger.info("Generated %s patch(es) for devtool", len(patches))
+        for p in patches:
+            logger.info("  Patch: %s (first 3 diff lines: %s)", p.name,
+                        [ln for ln in p.read_text().splitlines() if ln.startswith('diff ')][:3])
 
         strip_level = detect_strip_level(patches)
         if strip_level == 1 and subdir:
@@ -56,8 +77,8 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
         logger.info("Monorepo subdir: %s, strip level: %s", subdir, strip_level)
 
         git_clean_workspace(state.workspace_path, remove_ignored=True)
-        run_cmd(['git', 'reset', 'HEAD'], cwd=state.workspace_path)
-        if run_cmd(['git', 'checkout', 'devtool'],
+        run_cmd(['git', 'checkout', '.'], cwd=state.workspace_path)
+        if run_cmd(['git', 'checkout', '-f', 'devtool'],
                    cwd=state.workspace_path) != 0:
             save_progress(state, 'cherry_pick_to_devtool')
             raise GitError("Failed to checkout devtool branch")
@@ -77,6 +98,7 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
                     logger.info("Strip level %s worked (detected %s)",
                                 p_level, strip_level)
                 break
+            logger.debug("git am -p%s failed: %s", p_level, am_result.stderr[:200])
             run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
             # Try with --3way at this level
             am_result = run_cmd_capture(
@@ -90,6 +112,50 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
             run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
 
         if am_result and am_result.returncode != 0:
+            # Fallback: try cherry-picking CVE commits directly onto devtool
+            logger.warning("git am failed at all strip levels, trying direct cherry-pick")
+            cve_commits = run_cmd_capture(
+                ['git', 'rev-list', '--reverse', f'-{cve_count}', state.cve_id],
+                cwd=state.workspace_path)
+            if cve_commits.returncode == 0 and cve_commits.stdout.strip():
+                all_picked = True
+                for commit in cve_commits.stdout.strip().splitlines():
+                    ret = run_cmd_capture(
+                        ['git', 'cherry-pick', commit],
+                        cwd=state.workspace_path)
+                    if ret.returncode != 0:
+                        run_cmd(['git', 'cherry-pick', '--abort'],
+                                cwd=state.workspace_path)
+                        all_picked = False
+                        break
+                if all_picked:
+                    logger.info("Applied CVE commits via direct cherry-pick on devtool")
+                    return
+
+            # Last resort: git apply with fuzz
+            logger.warning("Cherry-pick fallback failed, trying git apply")
+            applied = False
+            for p in patches:
+                # Try plain apply (no 3-way, doesn't need blob history)
+                for apply_args in [
+                    ['git', 'apply', str(p)],
+                    ['git', 'apply', '-C0', str(p)],
+                    ['git', 'apply', '--3way', str(p)],
+                ]:
+                    apply_result = run_cmd_capture(apply_args, cwd=state.workspace_path)
+                    if apply_result.returncode == 0:
+                        run_cmd(['git', 'add', '-A'], cwd=state.workspace_path)
+                        run_cmd_capture(
+                            ['git', 'commit', '-m', f'Apply {state.cve_id} patch'],
+                            cwd=state.workspace_path)
+                        logger.info("Applied patch via %s on devtool", ' '.join(apply_args[1:3]))
+                        applied = True
+                        break
+                if applied:
+                    break
+            if applied:
+                return
+
             logger.error("git am failed at all strip levels: %s", am_result.stderr)
             save_progress(state, 'cherry_pick_to_devtool')
             raise PatchError(f"git am --3way failed: {am_result.stderr}")

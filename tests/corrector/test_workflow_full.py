@@ -10,6 +10,7 @@ import pytest
 from cve_corrector.cherry_pick import (
     apply_series,
     apply_single_commits,
+    cherry_pick_to_devtool,
     find_least_conflict_commit,
 )
 from cve_corrector.git_ops import (
@@ -142,6 +143,15 @@ class TestGetRepoSubdir:
         assert get_repo_subdir(Path("/ws")) == "expat"
 
     @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_python_project_not_monorepo(self, mock_run):
+        """Python project with ancillary launcher/ dir should not be detected as monorepo."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="setup.cfg\nsetuptools\nlauncher\nlauncher.c\ndocs\n"
+        )
+        assert get_repo_subdir(Path("/ws")) is None
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
     def test_git_error(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
         assert get_repo_subdir(Path("/ws")) is None
@@ -248,6 +258,96 @@ class TestFindLeastConflictCommit:
         best, count = find_least_conflict_commit(Path("/ws"), ["h1", "h2"])
         assert best == "h2"
         assert count == 1
+
+
+class TestCherryPickToDevtool:
+    """Tests for cherry_pick_to_devtool — format-patch and fallback logic."""
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_formats_only_cve_commits(self, mock_clean, mock_subdir,
+                                       mock_capture, mock_cmd, tmp_path):
+        """format-patch should only include CVE commits, not devtool prep."""
+        state = _state(tmp_path)
+
+        mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="5\n"),  # rev-list --count original-version..CVE
+            MagicMock(returncode=0, stdout="3\n"),  # rev-list --count original-version..devtool
+            MagicMock(returncode=0, stdout=""),  # format-patch (produces no patches)
+        ]
+        from cve_corrector.state import AlreadyAppliedError
+        with patch("cve_corrector.cherry_pick.handle_empty_cherry_pick"):
+            with pytest.raises(AlreadyAppliedError):
+                cherry_pick_to_devtool(state)
+
+        # Verify format-patch uses -2 (5 total - 3 devtool = 2 CVE commits)
+        fmt_call = mock_capture.call_args_list[2]
+        assert '-2' in fmt_call[0][0]
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_falls_back_to_cherry_pick(self, mock_clean, mock_subdir,
+                                        mock_capture, mock_cmd, tmp_path):
+        """When git am fails at all levels, falls back to direct cherry-pick."""
+        state = _state(tmp_path)
+        patch_content = "From abc\nSubject: fix\n\ndiff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n"
+        patch_dir_path = tmp_path / "patches"
+        patch_dir_path.mkdir()
+        (patch_dir_path / "0001-fix.patch").write_text(patch_content)
+
+        mock_cmd.return_value = 0  # git checkout devtool succeeds
+
+        am_fail = MagicMock(returncode=1, stderr="error: patch failed")
+        cherry_pick_ok = MagicMock(returncode=0)
+        mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="3\n"),  # rev-list --count total
+            MagicMock(returncode=0, stdout="2\n"),  # rev-list --count devtool
+            MagicMock(returncode=0, stdout="patched"),  # format-patch
+            am_fail,  # git am -p1
+            am_fail,  # git am -p1 --3way
+            am_fail,  # git am -p2
+            am_fail,  # git am -p2 --3way
+            am_fail,  # git am -p3
+            am_fail,  # git am -p3 --3way
+            MagicMock(returncode=0, stdout="commit1\n"),  # rev-list for fallback
+            cherry_pick_ok,  # cherry-pick commit1
+        ]
+
+        with patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+            mock_tmpdir.return_value.__enter__ = lambda s: str(patch_dir_path)
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+            cherry_pick_to_devtool(state)
+
+        # Verify cherry-pick was attempted as fallback
+        cherry_pick_calls = [c for c in mock_capture.call_args_list
+                             if 'cherry-pick' in str(c) and 'abort' not in str(c)]
+        assert len(cherry_pick_calls) >= 1
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_minimum_one_commit(self, mock_clean, mock_subdir,
+                                 mock_capture, mock_cmd, tmp_path):
+        """Even if devtool count >= total, at least 1 commit is formatted."""
+        state = _state(tmp_path)
+
+        mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="2\n"),  # rev-list --count total
+            MagicMock(returncode=0, stdout="5\n"),  # rev-list --count devtool (more!)
+            MagicMock(returncode=0, stdout=""),  # format-patch
+        ]
+        from cve_corrector.state import AlreadyAppliedError
+        with patch("cve_corrector.cherry_pick.handle_empty_cherry_pick"):
+            with pytest.raises(AlreadyAppliedError):
+                cherry_pick_to_devtool(state)
+
+        fmt_call = mock_capture.call_args_list[2]
+        assert '-1' in fmt_call[0][0]
 
 
 class TestHandleFailedSeries:
@@ -371,6 +471,45 @@ class TestContinueFromConflict:
         }
         (tmp_path / "busybox.json").write_text(json.dumps(state_data))
         mock_capture.return_value = MagicMock(stdout="UU file.c")
+        with pytest.raises(ConflictError):
+            continue_from_conflict()
+
+    @patch("cve_corrector.workflow.run_cmd")
+    @patch("cve_corrector.workflow.run_cmd_capture")
+    @patch("cve_corrector.workflow.get_state_dir")
+    def test_dirty_tracked_files_not_treated_as_conflicts(self, mock_dir, mock_capture, mock_cmd, tmp_path):
+        """Modified tracked files (e.g. autotools configure) should not block --continue."""
+        mock_dir.return_value = tmp_path
+        ws = tmp_path / "build" / "workspace" / "sources" / "dropbear"
+        ws.mkdir(parents=True)
+        state_data = {
+            "workspace_path": str(ws), "cve_id": "CVE-1", "recipe": "dropbear",
+            "commit_hash": "abc", "hash_details": [], "meta_layer": str(tmp_path),
+            "skip_build": True, "skip_ptest": True, "ptest_before": None,
+            "series_state": None, "current_step": None, "skip_confirm": False,
+        }
+        (tmp_path / "dropbear.json").write_text(json.dumps(state_data))
+        # Porcelain output with modified files but no conflict markers
+        mock_capture.return_value = MagicMock(stdout=" M configure\n M config.guess\n")
+        state = continue_from_conflict()
+        assert state.cve_id == "CVE-1"
+
+    @patch("cve_corrector.workflow.run_cmd")
+    @patch("cve_corrector.workflow.run_cmd_capture")
+    @patch("cve_corrector.workflow.get_state_dir")
+    def test_dd_conflict_detected(self, mock_dir, mock_capture, mock_cmd, tmp_path):
+        """DD (both deleted) should be treated as a conflict."""
+        mock_dir.return_value = tmp_path
+        ws = tmp_path / "build" / "workspace" / "sources" / "pkg"
+        ws.mkdir(parents=True)
+        state_data = {
+            "workspace_path": str(ws), "cve_id": "CVE-2", "recipe": "pkg",
+            "commit_hash": "abc", "hash_details": [], "meta_layer": str(tmp_path),
+            "skip_build": True, "skip_ptest": True, "ptest_before": None,
+            "series_state": None, "current_step": None, "skip_confirm": False,
+        }
+        (tmp_path / "pkg.json").write_text(json.dumps(state_data))
+        mock_capture.return_value = MagicMock(stdout="DD deleted.c\n M other.c\n")
         with pytest.raises(ConflictError):
             continue_from_conflict()
 

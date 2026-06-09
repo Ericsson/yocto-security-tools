@@ -98,6 +98,34 @@ class TestMain:
             with pytest.raises(SystemExit):
                 main()
 
+    def test_plugin_input_source_passes_validation(self, monkeypatch, tmp_path):
+        """A plugin with is_input_source=True should pass input validation."""
+        from cve_metadata_extractor.sources import CveSource
+
+        class FakeInput(CveSource):
+            name = 'fake_ndjson'
+            is_input_source = True
+            cli_args = [(['--cve-ndjson'], {'help': 'NDJSON file'})]
+
+            def is_enabled(self, args):
+                return bool(getattr(args, 'cve_ndjson', None))
+
+        fake = FakeInput()
+        out_file = tmp_path / 'out.json'
+        ndjson_file = tmp_path / 'input.ndjson'
+        ndjson_file.write_text('')
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-ndjson', str(ndjson_file),
+            '--output', str(out_file)])
+
+        with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [fake]):
+            with patch('cve_metadata_extractor.__main__.load_pr_cache'):
+                with patch('cve_metadata_extractor.__main__.load_cves_from_sources',
+                           return_value=[]):
+                    from cve_metadata_extractor.__main__ import main
+                    main()
+        assert out_file.exists()
+
     @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
     @patch('cve_metadata_extractor.__main__.load_pr_cache')
     @patch('cve_metadata_extractor.__main__.load_cves_from_sources')
