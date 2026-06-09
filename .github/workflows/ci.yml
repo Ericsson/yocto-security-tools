@@ -30,7 +30,8 @@ jobs:
           git config --global user.email "ci@test.local"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
-      - run: pip install -e ".[dev]"
+      - run: pip install --require-hashes -r requirements-dev.txt
+      - run: pip install --no-deps -e .
       - name: Ruff check
         run: ruff check .
       - name: Mypy
