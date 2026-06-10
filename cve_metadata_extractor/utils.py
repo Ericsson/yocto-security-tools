@@ -1,14 +1,11 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 '''Utility functions and constants for CVE metadata extraction.'''
-import glob
-import os
 import re
 
 from shared.url_parser import (  # noqa: F401
     _GITLAB_ISSUE_RE,
     HASH_RE,
-    IGNORED_URL_PATTERNS,
     extract_commit_hash,
     fetch_github_pr_commits,
     fetch_gitlab_issue_commits,
@@ -17,9 +14,6 @@ from shared.url_parser import (  # noqa: F401
 from .config import load_config
 
 URL_RE = re.compile(r'https?://[^\s)]+')
-CVE_ID_RE = re.compile(r'^(CVE-\d{4}-\d+)\s')
-
-_PR_RE = re.compile(r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)')
 
 
 # Global PR cache
@@ -33,18 +27,6 @@ def normalize_component_name(name):
     if name and name.endswith('-native'):
         name = name[:-7]
     return name.lower() if name else name
-
-
-def find_hash(url):
-    '''Find any hash in the URL'''
-    return extract_commit_hash(url)
-
-
-def find_cve_json_file(cve_id, datadir):
-    '''Find the CVE JSON file in the directory'''
-    pattern = os.path.join(datadir, '**', f"{cve_id}.json")
-    matches = glob.glob(pattern, recursive=True)
-    return matches[0] if matches else None
 
 
 def load_pr_cache():
@@ -129,54 +111,6 @@ def extract_github_pr_commits(pr_url):
         PR_CACHE[clean_url] = result
         save_pr_cache()
     return result
-
-
-def download_commit_patches(cve_id, hash_details, cache_dir):
-    '''Download .patch files from Debian commit/patch URLs.
-
-    Returns list of local file paths for downloaded patches.
-    '''
-    import requests  # pylint: disable=import-outside-toplevel
-    patch_dir = os.path.join(cache_dir, cve_id)
-    os.makedirs(patch_dir, exist_ok=True)
-    downloaded = []
-    for detail in hash_details:
-        url = detail.get('url', '')
-        if detail.get('source') != 'debian':
-            continue
-        h = detail.get('hash', '')
-        if url.endswith('.patch'):
-            patch_url, filename = url, os.path.basename(url)
-            if not filename:
-                continue
-        elif '/commit/' in url:
-            patch_url = url.rstrip('/') + '.patch'
-            filename = f"{h[:12]}.patch" if h else 'unknown.patch'
-        else:
-            continue
-        filepath = os.path.join(patch_dir, filename)
-        if os.path.exists(filepath):
-            downloaded.append(filepath)
-            print(f"  Using cached patch: {filename}")
-            continue
-        try:
-            resp = requests.get(patch_url, timeout=30, stream=True)
-            resp.raise_for_status()
-            content_length = int(resp.headers.get('content-length', 0))
-            if content_length > 10_000_000:
-                print(f"  Skipping {filename}: too large ({content_length} bytes)")
-                continue
-            content = resp.text
-            if len(content) > 10_000_000:
-                print(f"  Skipping {filename}: too large ({len(content)} bytes)")
-                continue
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
-            downloaded.append(filepath)
-            print(f"  Downloaded patch: {filename}")
-        except Exception as err:  # pylint: disable=broad-except
-            print(f"  Failed to download {patch_url}: {err}")
-    return downloaded
 
 
 def tag_results(hashes, patches, refs, source):

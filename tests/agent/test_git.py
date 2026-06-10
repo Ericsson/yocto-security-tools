@@ -69,7 +69,7 @@ def test_get_all_upstream_shas_single(tmp_path):
 # --- get_changed_files ---
 
 def test_get_changed_files(tmp_path):
-    with mock_patch("cve_agent.git.run_git_capture",
+    with mock_patch("cve_agent.git.run_git_stdout",
                     return_value="a.c\nb.c\n\nc.c"):
         result = get_changed_files(["diff", "--name-only"], tmp_path)
     assert result == {"a.c", "b.c", "c.c"}

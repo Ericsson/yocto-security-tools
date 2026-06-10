@@ -7,13 +7,13 @@ from .debian import extract_debian_source_patches, load_debian_tracker, load_deb
 from .mirrors import create_mirrors, ensure_data_repo
 from .processing import extract_metadata_from_sources, process_cve
 from .sources import SOURCE_REGISTRY, CveSource
-from .utils import HASH_RE, PR_CACHE, deduplicate_metadata, load_pr_cache
+from .utils import PR_CACHE, load_pr_cache
 
 __all__ = [
     'load_config', 'SOURCE_REGISTRY', 'CveSource',
     'process_cve', 'extract_metadata_from_sources',
     'load_cves_from_sources', 'create_mirrors', 'ensure_data_repo',
-    'load_pr_cache', 'HASH_RE', 'PR_CACHE', 'deduplicate_metadata',
+    'load_pr_cache', 'PR_CACHE',
     'load_debian_tracker', 'load_debian_tracker_extended',
     'extract_debian_source_patches',
 ]

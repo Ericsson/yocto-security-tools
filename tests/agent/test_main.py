@@ -165,7 +165,7 @@ class TestSaveKnowledgePattern:
 
 
 class TestGatherPatternDetails:
-    @patch("cve_agent.knowledge.run_git_capture")
+    @patch("cve_agent.knowledge.run_git_stdout")
     @patch("cve_agent.knowledge.get_changed_files")
     def test_basic(self, mock_files, mock_git):
         mock_files.side_effect = [{"a.c", "b.c"}, {"a.c", "c.c"}]
@@ -179,7 +179,7 @@ class TestGatherPatternDetails:
         assert "c.c" in result["per_file_changes"]
         assert result["per_file_changes"]["c.c"] == "omitted from backport"
 
-    @patch("cve_agent.knowledge.run_git_capture")
+    @patch("cve_agent.knowledge.run_git_stdout")
     @patch("cve_agent.knowledge.get_changed_files")
     def test_identical_to_upstream(self, mock_files, mock_git):
         mock_files.side_effect = [{"a.c"}, {"a.c"}]

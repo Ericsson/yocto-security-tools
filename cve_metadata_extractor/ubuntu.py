@@ -12,7 +12,7 @@ from .sources import SOURCE_REGISTRY, CveSource
 from .utils import (
     _GITLAB_ISSUE_RE,
     URL_RE,
-    find_hash,
+    extract_commit_hash,
     process_gitlab_issue_url,
     process_pr_url,
     tag_results,
@@ -86,7 +86,7 @@ def extract_from_ubuntu_response(ubuntu_data):
                 process_pr_url(url, series)
             elif _GITLAB_ISSUE_RE.match(url):
                 process_gitlab_issue_url(url, series)
-            h = find_hash(url)
+            h = extract_commit_hash(url)
             if h and not any(e['hash'] == h for e in hashes):
                 hashes.append({'hash': h, 'url': url})
 
@@ -99,7 +99,7 @@ def extract_from_ubuntu_response(ubuntu_data):
             process_pr_url(url, series)
         elif _GITLAB_ISSUE_RE.match(url):
             process_gitlab_issue_url(url, series)
-        h = find_hash(url)
+        h = extract_commit_hash(url)
         if h and not any(e['hash'] == h for e in hashes):
             hashes.append({'hash': h, 'url': url})
             patch_links.append({'url': url, 'tags': 'fix'})

@@ -18,7 +18,7 @@ from .git import (
     install_scope_hook,
     remove_scope_hook,
     revert_unauthorized_changes,
-    run_git_capture,
+    run_git_stdout,
 )
 
 
@@ -99,16 +99,16 @@ def guarded_session(context_file: Path, workspace_path: Path,
         files = get_changed_files(['show', '--name-only', '--format=', sha], workspace_path)
         allowed |= files
         for f in files:
-            raw = run_git_capture(['show', sha, '--', f], cwd=workspace_path)
+            raw = run_git_stdout(['show', sha, '--', f], cwd=workspace_path)
             upstream_diffs[f] = _extract_diff_hunks(raw)
 
     # Fallback: if SHAs don't exist in repo, derive from workspace diff
     if not allowed:
-        diff_output = run_git_capture(
+        diff_output = run_git_stdout(
             ['diff', '--name-only', 'original-version..HEAD'], cwd=workspace_path
         )
         allowed.update(f for f in diff_output.splitlines() if f)
-        conflict_output = run_git_capture(
+        conflict_output = run_git_stdout(
             ['diff', '--name-only', '--diff-filter=U'], cwd=workspace_path
         )
         allowed.update(f for f in conflict_output.splitlines() if f)
@@ -125,7 +125,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
         print(f"  {f}")
 
     # Snapshot HEAD before session so audit log only covers agent changes
-    pre_session_head = run_git_capture(
+    pre_session_head = run_git_stdout(
         ['rev-parse', 'HEAD'], cwd=workspace_path
     ).strip()
 
@@ -208,7 +208,7 @@ def _split_diff_by_file(diff: str) -> dict[str, str]:
 
 def _get_backport_note(workspace_path: Path) -> str:
     """Extract the first backport-related line from the HEAD commit message."""
-    commit_msg = run_git_capture(['log', '-1', '--format=%B'], cwd=workspace_path)
+    commit_msg = run_git_stdout(['log', '-1', '--format=%B'], cwd=workspace_path)
     for line in commit_msg.splitlines():
         if ('Backport-Resolution' in line
                 or 'Backport Resolution' in line
@@ -281,12 +281,12 @@ def _write_audit_log(workspace_path: Path, recipe: str, cve_id: str,
         '',
     ]
 
-    agent_diff = run_git_capture(['diff', 'original-version..HEAD', '--'], cwd=workspace_path)
+    agent_diff = run_git_stdout(['diff', 'original-version..HEAD', '--'], cwd=workspace_path)
     agent_per_file = _split_diff_by_file(agent_diff)
     backport_note = _get_backport_note(workspace_path)
 
     # Only audit files the agent actually changed during its session
-    agent_touched = set(run_git_capture(
+    agent_touched = set(run_git_stdout(
         ['diff', '--name-only', f'{pre_session_head}..HEAD'], cwd=workspace_path
     ).splitlines())
 
@@ -294,7 +294,7 @@ def _write_audit_log(workspace_path: Path, recipe: str, cve_id: str,
     # creations that should have been omitted from the backport.
     baseline_new = set()
     for filepath in agent_per_file:
-        if not run_git_capture(
+        if not run_git_stdout(
             ['ls-tree', 'original-version', '--', filepath],
             cwd=workspace_path
         ):

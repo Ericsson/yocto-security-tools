@@ -6,11 +6,11 @@ import os
 import tempfile
 import unittest
 
+from cve_metadata_extractor.cvelistv5 import find_cve_json_file
 from cve_metadata_extractor.utils import (
     HASH_RE,
     URL_RE,
-    find_cve_json_file,
-    find_hash,
+    extract_commit_hash,
     normalize_component_name,
 )
 
@@ -41,27 +41,27 @@ class TestFindHash(unittest.TestCase):
     def test_extracts_short_hash(self):
         '''Extract 7-character hash from URL.'''
         url = 'https://github.com/test/repo/commit/abc1234'
-        self.assertEqual(find_hash(url), 'abc1234')
+        self.assertEqual(extract_commit_hash(url), 'abc1234')
 
     def test_extracts_full_hash(self):
         '''Extract 40-character hash from URL.'''
         url = 'https://github.com/test/repo/commit/abc123def456789012345678901234567890abcd'
-        self.assertEqual(find_hash(url), 'abc123def456789012345678901234567890abcd')
+        self.assertEqual(extract_commit_hash(url), 'abc123def456789012345678901234567890abcd')
 
     def test_ignores_bugzilla_urls(self):
         '''Ignore hashes in bugzilla URLs.'''
         url = 'https://bugzilla.redhat.com/show_bug.cgi?id=abc123'
-        self.assertIsNone(find_hash(url))
+        self.assertIsNone(extract_commit_hash(url))
 
     def test_ignores_numeric_only(self):
         '''Ignore numeric-only strings.'''
         url = 'https://example.com/issue/1234567'
-        self.assertIsNone(find_hash(url))
+        self.assertIsNone(extract_commit_hash(url))
 
     def test_returns_none_for_no_hash(self):
         '''Return None when no hash found.'''
         url = 'https://example.com/page'
-        self.assertIsNone(find_hash(url))
+        self.assertIsNone(extract_commit_hash(url))
 
 
 class TestFindCVEJsonFile(unittest.TestCase):

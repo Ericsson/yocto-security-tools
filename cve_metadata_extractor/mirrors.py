@@ -3,12 +3,9 @@
 '''Git repository management: mirrors and data repo cloning.'''
 import logging
 import os
-import re
 import subprocess
 import time
 from pathlib import Path
-
-from .utils import IGNORED_URL_PATTERNS
 
 
 def ensure_data_repo(repo_dir, clone_url, name, branch=None):
@@ -71,28 +68,8 @@ def ensure_data_repo(repo_dir, clone_url, name, branch=None):
 
 def extract_repo_url_from_patch(url):
     '''Extract repository URL from a patch URL'''
-    if any(pattern in url for pattern in IGNORED_URL_PATTERNS):
-        return None
-
-    base_url = re.split(r'/-/commit|/commit|/releases|/pull', url)[0]
-
-    transformations = [
-        (r'ncurses',
-         lambda m: 'https://github.com/ThomasDickey/ncurses-snapshots/'),
-        (r'(gitweb\.git\.savannah\.gnu\.org|sourceware\.org).*\?p=([^;]+)',
-         lambda m: f'https://git.savannah.gnu.org/git/{m.group(2)}'
-         if 'savannah' in m.group(1)
-         else f'https://sourceware.org/git/{m.group(2)}'),
-        (r'savannah\.gnu\.org/(?:cgit|git)/([^/]+)',
-         lambda m: f'https://git.savannah.gnu.org/git/{m.group(1)}')
-    ]
-
-    for pattern, replacement in transformations:
-        match = re.search(pattern, url)
-        if match:
-            return replacement(match)
-
-    return base_url
+    from shared.url_parser import deduce_repo_url  # pylint: disable=import-outside-toplevel
+    return deduce_repo_url(url)
 
 
 def find_repo_urls_from_metadata(metadata):

@@ -26,7 +26,7 @@ from . import (
     ResultStatus,
 )
 from .corrector import get_workspace_path, load_cve_metadata
-from .git import run_git_capture
+from .git import run_git_stdout
 from .knowledge import KnowledgeBase
 from .orchestrator import process_single_cve
 from .setup import ensure_agents
@@ -89,10 +89,10 @@ def _log_result(config: AgentConfig, result: CveResult,
 
     try:
         if ws_path:
-            diff_stat = run_git_capture(['diff', '--stat', 'original-version..HEAD'], ws_path)
+            diff_stat = run_git_stdout(['diff', '--stat', 'original-version..HEAD'], ws_path)
             if diff_stat:
                 lines.append(f"  diff-stat: {diff_stat}")
-            diff = run_git_capture(['diff', 'original-version..HEAD'], ws_path)
+            diff = run_git_stdout(['diff', 'original-version..HEAD'], ws_path)
             if diff:
                 if len(diff) > 50_000:
                     diff = diff[:50_000] + "\n... (truncated, >50KB)"

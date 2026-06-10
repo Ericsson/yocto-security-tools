@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import DEFAULT_KNOWLEDGE_PATH
-from .git import get_changed_files, run_git_capture
+from .git import get_changed_files, run_git_stdout
 
 if TYPE_CHECKING:
     from . import AgentConfig
@@ -256,7 +256,7 @@ def gather_pattern_details(workspace_path: Path,
 
     per_file: dict[str, str] = {}
     for filepath in sorted(applied & upstream):
-        stat = run_git_capture(
+        stat = run_git_stdout(
             ['diff', '--stat', f'{upstream_sha}..HEAD', '--', filepath],
             workspace_path
         ).strip()
@@ -271,10 +271,10 @@ def gather_pattern_details(workspace_path: Path,
     return {
         'affected_files': sorted(applied),
         'per_file_changes': per_file,
-        'diff_stat': run_git_capture(
+        'diff_stat': run_git_stdout(
             ['diff', '--stat', 'original-version..HEAD'], workspace_path
         ).strip(),
-        'commit_message': run_git_capture(
+        'commit_message': run_git_stdout(
             ['log', '-1', '--format=%B', 'HEAD'], workspace_path
         ).strip(),
     }

@@ -161,6 +161,87 @@ def fetch_gitlab_issue_commits(issue_url: str) -> list[str]:
     return commits
 
 
+# Patterns that indicate a URL is not a git repository.
+_REPO_SKIP_PATTERNS = (
+    "bugzilla", "viewtopic", "inbox.", "mail.python.org",
+    "openwall.com", "cve.org", "nvd.nist.gov",
+    "/archives/", "/advisories/", "/lists/", "seclists.org",
+    "marc.info", "bugreport", "hackerone", "lore.kernel.org",
+    "issues", "reddit",
+)
+
+# URL substrings that indicate a valid git hosting forge.
+_GIT_INDICATORS = (
+    "github.com", "gitlab.com", "gitlab.", "git.savannah",
+    "sourceware.org/git", "git.kernel.org", "git.openssl.org",
+    "git.gnome.org", "git.freedesktop.org", "codeberg.org",
+    "bitbucket.org", ".git",
+)
+
+
+def deduce_repo_url(url: str) -> Optional[str]:
+    """Deduce the git repository URL from a commit/patch URL.
+
+    Handles GitHub, GitLab, gitweb, Savannah, Sourceware, ncurses
+    special-case, and other common forge patterns.
+
+    Args:
+        url: A commit, patch, or pull request URL.
+
+    Returns:
+        Repository URL string, or None if not deducible.
+    """
+    if any(p in url for p in _REPO_SKIP_PATTERNS):
+        return None
+
+    # ncurses special-case
+    if 'ncurses' in url and 'commit' in url:
+        return 'https://github.com/ThomasDickey/ncurses-snapshots'
+
+    from urllib.parse import urlparse  # pylint: disable=import-outside-toplevel
+    parsed = urlparse(url)
+    host = parsed.hostname or ''
+
+    # Gitweb ?p=<repo>;a=commit style
+    if '?p=' in url and ';a=' in url:
+        repo_name = url.split('?p=')[1].split(';', maxsplit=1)[0]
+        if host == 'sourceware.org' or host.endswith('.sourceware.org'):
+            return f'https://sourceware.org/git/{repo_name}'
+        if 'sourceware.org' in host:
+            return None  # lookalike host
+        if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
+            return f'https://git.savannah.gnu.org/git/{repo_name}'
+        if 'savannah.gnu.org' in host:
+            return None  # lookalike host
+        # Generic gitweb
+        return f'{parsed.scheme}://{parsed.netloc}/{repo_name}'
+
+    # Savannah /cgit/ or /git/ path style
+    if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
+        if '/cgit/' in parsed.path:
+            repo_name = parsed.path.split('/cgit/')[1].split('/')[0]
+        elif '/git/' in parsed.path:
+            repo_name = parsed.path.split('/git/')[1].split('/')[0]
+        else:
+            return None
+        return f'https://git.savannah.gnu.org/git/{repo_name}'
+    if 'savannah.gnu.org' in host:
+        return None  # lookalike host
+
+    # Strip commit/PR/MR path suffixes to get base repo URL
+    base_url = (url.replace("gitweb.cgi?p=", "")
+                .split("-/commit")[0].split("-/merge_requests")[0]
+                .split("-/issues")[0]
+                .split("/pull/")[0].split("/commit")[0]
+                .split("/releases")[0])
+
+    if any(p in base_url for p in _REPO_SKIP_PATTERNS):
+        return None
+    if any(g in base_url for g in _GIT_INDICATORS):
+        return base_url.rstrip('/')
+    return None
+
+
 def parse_fix_url(url: str) -> dict:
     """Parse a fix URL into hashes, hash_details, and series.
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 from shared import build_git_env
+from shared.git_runner import is_git_cmd
+from shared.git_runner import run_capture as _shared_run_capture
 
 # Module-level config — set by setup_logging(), used by run_cmd()
 _verbose = True
@@ -48,11 +50,6 @@ def setup_logging(cve_id: str, build_path: Path, verbose: bool) -> Path:
     return _log_file
 
 
-def _is_git_cmd(cmd: list[str]) -> bool:
-    """Check if a command is a git command that needs the restricted env."""
-    return bool(cmd) and str(cmd[0]) == 'git'
-
-
 def run_cmd(cmd: list[str], cwd: Optional[Path] = None,
             timeout: Optional[int] = None) -> int:
     """Execute command with output directed based on verbose setting.
@@ -68,7 +65,7 @@ def run_cmd(cmd: list[str], cwd: Optional[Path] = None,
     cmd_str = ' '.join(str(c) for c in cmd)
     logger.info("Running: %s", cmd_str)
 
-    env = build_git_env() if _is_git_cmd(cmd) else None
+    env = build_git_env() if is_git_cmd(cmd) else None
 
     try:
         if _verbose or not _log_file:
@@ -93,5 +90,4 @@ def run_cmd(cmd: list[str], cwd: Optional[Path] = None,
 
 def run_cmd_capture(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
     """Execute command and capture output."""
-    env = build_git_env() if _is_git_cmd(cmd) else None
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False, env=env)
+    return _shared_run_capture(cmd, cwd)

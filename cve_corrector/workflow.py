@@ -316,8 +316,12 @@ def continue_from_conflict() -> WorkflowState:
                 raise ConflictError("Conflict detected")
         logger.info("✓ All remaining commits applied successfully")
 
-    # After conflict resolution, transfer commits to devtool branch
-    state.current_step = 'cherry_pick_to_devtool'
+    # After conflict resolution, transfer commits to devtool branch.
+    # Only reset to cherry_pick_to_devtool if we haven't passed that step yet.
+    post_conflict_steps = {'cherry_pick_to_devtool', 'build_after_patch',
+                           'ptest_after_patch', 'finish'}
+    if state.current_step not in post_conflict_steps:
+        state.current_step = 'cherry_pick_to_devtool'
     return state
 
 

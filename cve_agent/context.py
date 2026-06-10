@@ -23,7 +23,7 @@ from . import (
     get_agent_dir,
     get_build_dir,
 )
-from .git import get_all_upstream_shas, get_upstream_sha, run_git_capture
+from .git import get_all_upstream_shas, get_upstream_sha, run_git_stdout
 
 
 def build_context(workspace_path: Path, exit_code: int, cve_id: str,
@@ -106,7 +106,7 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     # Pre-compute the allowed file list from ALL upstream SHAs
     allowed_files: set[str] = set()
     for sha in all_shas:
-        files = run_git_capture(
+        files = run_git_stdout(
             ['show', '--name-only', '--format=', sha], cwd=workspace_path
         )
         allowed_files.update(f for f in files.splitlines() if f)
@@ -114,13 +114,13 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     # Fallback: if SHAs don't exist in repo, derive allowed files from
     # the workspace diff (what the corrector actually changed/conflicted)
     if not allowed_files:
-        diff_files = run_git_capture(
+        diff_files = run_git_stdout(
             ['diff', '--name-only', 'original-version..HEAD'],
             cwd=workspace_path
         )
         allowed_files.update(f for f in diff_files.splitlines() if f)
         # Also include files with unresolved conflicts
-        conflict_files = run_git_capture(
+        conflict_files = run_git_stdout(
             ['diff', '--name-only', '--diff-filter=U'], cwd=workspace_path
         )
         allowed_files.update(f for f in conflict_files.splitlines() if f)
@@ -202,16 +202,16 @@ def _gather_conflict_context(workspace_path: Path, cve_info: dict) -> str:
     Returns:
         Formatted conflict context string.
     """
-    status = run_git_capture(['status'], cwd=workspace_path)
+    status = run_git_stdout(['status'], cwd=workspace_path)
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     upstream_stat = ""
     if upstream_sha:
-        upstream_stat = run_git_capture(['show', '--stat', upstream_sha], cwd=workspace_path)
+        upstream_stat = run_git_stdout(['show', '--stat', upstream_sha], cwd=workspace_path)
 
     conflicted_files = _get_conflicted_files(workspace_path)
     file_history = ""
     for filepath in conflicted_files[:5]:
-        history = run_git_capture(['log', '--oneline', '-20', '--', filepath], cwd=workspace_path)
+        history = run_git_stdout(['log', '--oneline', '-20', '--', filepath], cwd=workspace_path)
         file_history += f"\n### {filepath}\n```\n{history}\n```\n"
 
     return (
@@ -233,7 +233,7 @@ def _gather_build_error_context(workspace_path: Path) -> str:
     Returns:
         Formatted build error context string.
     """
-    last_commit = run_git_capture(['show', '--stat', 'HEAD'], cwd=workspace_path)
+    last_commit = run_git_stdout(['show', '--stat', 'HEAD'], cwd=workspace_path)
 
     return (
         f"## Build Error Details\n\n"
@@ -256,7 +256,7 @@ def _gather_ptest_error_context(workspace_path: Path) -> str:
     Returns:
         Formatted ptest error context string.
     """
-    last_commit = run_git_capture(['show', '--stat', 'HEAD'], cwd=workspace_path)
+    last_commit = run_git_stdout(['show', '--stat', 'HEAD'], cwd=workspace_path)
     ptest_section = _read_ptest_results(workspace_path)
 
     return (
@@ -337,11 +337,11 @@ def _gather_analysis_context(workspace_path: Path, cve_info: dict) -> str:
     Returns:
         Formatted analysis context string.
     """
-    applied = run_git_capture(['log', 'original-version..HEAD', '--oneline'], cwd=workspace_path)
+    applied = run_git_stdout(['log', 'original-version..HEAD', '--oneline'], cwd=workspace_path)
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     upstream_info = ""
     if upstream_sha:
-        upstream_stat = run_git_capture(['show', '--stat', upstream_sha], cwd=workspace_path)
+        upstream_stat = run_git_stdout(['show', '--stat', upstream_sha], cwd=workspace_path)
         upstream_info = (
             f"\n### Upstream Commit (stat)\n```\n{upstream_stat}\n```\n"
             f"Run `git show {upstream_sha}` to see the full upstream diff."

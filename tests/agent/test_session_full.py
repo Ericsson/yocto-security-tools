@@ -107,12 +107,12 @@ class TestSplitDiffByFile:
 
 
 class TestGetBackportNote:
-    @patch("cve_agent.session.run_git_capture",
+    @patch("cve_agent.session.run_git_stdout",
            return_value="Fix CVE\n\nBackport-Resolution: adapted code")
     def test_finds_note(self, _):
         assert "Backport-Resolution" in _get_backport_note(Path("/ws"))
 
-    @patch("cve_agent.session.run_git_capture", return_value="Fix CVE\n\nSigned-off-by: x")
+    @patch("cve_agent.session.run_git_stdout", return_value="Fix CVE\n\nSigned-off-by: x")
     def test_no_note(self, _):
         assert _get_backport_note(Path("/ws")) == ""
 
@@ -172,7 +172,7 @@ class TestGuardedKiroSession:
     @patch("cve_agent.backend.KiroBackend.run_session",
            return_value=SessionResult(resolved=True, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
-    @patch("cve_agent.session.run_git_capture", return_value="")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
     @patch("cve_agent.session.get_changed_files", return_value={"a.c"})
     @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
     def test_full_flow(self, m_shas, m_files, m_git, m_hook, m_session,
@@ -188,7 +188,7 @@ class TestGuardedKiroSession:
     @patch("cve_agent.backend.KiroBackend.run_session",
            return_value=SessionResult(resolved=False, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
-    @patch("cve_agent.session.run_git_capture", return_value="")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
     @patch("cve_agent.session.get_changed_files", return_value={"a.c"})
     @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
     def test_workspace_gone(self, m_shas, m_files, m_git, m_hook, m_session,
@@ -202,7 +202,7 @@ class TestGuardedKiroSession:
 
 class TestWriteAuditLog:
     @patch("cve_agent.session._get_backport_note", return_value="adapted")
-    @patch("cve_agent.session.run_git_capture", return_value="")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
     def test_no_deviations(self, mock_git, mock_note, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
@@ -213,7 +213,7 @@ class TestWriteAuditLog:
         assert "Empty cherry-pick" in log.read_text()
 
     @patch("cve_agent.session._get_backport_note", return_value="")
-    @patch("cve_agent.session.run_git_capture",
+    @patch("cve_agent.session.run_git_stdout",
            return_value="diff --git a/a.c b/a.c\n+new line")
     def test_with_deviations(self, mock_git, mock_note, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -248,7 +248,7 @@ class TestWriteAuditLog:
             "new.c": "diff --git a/new.c b/new.c\n-something",
         }
         with patch("cve_agent.session.get_agent_dir", return_value=agent_dir), \
-             patch("cve_agent.session.run_git_capture", side_effect=fake_git):
+             patch("cve_agent.session.run_git_stdout", side_effect=fake_git):
             _write_audit_log(Path(tmp_path / "ws"), "busybox", "CVE-1",
                              ["abc"], upstream_diffs, "HEAD~1")
         log_text = (agent_dir / "busybox-CVE-1-ai-changes.log").read_text()

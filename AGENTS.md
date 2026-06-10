@@ -118,6 +118,20 @@ Every bug fix **must** include a pytest that:
 
 Place tests in `tests/<component>/` matching the module being fixed.
 
+### Run CI Lint on Every Change
+
+Before committing **any** change (new feature, bug fix, refactor), run:
+
+```sh
+ruff check .
+mypy cve_agent cve_corrector cve_metadata_extractor shared
+pytest --cov --cov-report=term-missing
+```
+
+All three commands must exit 0. Use `ruff check --fix .` to auto-fix import sorting
+and formatting issues. Do not commit with lint errors, type errors, test failures,
+or coverage below 65%.
+
 ### Minimize Dependencies
 
 - Runtime deps are limited to `requests` and `packaging` — do not add more

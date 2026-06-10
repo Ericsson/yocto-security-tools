@@ -55,7 +55,7 @@ class TestSavePattern:
 
 
 class TestGatherPatternDetails:
-    @patch('cve_agent.knowledge.run_git_capture')
+    @patch('cve_agent.knowledge.run_git_stdout')
     @patch('cve_agent.knowledge.get_changed_files')
     def test_fields_populated(self, mock_files, mock_git):
         mock_files.side_effect = [{'a.c', 'b.c'}, {'a.c', 'c.c'}]

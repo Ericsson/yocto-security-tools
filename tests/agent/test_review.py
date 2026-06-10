@@ -71,21 +71,21 @@ class TestRequestApproval:
 
 
 class TestBuildChangeSummary:
-    @patch("cve_agent.review.run_git_capture", return_value="")
+    @patch("cve_agent.review.run_git_stdout", return_value="")
     @patch("cve_agent.review.get_changed_files")
     def test_no_deviations(self, mock_files, mock_git):
         mock_files.side_effect = [{"a.c"}, {"a.c"}]
         result = build_change_summary(Path("/ws"), "abc123")
         assert "no deviations" in result
 
-    @patch("cve_agent.review.run_git_capture", return_value="some diff")
+    @patch("cve_agent.review.run_git_stdout", return_value="some diff")
     @patch("cve_agent.review.get_changed_files")
     def test_adapted_files(self, mock_files, mock_git):
         mock_files.side_effect = [{"a.c", "b.c"}, {"a.c"}]
         result = build_change_summary(Path("/ws"), "abc123")
         assert "adapted from upstream" in result
 
-    @patch("cve_agent.review.run_git_capture", return_value="")
+    @patch("cve_agent.review.run_git_stdout", return_value="")
     @patch("cve_agent.review.get_changed_files")
     def test_omitted_files(self, mock_files, mock_git):
         mock_files.side_effect = [{"a.c", "b.c"}, {"a.c"}]
@@ -94,13 +94,13 @@ class TestBuildChangeSummary:
 
 
 class TestAmendCommit:
-    @patch("cve_agent.review.run_git_capture",
+    @patch("cve_agent.review.run_git_stdout",
            return_value="Changes from upstream commit abc123456789 already here")
     def test_skip_if_already_present(self, mock_git):
         amend_commit_with_summary(Path("/ws"), "abc123456789abcdef", "summary")
 
     @patch("subprocess.run")
-    @patch("cve_agent.review.run_git_capture", return_value="Fix CVE\n\nCVE: CVE-2025-0001")
+    @patch("cve_agent.review.run_git_stdout", return_value="Fix CVE\n\nCVE: CVE-2025-0001")
     def test_strips_cve_block_and_appends(self, mock_git, mock_run):
         amend_commit_with_summary(Path("/ws"), "def456", "my summary")
         mock_run.assert_called_once()
@@ -108,7 +108,7 @@ class TestAmendCommit:
         assert "my summary" in msg[-1]
 
     @patch("subprocess.run")
-    @patch("cve_agent.review.run_git_capture",
+    @patch("cve_agent.review.run_git_stdout",
            return_value="Fix CVE\n\nBackport-Resolution: adapted")
     def test_preserves_kiro_notes(self, mock_git, mock_run):
         amend_commit_with_summary(Path("/ws"), "def456", "summary")
@@ -119,7 +119,7 @@ class TestAmendCommit:
 
 
 class TestSaveReviewDiff:
-    @patch("cve_agent.review.run_git_capture", return_value="diff content")
+    @patch("cve_agent.review.run_git_stdout", return_value="diff content")
     @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
     def test_saves_diff_file(self, mock_files, mock_git, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -131,7 +131,7 @@ class TestSaveReviewDiff:
         assert "UPSTREAM COMMIT" in content
         assert "BACKPORTED DIFF" in content
 
-    @patch("cve_agent.review.run_git_capture", return_value="diff content")
+    @patch("cve_agent.review.run_git_stdout", return_value="diff content")
     @patch("cve_agent.review.get_changed_files", return_value=set())
     def test_saves_diff_no_upstream_files(self, mock_files, mock_git, tmp_path):
         agent_dir = tmp_path / "agent"

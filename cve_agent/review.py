@@ -8,8 +8,10 @@ handles human approval / rejection / edit flow.
 import subprocess
 from pathlib import Path
 
+from shared import build_git_env
+
 from . import AgentConfig, get_agent_dir
-from .git import get_changed_files, get_git_env, run_git_capture, run_git_display
+from .git import get_changed_files, run_git_display, run_git_stdout
 
 
 def request_approval(workspace_path: Path, upstream_sha: str,
@@ -82,7 +84,7 @@ def build_change_summary(workspace_path: Path, upstream_sha: str) -> str:
     lines = [f"Changes from upstream commit {upstream_sha[:12]}:"]
 
     for filepath in sorted(upstream_set & applied_set):
-        delta = run_git_capture(
+        delta = run_git_stdout(
             ['diff', f'{upstream_sha}..HEAD', '--', filepath], workspace_path
         )
         if delta.strip():
@@ -110,7 +112,7 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
         upstream_sha: Upstream commit SHA.
         summary: Change summary to append.
     """
-    current_msg = run_git_capture(['log', '-1', '--format=%B'], workspace_path)
+    current_msg = run_git_stdout(['log', '-1', '--format=%B'], workspace_path)
 
     if f"Changes from upstream commit {upstream_sha[:12]}" in current_msg:
         return
@@ -149,7 +151,7 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
 
     result = subprocess.run(
         ['git', 'commit', '--no-edit', '--amend', '-m', new_msg],
-        cwd=workspace_path, env=get_git_env(), check=False
+        cwd=workspace_path, env=build_git_env(), check=False
     )
     if result.returncode != 0:
         import logging
@@ -172,12 +174,12 @@ def _save_review_diff(workspace_path: Path, upstream_sha: str) -> Path:
     agent_dir = get_agent_dir(workspace_path)
     diff_path = agent_dir / f"review-{upstream_sha[:12]}.diff"
 
-    upstream_diff = run_git_capture(['show', upstream_sha], workspace_path)
+    upstream_diff = run_git_stdout(['show', upstream_sha], workspace_path)
     upstream_files = get_changed_files(
         ['show', '--name-only', '--format=', upstream_sha], workspace_path
     )
     if upstream_files:
-        backport_diff = run_git_capture(
+        backport_diff = run_git_stdout(
             ['diff', 'original-version..HEAD', '--'] + sorted(upstream_files),
             workspace_path
         )
@@ -222,7 +224,7 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
 
     # Check if the upstream commit actually produced changes in the workspace
     if upstream_files:
-        applied_diff = run_git_capture(
+        applied_diff = run_git_stdout(
             ['diff', 'original-version..HEAD', '--'] + sorted(upstream_files),
             workspace_path
         )

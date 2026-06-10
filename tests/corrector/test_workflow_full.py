@@ -477,41 +477,45 @@ class TestContinueFromConflict:
     @patch("cve_corrector.workflow.run_cmd")
     @patch("cve_corrector.workflow.run_cmd_capture")
     @patch("cve_corrector.workflow.get_state_dir")
-    def test_dirty_tracked_files_not_treated_as_conflicts(self, mock_dir, mock_capture, mock_cmd, tmp_path):
-        """Modified tracked files (e.g. autotools configure) should not block --continue."""
+    def test_untracked_files_do_not_block_resume(self, mock_dir, mock_capture,
+                                                  mock_cmd, tmp_path):
+        """Untracked/modified build artifacts should not trigger ConflictError."""
         mock_dir.return_value = tmp_path
-        ws = tmp_path / "build" / "workspace" / "sources" / "dropbear"
+        ws = tmp_path / "build" / "workspace" / "sources" / "openssh"
         ws.mkdir(parents=True)
         state_data = {
-            "workspace_path": str(ws), "cve_id": "CVE-1", "recipe": "dropbear",
-            "commit_hash": "abc", "hash_details": [], "meta_layer": str(tmp_path),
-            "skip_build": True, "skip_ptest": True, "ptest_before": None,
-            "series_state": None, "current_step": None, "skip_confirm": False,
+            "workspace_path": str(ws), "cve_id": "CVE-2024-39894",
+            "recipe": "openssh", "commit_hash": "abc", "hash_details": [],
+            "meta_layer": str(tmp_path), "skip_build": True, "skip_ptest": True,
+            "ptest_before": None, "series_state": None,
+            "current_step": None, "skip_confirm": False,
         }
-        (tmp_path / "dropbear.json").write_text(json.dumps(state_data))
-        # Porcelain output with modified files but no conflict markers
-        mock_capture.return_value = MagicMock(stdout=" M configure\n M config.guess\n")
+        (tmp_path / "openssh.json").write_text(json.dumps(state_data))
+        # Simulate untracked build artifacts (no U markers)
+        mock_capture.return_value = MagicMock(stdout="?? config.log\n?? config.status\nM  Makefile\n")
         state = continue_from_conflict()
-        assert state.cve_id == "CVE-1"
+        assert state.cve_id == "CVE-2024-39894"
 
     @patch("cve_corrector.workflow.run_cmd")
     @patch("cve_corrector.workflow.run_cmd_capture")
     @patch("cve_corrector.workflow.get_state_dir")
-    def test_dd_conflict_detected(self, mock_dir, mock_capture, mock_cmd, tmp_path):
-        """DD (both deleted) should be treated as a conflict."""
+    def test_preserves_step_when_past_cherry_pick(self, mock_dir, mock_capture,
+                                                   mock_cmd, tmp_path):
+        """When saved step is ptest_after_patch, don't reset to cherry_pick_to_devtool."""
         mock_dir.return_value = tmp_path
-        ws = tmp_path / "build" / "workspace" / "sources" / "pkg"
+        ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
         ws.mkdir(parents=True)
         state_data = {
-            "workspace_path": str(ws), "cve_id": "CVE-2", "recipe": "pkg",
-            "commit_hash": "abc", "hash_details": [], "meta_layer": str(tmp_path),
-            "skip_build": True, "skip_ptest": True, "ptest_before": None,
-            "series_state": None, "current_step": None, "skip_confirm": False,
+            "workspace_path": str(ws), "cve_id": "CVE-2026-26157",
+            "recipe": "busybox", "commit_hash": "abc", "hash_details": [],
+            "meta_layer": str(tmp_path), "skip_build": True, "skip_ptest": True,
+            "ptest_before": None, "series_state": None,
+            "current_step": "ptest_after_patch", "skip_confirm": False,
         }
-        (tmp_path / "pkg.json").write_text(json.dumps(state_data))
-        mock_capture.return_value = MagicMock(stdout="DD deleted.c\n M other.c\n")
-        with pytest.raises(ConflictError):
-            continue_from_conflict()
+        (tmp_path / "busybox.json").write_text(json.dumps(state_data))
+        mock_capture.return_value = MagicMock(stdout="")
+        state = continue_from_conflict()
+        assert state.current_step == "ptest_after_patch"
 
 
 class TestRunBuildStep:

@@ -18,7 +18,7 @@ def _cfg(**kwargs):
 
 class TestWriteAuditLog:
     @patch('cve_agent.session._get_backport_note', return_value='')
-    @patch('cve_agent.session.run_git_capture', return_value='')
+    @patch('cve_agent.session.run_git_stdout', return_value='')
     def test_no_deviations_verbatim_message(self, mock_git, mock_note, tmp_path):
         agent_dir = tmp_path / 'agent'
         agent_dir.mkdir()
@@ -30,7 +30,7 @@ class TestWriteAuditLog:
         assert 'verbatim' in content.lower() or 'Empty cherry-pick' in content
 
     @patch('cve_agent.session._get_backport_note', return_value='adapted')
-    @patch('cve_agent.session.run_git_capture')
+    @patch('cve_agent.session.run_git_stdout')
     def test_deviation_shows_both_diffs(self, mock_git, mock_note, tmp_path):
         agent_dir = tmp_path / 'agent'
         agent_dir.mkdir()
@@ -61,7 +61,7 @@ class TestWriteAuditLog:
             return 'new.c'  # agent touched
         upstream_diffs = {'new.c': 'diff --git a/new.c b/new.c\n+upstream'}
         with patch('cve_agent.session.get_agent_dir', return_value=agent_dir), \
-             patch('cve_agent.session.run_git_capture', side_effect=fake_git):
+             patch('cve_agent.session.run_git_stdout', side_effect=fake_git):
             _write_audit_log(Path(tmp_path / 'ws'), 'busybox', 'CVE-1',
                              ['abc'], upstream_diffs, 'HEAD~1')
         content = (agent_dir / 'busybox-CVE-1-ai-changes.log').read_text()
@@ -69,7 +69,7 @@ class TestWriteAuditLog:
         assert 'new.c' not in content or 'deviation' not in content.lower()
 
     @patch('cve_agent.session._get_backport_note', return_value='')
-    @patch('cve_agent.session.run_git_capture', return_value='')
+    @patch('cve_agent.session.run_git_stdout', return_value='')
     def test_multiple_sessions_append(self, mock_git, mock_note, tmp_path):
         agent_dir = tmp_path / 'agent'
         agent_dir.mkdir()

@@ -12,44 +12,12 @@ from pathlib import Path
 from typing import Optional
 
 from shared import build_git_env
+from shared.git_runner import (
+    run_git_display,  # noqa: F401
+    run_git_stdout,  # noqa: F401
+)
 
 from . import get_build_dir
-
-
-def get_git_env() -> dict[str, str]:
-    """Get a fresh git environment dict."""
-    return build_git_env()
-
-
-def run_git_capture(args: list[str], cwd: Path) -> str:
-    """Run git command and return stdout.
-
-    Args:
-        args: Git arguments (without 'git' prefix).
-        cwd: Working directory.
-
-    Returns:
-        Stdout string, empty on failure or if cwd doesn't exist.
-    """
-    if not cwd.exists():
-        return ""
-    result = subprocess.run(
-        ['git'] + args, cwd=cwd, env=get_git_env(),
-        capture_output=True, text=True, check=False
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def run_git_display(args: list[str], cwd: Path) -> None:
-    """Run git command with output printed directly (no pager).
-
-    Args:
-        args: Git arguments (without 'git' prefix).
-        cwd: Working directory.
-    """
-    subprocess.run(
-        ['git', '--no-pager'] + args, cwd=cwd, env=get_git_env(), check=False
-    )
 
 
 def get_upstream_sha(cve_info: dict, workspace_path: Path) -> str:
@@ -110,7 +78,7 @@ def get_changed_files(git_args: list[str], cwd: Path) -> set[str]:
     Returns:
         Set of non-empty output lines.
     """
-    output = run_git_capture(git_args, cwd)
+    output = run_git_stdout(git_args, cwd)
     return set(line for line in output.splitlines() if line)
 
 
@@ -193,10 +161,10 @@ def revert_unauthorized_changes(workspace_path: Path,
     # commits and --no-verify bypasses.
     # Guard: if agent switched to devtool branch, force back to CVE branch
     # before checking committed changes.
-    current_branch = run_git_capture(['rev-parse', '--abbrev-ref', 'HEAD'], workspace_path).strip()
+    current_branch = run_git_stdout(['rev-parse', '--abbrev-ref', 'HEAD'], workspace_path).strip()
     if current_branch == 'devtool':
         # Find the CVE branch (any branch that isn't devtool/main/master)
-        branches = run_git_capture(['branch', '--list'], workspace_path).splitlines()
+        branches = run_git_stdout(['branch', '--list'], workspace_path).splitlines()
         cve_branch = None
         for b in branches:
             name = b.strip().lstrip('* ')
@@ -207,11 +175,11 @@ def revert_unauthorized_changes(workspace_path: Path,
             print(f"\n⚠ Agent switched to devtool branch — forcing back to {cve_branch}")
             subprocess.run(
                 ['git', 'checkout', cve_branch],
-                cwd=workspace_path, env=get_git_env(), check=False
+                cwd=workspace_path, env=build_git_env(), check=False
             )
         else:
             return
-    committed = set(run_git_capture(
+    committed = set(run_git_stdout(
         ['diff', '--name-only', 'original-version..HEAD'], workspace_path
     ).splitlines())
     commit_unauthorized = committed - allowed
@@ -224,15 +192,15 @@ def revert_unauthorized_changes(workspace_path: Path,
         print(f"  - {filepath}")
 
     # Preserve commit message, then soft-reset to original-version
-    msg = run_git_capture(['log', '-1', '--format=%B'], workspace_path)
+    msg = run_git_stdout(['log', '-1', '--format=%B'], workspace_path)
     saved_head_result = subprocess.run(
         ['git', 'rev-parse', 'HEAD'],
-        cwd=workspace_path, env=get_git_env(), capture_output=True, text=True, check=False
+        cwd=workspace_path, env=build_git_env(), capture_output=True, text=True, check=False
     )
     saved_head = saved_head_result.stdout.strip() if saved_head_result.returncode == 0 else None
     result = subprocess.run(
         ['git', 'reset', '--soft', 'original-version'],
-        cwd=workspace_path, env=get_git_env(), check=False
+        cwd=workspace_path, env=build_git_env(), check=False
     )
     if result.returncode != 0:
         print("⚠ Failed to reset to original-version — leaving branch unchanged")
@@ -242,16 +210,16 @@ def revert_unauthorized_changes(workspace_path: Path,
     for filepath in commit_unauthorized:
         subprocess.run(
             ['git', 'reset', 'HEAD', '--', filepath],
-            cwd=workspace_path, env=get_git_env(), capture_output=True, check=False
+            cwd=workspace_path, env=build_git_env(), capture_output=True, check=False
         )
         exists_at_base = subprocess.run(
             ['git', 'cat-file', '-e', f'original-version:{filepath}'],
-            cwd=workspace_path, env=get_git_env(), capture_output=True, check=False
+            cwd=workspace_path, env=build_git_env(), capture_output=True, check=False
         ).returncode == 0
         if exists_at_base:
             subprocess.run(
                 ['git', 'checkout', 'original-version', '--', filepath],
-                cwd=workspace_path, env=get_git_env(), check=False
+                cwd=workspace_path, env=build_git_env(), check=False
             )
         else:
             full_path = workspace_path / filepath
@@ -261,14 +229,14 @@ def revert_unauthorized_changes(workspace_path: Path,
     # Re-commit with only allowed changes
     commit_result = subprocess.run(
         ['git', 'commit', '-m', msg],
-        cwd=workspace_path, env=get_git_env(), check=False
+        cwd=workspace_path, env=build_git_env(), check=False
     )
     if commit_result.returncode != 0:
         print(f"⚠ Re-commit failed — restoring branch to {(saved_head or 'HEAD')[:12]}")
         if saved_head:
             subprocess.run(
                 ['git', 'reset', '--soft', saved_head],
-                cwd=workspace_path, env=get_git_env(), check=False
+                cwd=workspace_path, env=build_git_env(), check=False
             )
 
 

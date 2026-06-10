@@ -1,19 +1,27 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 '''CVEListV5 and NVD source extractors.'''
+import glob
 import json
 import logging
+import os
 
 from .mirrors import ensure_data_repo
 from .sources import SOURCE_REGISTRY, CveSource
 from .utils import (
     _GITLAB_ISSUE_RE,
-    find_cve_json_file,
-    find_hash,
+    extract_commit_hash,
     process_gitlab_issue_url,
     process_pr_url,
     tag_results,
 )
+
+
+def find_cve_json_file(cve_id, datadir):
+    '''Find the CVE JSON file in the directory.'''
+    pattern = os.path.join(datadir, '**', f"{cve_id}.json")
+    matches = glob.glob(pattern, recursive=True)
+    return matches[0] if matches else None
 
 
 def _process_references(refs, patch_links, hashes, series, references):
@@ -27,7 +35,7 @@ def _process_references(refs, patch_links, hashes, series, references):
             process_gitlab_issue_url(url, series)
         if 'tags' in ref and 'patch' in ref['tags']:
             patch_links.append({'url': url, 'tags': ', '.join(ref['tags'])})
-        h = find_hash(url)
+        h = extract_commit_hash(url)
         if h:
             hashes.append({'hash': h, 'url': url})
 

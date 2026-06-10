@@ -115,7 +115,7 @@ class TestTrustToolsInNonInteractiveMode:
     def test_non_interactive_trusts_only_allowed_tools(self, mock_run):
         """Non-interactive mode trusts only fs_read, fs_write, execute_bash."""
         mock_run.return_value = MagicMock(returncode=0, stdout='')
-        with patch('cve_agent.git.get_git_env', return_value={'PATH': '/usr/bin'}):
+        with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
             _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
         # First call is kiro-cli, second is git status --porcelain
         cmd = mock_run.call_args_list[0][0][0]
@@ -129,7 +129,7 @@ class TestTrustToolsInNonInteractiveMode:
     def test_interactive_does_not_trust_tools(self, mock_run):
         """Interactive mode does NOT pass --trust-tools (user approves each)."""
         mock_run.return_value = MagicMock(returncode=0, stdout='')
-        with patch('cve_agent.git.get_git_env', return_value={'PATH': '/usr/bin'}):
+        with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
             _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=True)
         cmd = mock_run.call_args_list[0][0][0]
         cmd_str = ' '.join(cmd)

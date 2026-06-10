@@ -23,7 +23,7 @@ from . import (
 )
 from .context import build_context
 from .corrector import get_workspace_path, load_cve_metadata, run_corrector
-from .git import get_changed_files, get_upstream_sha, run_git_capture
+from .git import get_changed_files, get_upstream_sha, run_git_stdout
 from .knowledge import KnowledgeBase, gather_pattern_details, save_knowledge_pattern
 from .review import build_change_summary, request_approval
 from .session import guarded_session
@@ -74,8 +74,8 @@ def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
     if not upstream_files:
         # Verify the SHA is actually valid — empty set from a git failure
         # is not the same as "no files changed"
-        return bool(run_git_capture(['cat-file', '-t', upstream_sha], workspace_path))
-    applied = run_git_capture(
+        return bool(run_git_stdout(['cat-file', '-t', upstream_sha], workspace_path))
+    applied = run_git_stdout(
         ['diff', 'original-version..HEAD', '--'] + sorted(upstream_files),
         workspace_path
     )

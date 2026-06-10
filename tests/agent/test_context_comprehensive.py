@@ -18,7 +18,7 @@ class TestContextAllowedFilesHeader:
 
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='file.c')
+    @patch('cve_agent.context.run_git_stdout', return_value='file.c')
     def test_exit_0_has_allowed_files(self, *_):
         ws = Path('/build/workspace/sources/busybox')
         result = _build_header('CVE-1', 'busybox', 0, ws, {})
@@ -27,21 +27,21 @@ class TestContextAllowedFilesHeader:
 
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='file.c')
+    @patch('cve_agent.context.run_git_stdout', return_value='file.c')
     def test_exit_1_has_allowed_files(self, *_):
         result = _build_header('CVE-1', 'r', EXIT_CONFLICT, Path('/ws'), {})
         assert 'Allowed Files' in result
 
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='file.c')
+    @patch('cve_agent.context.run_git_stdout', return_value='file.c')
     def test_exit_3_has_allowed_files(self, *_):
         result = _build_header('CVE-1', 'r', EXIT_PTEST_ERROR, Path('/ws'), {})
         assert 'Allowed Files' in result
 
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='file.c')
+    @patch('cve_agent.context.run_git_stdout', return_value='file.c')
     def test_exit_4_has_allowed_files(self, *_):
         result = _build_header('CVE-1', 'r', EXIT_BUILD_ERROR, Path('/ws'), {})
         assert 'Allowed Files' in result
@@ -50,7 +50,7 @@ class TestContextAllowedFilesHeader:
 class TestContextModelName:
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='')
+    @patch('cve_agent.context.run_git_stdout', return_value='')
     def test_model_in_header(self, *_):
         result = _build_header('CVE-1', 'r', 0, Path('/ws'), {},
                                model='claude-sonnet-4-20250514')
@@ -60,7 +60,7 @@ class TestContextModelName:
 class TestContextMultiSha:
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['aaa', 'bbb', 'ccc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='aaa')
-    @patch('cve_agent.context.run_git_capture', return_value='f.c')
+    @patch('cve_agent.context.run_git_stdout', return_value='f.c')
     def test_all_shas_listed(self, *_):
         result = _build_header('CVE-1', 'r', 0, Path('/ws'), {})
         assert 'aaa' in result
@@ -114,7 +114,7 @@ class TestContextPtestResults:
 class TestContextYoctoTmpDir:
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
-    @patch('cve_agent.context.run_git_capture', return_value='')
+    @patch('cve_agent.context.run_git_stdout', return_value='')
     def test_prefers_tmp_glibc(self, _git, _sha, _all, tmp_path):
         ws = tmp_path / 'build' / 'workspace' / 'sources' / 'busybox'
         ws.mkdir(parents=True)

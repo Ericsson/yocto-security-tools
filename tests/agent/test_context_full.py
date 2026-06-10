@@ -26,7 +26,7 @@ from cve_agent.context import (
 class TestBuildHeader:
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc123"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc123")
-    @patch("cve_agent.context.run_git_capture", return_value="file.c")
+    @patch("cve_agent.context.run_git_stdout", return_value="file.c")
     def test_conflict_phase(self, mock_git, mock_sha, mock_all, tmp_path):
         result = _build_header("CVE-1", "busybox", EXIT_CONFLICT, tmp_path, {})
         assert "CONFLICT RESOLUTION" in result
@@ -35,35 +35,35 @@ class TestBuildHeader:
 
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["a1", "b2"])
     @patch("cve_agent.context.get_upstream_sha", return_value="a1")
-    @patch("cve_agent.context.run_git_capture", return_value="f.c")
+    @patch("cve_agent.context.run_git_stdout", return_value="f.c")
     def test_multi_sha_display(self, mock_git, mock_sha, mock_all, tmp_path):
         result = _build_header("CVE-1", "r", 0, tmp_path, {})
         assert "a1" in result and "b2" in result
 
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc")
-    @patch("cve_agent.context.run_git_capture", return_value="")
+    @patch("cve_agent.context.run_git_stdout", return_value="")
     def test_build_error_phase(self, mock_git, mock_sha, mock_all, tmp_path):
         result = _build_header("CVE-1", "r", EXIT_BUILD_ERROR, tmp_path, {})
         assert "BUILD ERROR" in result
 
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc")
-    @patch("cve_agent.context.run_git_capture", return_value="")
+    @patch("cve_agent.context.run_git_stdout", return_value="")
     def test_ptest_error_phase(self, mock_git, mock_sha, mock_all, tmp_path):
         result = _build_header("CVE-1", "r", EXIT_PTEST_ERROR, tmp_path, {})
         assert "TEST FAILURE" in result
 
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc")
-    @patch("cve_agent.context.run_git_capture", return_value="")
+    @patch("cve_agent.context.run_git_stdout", return_value="")
     def test_unknown_exit_code(self, mock_git, mock_sha, mock_all, tmp_path):
         result = _build_header("CVE-1", "r", 99, tmp_path, {})
         assert "ERROR (exit 99)" in result
 
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc")
-    @patch("cve_agent.context.run_git_capture", return_value="")
+    @patch("cve_agent.context.run_git_stdout", return_value="")
     def test_yocto_tmp_dir(self, mock_git, mock_sha, mock_all, tmp_path):
         ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
         ws.mkdir(parents=True)
@@ -105,7 +105,7 @@ class TestGatherContextForExitCode:
 
 
 class TestGatherConflictContext:
-    @patch("cve_agent.context.run_git_capture")
+    @patch("cve_agent.context.run_git_stdout")
     @patch("cve_agent.context.get_upstream_sha", return_value="abc123")
     @patch("cve_agent.context._get_conflicted_files", return_value=["a.c"])
     def test_basic(self, mock_files, mock_sha, mock_git):
@@ -116,7 +116,7 @@ class TestGatherConflictContext:
 
 
 class TestGatherBuildErrorContext:
-    @patch("cve_agent.context.run_git_capture", return_value="commit stat")
+    @patch("cve_agent.context.run_git_stdout", return_value="commit stat")
     def test_basic(self, _):
         result = _gather_build_error_context(Path("/ws"))
         assert "Build Error" in result
@@ -125,7 +125,7 @@ class TestGatherBuildErrorContext:
 
 class TestGatherPtestErrorContext:
     @patch("cve_agent.context._read_ptest_results", return_value="ptest data")
-    @patch("cve_agent.context.run_git_capture", return_value="commit stat")
+    @patch("cve_agent.context.run_git_stdout", return_value="commit stat")
     def test_basic(self, *_):
         result = _gather_ptest_error_context(Path("/ws"))
         assert "Test Failure" in result
@@ -134,7 +134,7 @@ class TestGatherPtestErrorContext:
 
 
 class TestGatherAnalysisContext:
-    @patch("cve_agent.context.run_git_capture")
+    @patch("cve_agent.context.run_git_stdout")
     @patch("cve_agent.context.get_upstream_sha", return_value="abc123")
     def test_with_upstream(self, mock_sha, mock_git):
         mock_git.side_effect = ["abc Fix CVE", "stat output"]
@@ -142,7 +142,7 @@ class TestGatherAnalysisContext:
         assert "Patch Analysis" in result
         assert "Upstream Commit" in result
 
-    @patch("cve_agent.context.run_git_capture", return_value="abc Fix CVE")
+    @patch("cve_agent.context.run_git_stdout", return_value="abc Fix CVE")
     @patch("cve_agent.context.get_upstream_sha", return_value="")
     def test_no_upstream(self, *_):
         result = _gather_analysis_context(Path("/ws"), {})

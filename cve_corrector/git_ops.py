@@ -201,50 +201,11 @@ def _cherry_pick_monorepo(workspace_path: Path, commit_hash: str,
 
 def deduce_repo_from_patches(patches: list[str]) -> Optional[str]:
     """Deduce git repository URL from patch URLs."""
+    from shared.url_parser import deduce_repo_url  # pylint: disable=import-outside-toplevel
     for url in patches:
-        new_url = (url.replace("gitweb.cgi?p=", "")
-                   .split("-/commit")[0].split("-/merge_requests")[0]
-                   .split("-/issues")[0]
-                   .split("/pull/")[0].split("/commit")[0])
-        if '?p=' in url and ';a=commit' in url:
-            # Generic gitweb URL: https://<host>/?p=<repo>;a=commit;h=<hash>
-            from urllib.parse import urlparse
-            parsed = urlparse(url.split(';')[0].split('?')[0])
-            repo_name = url.split('?p=')[1].split(';', maxsplit=1)[0]
-            host = parsed.hostname or ''
-            if host == 'sourceware.org' or host.endswith('.sourceware.org'):
-                new_url = f'https://sourceware.org/git/{repo_name}'
-            elif 'sourceware.org' in host:
-                continue
-            else:
-                new_url = f'{parsed.scheme}://{parsed.netloc}/{repo_name}'
-        else:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            host = parsed.hostname or ''
-            if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
-                if '/cgit/' in parsed.path:
-                    repo_name = parsed.path.split('/cgit/')[1].split('/')[0]
-                elif '/git/' in parsed.path:
-                    repo_name = parsed.path.split('/git/')[1].split('/')[0]
-                else:
-                    continue
-                new_url = f'https://git.savannah.gnu.org/git/{repo_name}'
-            elif 'savannah.gnu.org' in host or 'git.savannah' in host:
-                continue
-        skip_patterns = ("bugzilla", "viewtopic", "inbox.", "mail.python.org",
-                         "openwall.com", "cve.org", "nvd.nist.gov",
-                         "/archives/", "/advisories/", "/lists/",
-                         "seclists.org")
-        if any(p in new_url for p in skip_patterns):
-            continue
-        # Must look like a git-hosting URL (contains a known forge or ends in .git)
-        git_indicators = ("github.com", "gitlab.com", "gitlab.", "git.savannah",
-                          "sourceware.org/git", "git.kernel.org", "git.openssl.org",
-                          "git.gnome.org", "git.freedesktop.org", "codeberg.org",
-                          "bitbucket.org", ".git")
-        if any(g in new_url for g in git_indicators):
-            return new_url.rstrip('/')
+        result = deduce_repo_url(url)
+        if result:
+            return result
     return None
 
 

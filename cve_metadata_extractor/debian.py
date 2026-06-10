@@ -20,14 +20,15 @@ from .mirrors import ensure_data_repo
 from .sources import SOURCE_REGISTRY, CveSource
 from .utils import (
     _GITLAB_ISSUE_RE,
-    CVE_ID_RE,
     URL_RE,
-    find_hash,
+    extract_commit_hash,
     process_gitlab_issue_url,
     process_pr_url,
 )
 
 _cfg = load_config()
+
+CVE_ID_RE = re.compile(r'^(CVE-\d{4}-\d+)\s')
 SNAPSHOT_API = _cfg['snapshot_api']
 DSA_RE = re.compile(r'\{([^}]+)\}')
 FIX_LINE_RE = re.compile(r'^\t\[(\w+)\]\s+-\s+(\S+)\s+(.+)')
@@ -403,7 +404,7 @@ def extract_from_debian_tracker(cve_id, debian_data, stats):
                 process_pr_url(url, series)
             elif _GITLAB_ISSUE_RE.match(url):
                 process_gitlab_issue_url(url, series)
-            h = find_hash(url)
+            h = extract_commit_hash(url)
             if h:
                 hashes.append({'hash': h, 'url': url, 'source': 'debian',
                                'type': note_type})
@@ -422,6 +423,53 @@ def extract_from_debian_tracker(cve_id, debian_data, stats):
         stats['debian_patches'] += 1
     references = [{'url': r, 'source': 'debian'} for r in references]
     return hashes, patches, series, references
+
+
+def download_commit_patches(cve_id, hash_details, cache_dir):
+    '''Download .patch files from Debian commit/patch URLs.
+
+    Returns list of local file paths for downloaded patches.
+    '''
+    patch_dir = os.path.join(cache_dir, cve_id)
+    os.makedirs(patch_dir, exist_ok=True)
+    downloaded = []
+    for detail in hash_details:
+        url = detail.get('url', '')
+        if detail.get('source') != 'debian':
+            continue
+        h = detail.get('hash', '')
+        if url.endswith('.patch'):
+            patch_url, filename = url, os.path.basename(url)
+            if not filename:
+                continue
+        elif '/commit/' in url:
+            patch_url = url.rstrip('/') + '.patch'
+            filename = f"{h[:12]}.patch" if h else 'unknown.patch'
+        else:
+            continue
+        filepath = os.path.join(patch_dir, filename)
+        if os.path.exists(filepath):
+            downloaded.append(filepath)
+            print(f"  Using cached patch: {filename}")
+            continue
+        try:
+            resp = requests.get(patch_url, timeout=30, stream=True)
+            resp.raise_for_status()
+            content_length = int(resp.headers.get('content-length', 0))
+            if content_length > 10_000_000:
+                print(f"  Skipping {filename}: too large ({content_length} bytes)")
+                continue
+            content = resp.text
+            if len(content) > 10_000_000:
+                print(f"  Skipping {filename}: too large ({len(content)} bytes)")
+                continue
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+            downloaded.append(filepath)
+            print(f"  Downloaded patch: {filename}")
+        except Exception as err:  # pylint: disable=broad-except
+            print(f"  Failed to download {patch_url}: {err}")
+    return downloaded
 
 
 class DebianSource(CveSource):
@@ -477,7 +525,6 @@ class DebianSource(CveSource):
             return
 
         if metadata['hashes']:
-            from .utils import download_commit_patches
             paths = download_commit_patches(
                 cve_id, metadata['hashes'], args.cache)
             if paths:

@@ -11,7 +11,7 @@ from .config import load_config
 from .sources import SOURCE_REGISTRY, CveSource
 from .utils import (
     _GITLAB_ISSUE_RE,
-    find_hash,
+    extract_commit_hash,
     process_gitlab_issue_url,
     process_pr_url,
     tag_results,
@@ -126,7 +126,7 @@ def extract_from_osv_response(osv_data):
             process_gitlab_issue_url(url, series)
         if ref_type in ('FIX', 'PATCH'):
             patch_links.append({'url': url, 'tags': ref_type.lower()})
-            h = find_hash(url)
+            h = extract_commit_hash(url)
             if h and not any(e['hash'] == h for e in hashes):
                 hashes.append({'hash': h, 'url': url})
 
