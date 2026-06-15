@@ -14,11 +14,13 @@ from cve_metadata_extractor.ubuntu import (
 )
 
 
+@patch('cve_metadata_extractor.ubuntu.time.sleep')
 class TestGetUbuntuCve(unittest.TestCase):
     '''Test Ubuntu API client with caching.'''
 
-    def test_caches_response(self):
+    def test_caches_response(self, _mock_sleep):
         '''API response is cached to file.'''
+        from shared.json_cache import cache_exists
         with tempfile.TemporaryDirectory() as tmpdir:
             ubuntu_data = {'id': 'CVE-2026-35386', 'patches': {}}
             with patch('cve_metadata_extractor.ubuntu.requests.get') as mock_get:
@@ -30,11 +32,10 @@ class TestGetUbuntuCve(unittest.TestCase):
 
                 result = get_ubuntu_cve(tmpdir, 'CVE-2026-35386')
                 self.assertEqual(result, ubuntu_data)
-                self.assertTrue(
-                    os.path.isfile(
-                        os.path.join(tmpdir, 'CVE-2026-35386-ubuntu.json.gz')))
+                cache_file = os.path.join(tmpdir, 'CVE-2026-35386-ubuntu.json')
+                self.assertTrue(cache_exists(cache_file))
 
-    def test_uses_cache_on_second_call(self):
+    def test_uses_cache_on_second_call(self, _mock_sleep):
         '''Second call reads from cache, no API request.'''
         with tempfile.TemporaryDirectory() as tmpdir:
             ubuntu_data = {'id': 'CVE-2026-35386', 'patches': {}}
@@ -47,7 +48,7 @@ class TestGetUbuntuCve(unittest.TestCase):
                 self.assertEqual(result, ubuntu_data)
                 mock_get.assert_not_called()
 
-    def test_refresh_bypasses_cache(self):
+    def test_refresh_bypasses_cache(self, _mock_sleep):
         '''refresh=True re-fetches even if cache exists.'''
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_file = os.path.join(tmpdir, 'CVE-2026-35386-ubuntu.json')
@@ -66,7 +67,33 @@ class TestGetUbuntuCve(unittest.TestCase):
                 self.assertEqual(result, new_data)
                 mock_get.assert_called_once()
 
-    def test_404_returns_empty_dict(self):
+    def test_gives_up_warning_after_retries(self, _mock_sleep):
+        '''Logs warning when all retries are exhausted.'''
+        import requests as req
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('cve_metadata_extractor.ubuntu.requests.get') as mock_get:
+                mock_get.side_effect = req.ConnectionError('timeout')
+                with self.assertLogs('root', level='WARNING') as cm:
+                    result = get_ubuntu_cve(tmpdir, 'CVE-2026-99999')
+                self.assertEqual(result, {})
+                self.assertTrue(any('Gave up fetching Ubuntu data' in m
+                                    for m in cm.output))
+
+    def test_retries_on_429_then_succeeds(self, _mock_sleep):
+        '''429 triggers retry; success on next attempt.'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            resp_429 = MagicMock(status_code=429)
+            resp_200 = MagicMock(status_code=200)
+            resp_200.json.return_value = {'id': 'CVE-2026-1234'}
+            resp_200.raise_for_status = MagicMock()
+
+            with patch('cve_metadata_extractor.ubuntu.requests.get',
+                       side_effect=[resp_429, resp_200]) as mock_get:
+                result = get_ubuntu_cve(tmpdir, 'CVE-2026-1234')
+                self.assertEqual(result['id'], 'CVE-2026-1234')
+                self.assertEqual(mock_get.call_count, 2)
+
+    def test_404_returns_empty_dict(self, _mock_sleep):
         '''404 response caches and returns empty dict.'''
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch('cve_metadata_extractor.ubuntu.requests.get') as mock_get:
