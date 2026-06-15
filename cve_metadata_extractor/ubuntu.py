@@ -40,21 +40,45 @@ def get_ubuntu_cve(cache, cve_id, refresh=False):
     if cache_exists(cache_file) and not refresh:
         return cache_load(cache_file)
 
-    try:
-        time.sleep(0.05)
-        resp = requests.get(
-            f'{UBUNTU_API}/security/cves/{cve_id}.json', timeout=10)
-        if resp.status_code == 404:
-            data = {}
-        else:
+    max_retries = 3
+    base_delay = float(_cfg.get('ubuntu_delay', 1.0))
+    data = {}
+    for attempt in range(max_retries):
+        try:
+            time.sleep(base_delay * (2 ** attempt))
+            resp = requests.get(
+                f'{UBUNTU_API}/security/cves/{cve_id}.json', timeout=30)
+            if resp.status_code == 404:
+                break
+            if resp.status_code == 429:
+                logging.warning('Ubuntu API rate limited for %s, retrying...',
+                                cve_id)
+                continue
             resp.raise_for_status()
             data = resp.json()
-    except requests.RequestException as e:
-        logging.warning('Ubuntu API request failed for %s: %s', cve_id, e)
-        data = {}
+            break
+        except requests.RequestException as e:
+            logging.warning('Ubuntu API request failed for %s (attempt %d/%d):'
+                            ' %s', cve_id, attempt + 1, max_retries, e)
+    else:
+        logging.warning('Gave up fetching Ubuntu data for %s after %d'
+                        ' attempts', cve_id, max_retries)
 
     cache_dump(data, cache_file)
     return data
+
+
+def _process_url(url, hashes, patch_links, series, *, add_patch_link=False):
+    '''Extract hash, detect PRs/issues, and add to results for a single URL.'''
+    if '/pull/' in url:
+        process_pr_url(url, series)
+    elif _GITLAB_ISSUE_RE.match(url):
+        process_gitlab_issue_url(url, series)
+    h = extract_commit_hash(url)
+    if h and not any(e['hash'] == h for e in hashes):
+        hashes.append({'hash': h, 'url': url})
+        if add_patch_link:
+            patch_links.append({'url': url, 'tags': 'fix'})
 
 
 def extract_from_ubuntu_response(ubuntu_data):
@@ -82,27 +106,14 @@ def extract_from_ubuntu_response(ubuntu_data):
                 continue
             url = match.group(0)
             patch_links.append({'url': url, 'tags': 'patch'})
-            if '/pull/' in url:
-                process_pr_url(url, series)
-            elif _GITLAB_ISSUE_RE.match(url):
-                process_gitlab_issue_url(url, series)
-            h = extract_commit_hash(url)
-            if h and not any(e['hash'] == h for e in hashes):
-                hashes.append({'hash': h, 'url': url})
+            _process_url(url, hashes, patch_links, series)
 
     # Extract from references list
     for url in ubuntu_data.get('references') or []:
         if not url:
             continue
         references.append(url)
-        if '/pull/' in url:
-            process_pr_url(url, series)
-        elif _GITLAB_ISSUE_RE.match(url):
-            process_gitlab_issue_url(url, series)
-        h = extract_commit_hash(url)
-        if h and not any(e['hash'] == h for e in hashes):
-            hashes.append({'hash': h, 'url': url})
-            patch_links.append({'url': url, 'tags': 'fix'})
+        _process_url(url, hashes, patch_links, series, add_patch_link=True)
 
     return patch_links, hashes, series, references
 
