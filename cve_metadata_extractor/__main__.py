@@ -20,7 +20,7 @@ from . import osv as _osv  # noqa: F401
 from . import ubuntu as _ubuntu  # noqa: F401
 from .config import load_config
 from .sources import SOURCE_REGISTRY
-from .utils import PR_CACHE
+from .utils import PR_CACHE, deduplicate_metadata
 
 
 def _get_version() -> str:
@@ -230,6 +230,88 @@ def _print_summary(results, stats, args):
                   f"to: {os.path.abspath(args.cache)}")
 
 
+def _iter_sources(entries):
+    '''Yield unique source names from hash_details or patch_details entries.'''
+    seen = set()
+    for entry in entries:
+        for s in entry.get('source', '').split(', '):
+            if s and s not in seen:
+                seen.add(s)
+                yield s
+
+
+def _expand_sources(entries):
+    '''Expand multi-source entries into individual single-source copies.'''
+    for entry in entries:
+        for s in entry.get('source', '').split(', '):
+            if s:
+                yield dict(entry, source=s)
+
+
+def _accumulate_stats(result, stats, *, only_sources=None):
+    '''Count per-source statistics from an existing result entry.
+
+    Args:
+        result: A CVE result dict with hash_details/patch_details.
+        stats: Mutable stats dict to increment.
+        only_sources: If set, only count these source names.
+    '''
+    for s in _iter_sources(result.get('hash_details', [])):
+        if only_sources and s not in only_sources:
+            continue
+        key = f'{s}_hashes'
+        if key in stats:
+            stats[key] += 1
+    for s in _iter_sources(result.get('patch_details', [])):
+        if only_sources and s not in only_sources:
+            continue
+        key = f'{s}_patches'
+        if key in stats:
+            stats[key] += 1
+
+
+def _merge_results(existing, new):
+    '''Merge new result into existing, preserving data from inactive sources.
+
+    Deduplicates hash_details by hash and patch_details by url,
+    combining source strings. References and series are merged by key.
+    '''
+    all_hashes = list(_expand_sources(
+        existing.get('hash_details', []) + new.get('hash_details', [])))
+    all_patches = list(_expand_sources(
+        existing.get('patch_details', []) + new.get('patch_details', [])))
+    merged_hashes, merged_patches = deduplicate_metadata(all_hashes, all_patches)
+
+    # Merge references by url
+    ref_dict = {}
+    for ref in existing.get('references', []) + new.get('references', []):
+        url = ref['url']
+        if url not in ref_dict:
+            ref_dict[url] = {'url': url, 'sources': list(ref.get('sources', []))}
+        else:
+            ref_dict[url]['sources'].extend(ref.get('sources', []))
+    merged_refs = [{'url': r['url'], 'sources': sorted(set(r['sources']))}
+                   for r in ref_dict.values()]
+
+    # Merge series by pull_url
+    seen_series = {}
+    for s in existing.get('series', []) + new.get('series', []):
+        seen_series.setdefault(s['pull_url'], s)
+    merged_series = list(seen_series.values())
+
+    # Start from new result (has updated scalar fields), override list fields
+    merged = dict(new)
+    merged['hash_details'] = merged_hashes
+    merged['hashes'] = [h['hash'] for h in merged_hashes]
+    merged['patch_details'] = merged_patches
+    merged['patches'] = [p['url'] for p in merged_patches]
+    merged['references'] = merged_refs
+    if merged_series:
+        merged['series'] = merged_series
+
+    return merged
+
+
 def main():
     '''Main function.'''
     cfg = load_config()
@@ -304,12 +386,23 @@ def main():
                     PR_CACHE.pop(ref['url'], None)
                 reprocessed += 1
             else:
+                _accumulate_stats(existing_results[cve_id], stats)
                 skipped += 1
                 continue
         result = process_cve(
             cve, idx, len(known_affected), args,
             active_sources, stats, oe_token)
         if result:
+            if cve_id in existing_results:
+                result = _merge_results(existing_results[cve_id], result)
+                # Count stats for inactive sources preserved from existing data
+                active_names = {s.name for s in active_sources}
+                inactive = (
+                    set(_iter_sources(existing_results[cve_id].get('hash_details', [])))
+                    | set(_iter_sources(existing_results[cve_id].get('patch_details', [])))
+                ) - active_names
+                _accumulate_stats(existing_results[cve_id], stats,
+                                  only_sources=inactive)
             results[cve_id] = result
 
     if skipped:
