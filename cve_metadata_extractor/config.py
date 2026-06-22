@@ -42,11 +42,11 @@ def load_config(config_path=None):
 
     # Resolve relative paths to XDG directories
     _data = str(data_dir())
-    _shared_data = os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share'))
+    _shared_data = os.environ.get('CVE_TOOLS_DATA_DIR') or os.environ.get(
+        'XDG_DATA_HOME', str(Path.home() / '.local' / 'share'))
     cfg.setdefault('cache_dir', str(cache_dir() / 'cves'))
     cfg.setdefault('pr_cache_file', f'{_data}/github-pulls.json')
     cfg.setdefault('repo_dir', f'{_data}/repos')
-    # Shared data sources (reusable by other tools)
     cfg.setdefault('debian_tracker_dir', f'{_shared_data}/security-tracker')
     cfg.setdefault('cvelistv5_dir', f'{_shared_data}/cvelistV5')
     cfg.setdefault('nvd_dir', f'{_shared_data}/nvd')
