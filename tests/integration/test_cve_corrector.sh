@@ -201,6 +201,7 @@ run_loop() {
             9) exit_name="DEVTOOL_ERROR" ;;
             10) exit_name="BUILD_PREEXISTING" ;;
             11) exit_name="ALREADY_APPLIED" ;;
+            12) exit_name="NOT_APPLICABLE" ;;
             99) exit_name="TIMEOUT" ;;
             *) exit_name="UNKNOWN_${exit_code}" ;;
         esac
@@ -229,6 +230,8 @@ run_loop() {
                 echo "⊘ pre-existing build failure (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
             11) status="ALREADY_APPLIED"; success=$((success + 1)); identical=$((identical + 1))
                 echo "✓ ALREADY_APPLIED (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+            12) status="SKIP_NOT_APPLICABLE"; skip=$((skip + 1))
+                echo "⊘ not applicable (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
             *) status="FAIL_${exit_name}"; fail=$((fail + 1))
                 echo "✗ $exit_name (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
         esac
