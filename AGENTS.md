@@ -27,6 +27,7 @@
 │   ├── orchestrator.py          # Resolution loop (run corrector → AI → retry)
 │   ├── session.py               # Guarded sessions (file-scope enforcement)
 │   ├── backend.py               # AIBackend interface + KiroBackend
+│   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
 │   └── context.py / knowledge.py / review.py
 ├── extra/                       # Plugin directory (.gitignore'd .py files)
 └── tests/{agent,corrector,extractor,shared}/
