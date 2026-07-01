@@ -171,3 +171,11 @@ def load_extra_backends() -> None:
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
         except Exception as e:
             logging.debug("Extra backend load %s: %s", py_file.name, e)
+
+
+# Register additional built-in backends. Imported here (after the registry
+# helpers are defined) so ClaudeBackend can import AIBackend/SessionResult from
+# this module without a circular import.
+from .claude_backend import ClaudeBackend  # noqa: E402
+
+register_backend(ClaudeBackend())

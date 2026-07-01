@@ -214,9 +214,10 @@ def _parse_args() -> argparse.Namespace:
     # --- AI session ---
     ai_group = parser.add_argument_group('AI session')
     ai_group.add_argument('--backend', default='kiro',
-                        help='AI backend to use (default: %(default)s)')
+                        help='AI backend: kiro or claude (default: %(default)s)')
     ai_group.add_argument('--model', default='claude-sonnet-4.6',
-                        help='Model for AI sessions (default: %(default)s)')
+                        help='Model for AI sessions; the claude backend also '
+                             'accepts aliases like sonnet/opus (default: %(default)s)')
     ai_group.add_argument('--max-retries', type=int, default=DEFAULT_MAX_RETRIES,
                         help='Max resolution attempts (default: %(default)s)')
     ai_group.add_argument('--session-timeout', type=int,
@@ -301,6 +302,18 @@ def main() -> None:
 
     if args.backend == 'kiro':
         ensure_agents(interactive=not args.trust)
+    else:
+        from .backend import get_backend
+        try:
+            backend = get_backend(args.backend)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(EXIT_AGENT_ERROR)
+        if not backend.is_available():
+            print(f"Error: backend '{args.backend}' prerequisites not met — "
+                  "is the required CLI installed and on PATH?", file=sys.stderr)
+            sys.exit(EXIT_AGENT_ERROR)
+        backend.setup(interactive=not args.trust)
 
     if args.trust and not _show_trust_warning():
         print("Trust mode declined. Exiting.")
