@@ -16,7 +16,7 @@ Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 - Python 3.9+
 - Git
 - For `cve-corrector` / `cve-agent`: a sourced Yocto build environment (`BBPATH` set)
-- For `cve-agent`: [kiro-cli](https://github.com/aws/kiro-cli) (or a custom AI backend plugin)
+- For `cve-agent`: an AI backend — [kiro-cli](https://github.com/aws/kiro-cli) (default) or [Claude Code](https://code.claude.com) (`--backend claude`), or a custom backend plugin
 
 ## Installation
 
@@ -62,15 +62,27 @@ cve-corrector --continue
 ### AI-assisted backporting
 
 ```bash
-# Requires kiro-cli (or another AI backend)
+# Requires an AI backend CLI: kiro-cli (default) or Claude Code
 cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust
 
 # Batch mode
 cve-agent --cve-list cves.txt --cve-info cve-metadata.json --trust
 
-# Use a different AI backend
+# Use the Claude Code backend (install and authenticate the `claude` CLI first)
+cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend claude --model sonnet
+
+# Use a custom backend plugin from extra/
 cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend my_backend
 ```
+
+**AI backends.** `kiro` (default) drives [kiro-cli](https://github.com/aws/kiro-cli);
+`claude` drives the [Claude Code](https://code.claude.com) `claude` CLI directly.
+The Claude Code backend needs a recent `claude` on `PATH`, already authenticated
+(Anthropic API key, or Bedrock/Vertex), supporting `-p`, `--permission-mode`,
+`--allowedTools`/`--disallowedTools`, `--append-system-prompt`, and `--add-dir`.
+Pass `--model sonnet|opus|haiku` (or a full model id); the default
+`claude-sonnet-4.6` is mapped to `sonnet`. Both backends run under the same
+file-scope guard, so the AI can only modify the files the upstream fix touches.
 
 ## How It Works
 
