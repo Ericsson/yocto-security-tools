@@ -20,7 +20,17 @@ Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 
 ## Installation
 
+### From PyPI
+
 ```bash
+pip install yocto-security-tools
+```
+
+### From source (development)
+
+```bash
+git clone https://github.com/Ericsson/yocto-security-tools.git
+cd yocto-security-tools
 pip install -e .
 ```
 

@@ -8,14 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-05-25
 
+Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
+
 ### Added
 
-- **cve-metadata-extractor**: Find fix commits from Debian tracker, OSV, CVEList V5, and Ubuntu
+- **cve-metadata-extractor**: Find fix commits from multiple public sources (Debian, OSV, CVEList V5, Ubuntu)
 - **cve-corrector**: Automate CVE backporting to Yocto recipes via devtool
 - **cve-agent**: AI-assisted conflict resolution for CVE backports
 - Plugin system for custom CVE sources and AI backends (`extra/` directory)
 - XDG Base Directory compliant data/cache storage
-- GitHub Actions CI (lint, type check, tests across Python 3.9–3.12)
+- Minimal dependencies: only `requests` and `packaging`
+- Python 3.10+ supported
+- GitHub Actions CI (lint, type check, tests across Python 3.10–3.13)
+- Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
 [1.0.0]: https://github.com/Ericsson/yocto-security-tools/releases/tag/v1.0.0

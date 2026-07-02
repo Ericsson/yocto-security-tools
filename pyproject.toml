@@ -2,18 +2,30 @@
 [project]
 name = "yocto-security-tools"
 version = "1.0.0"
-description = "Standalone CVE management tools for Yocto/OpenEmbedded"
+description = "Standalone CVE management tools for Yocto/OpenEmbedded — find fix commits, automate backporting, and resolve conflicts with AI"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+authors = [
+    {name = "Daniel Turull (Ericsson AB)"},
+]
+maintainers = [
+    {name = "Daniel Turull", email = "daniel.turull@ericsson.com"},
+]
+keywords = ["cve", "yocto", "openembedded", "security", "backport", "devtool"]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
     "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Software Distribution",
 ]
 dependencies = [
     "requests>=2.28,<3",
