@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
@@ -52,8 +53,23 @@ jobs:
           open('pyproject.toml', 'w').write(text.replace(m.group(0), f'version = \"{new_ver}\"'))
           print(new_ver)
           ")
+          echo "NEW_VERSION=${NEW}" >> "$GITHUB_ENV"
+          BRANCH="chore/bump-version-${NEW}"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
+          git checkout -b "$BRANCH"
           git add pyproject.toml
-          git commit -s -m "chore: bump version to ${NEW} [skip ci]"
-          git push
+          git commit -s -m "chore: bump version to ${NEW}"
+          git push -u origin "$BRANCH"
+
+      - name: Create Pull Request
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: bump version to ${{ env.NEW_VERSION }}" \
+            --body "Automated patch version bump to ${{ env.NEW_VERSION }}." \
+            --base main \
+            --label "automated"
+          gh pr merge --auto --squash
