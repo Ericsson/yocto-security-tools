@@ -85,7 +85,7 @@ def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
 def _resolution_loop(config: AgentConfig, workspace_path: Path,
                      exit_code: int, cve_info: dict,
                      knowledge_base: KnowledgeBase) -> CveResult:
-    """Run the resolution loop: context -> kiro-cli -> approval -> continue."""
+    """Run the resolution loop: context -> AI backend -> approval -> continue."""
     start_time = time.monotonic()
     current_step = exit_code
     attempt = 0
@@ -138,14 +138,16 @@ def _run_single_resolution_attempt(
         backend_name=config.backend)
 
     if not session_result.resolved:
-        print(f"Kiro session did not resolve conflicts for {config.cve_id}")
+        print(f"{config.backend} session did not resolve conflicts for {config.cve_id}")
         if config.trust_mode:
             return _AttemptOutcome()
-        response = input("Retry kiro session? [y]es / [n]o (escalate): ").strip().lower()
+        response = input(
+            f"Retry {config.backend} session? [y]es / [n]o (escalate): "
+        ).strip().lower()
         if response in ('n', 'no'):
             return _AttemptOutcome(result=_make_result(
                 config.cve_id, ResultStatus.ESCALATED,
-                attempt, start_time, "Kiro session failed to resolve"
+                attempt, start_time, f"{config.backend} session failed to resolve"
             ))
         return _AttemptOutcome()
 
@@ -162,7 +164,8 @@ def _run_single_resolution_attempt(
     if not workspace_path.exists():
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.CONFLICT_RESOLVED,
-            attempt, start_time, "Resolved via kiro-cli (workspace finalized)"
+            attempt, start_time,
+            f"Resolved via {config.backend} (workspace finalized)"
         ))
 
     approval, feedback = request_approval(workspace_path, upstream_sha, config)
@@ -202,7 +205,7 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase,
         )
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.CONFLICT_RESOLVED,
-            attempt, start_time, "Resolved via kiro-cli"
+            attempt, start_time, f"Resolved via {config.backend}"
         ))
 
     if continue_exit in UNRECOVERABLE_EXITS:

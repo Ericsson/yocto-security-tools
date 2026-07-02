@@ -11,9 +11,11 @@ post-session revert installed by :func:`cve_agent.session.guarded_session`.
 The ``--allowedTools`` / ``--disallowedTools`` lists below are defense-in-depth
 mirrors of ``cve_agent/agents/yocto-cve-backport.json``.
 """
+import contextlib
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -21,6 +23,7 @@ from pathlib import Path
 from shared import build_git_env
 
 from .backend import AIBackend, SessionResult
+from .git import has_in_progress_operation
 
 # Packaged agent instructions, injected as the Claude system prompt for parity
 # with the kiro agent (whose ``prompt`` field points at the same file).
@@ -136,6 +139,13 @@ class ClaudeBackend(AIBackend):
         for path in _DENIED_WRITE:
             for tool in ("Edit", "Write"):
                 cmd += ["--disallowedTools", f"{tool}({path})"]
+        # "--" marks end-of-options: without it, claude's arg parser folds the
+        # trailing prompt word-by-word into the preceding --disallowedTools
+        # list instead of treating it as the prompt (reproduced: each word of
+        # the prompt showed up as its own bogus "Permission deny rule" error,
+        # and headless -p mode then failed with "Input must be provided
+        # either through stdin or as a prompt argument").
+        cmd.append("--")
         cmd.append(prompt)
         return cmd
 
@@ -151,27 +161,73 @@ class ClaudeBackend(AIBackend):
         env.update(_claude_auth_env())
         cmd = self._build_command(prompt, agent_dir, model, interactive)
 
+        pre_head = self._current_head(workspace_path)
         start = time.monotonic()
-        timed_out = False
+        interrupted = None
         try:
-            subprocess.run(cmd, cwd=workspace_path, env=env,
-                         check=False, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+            proc = subprocess.Popen(cmd, cwd=workspace_path, env=env,
+                                    start_new_session=True)
         except FileNotFoundError:
             logging.error(
                 "claude CLI not found. Install Claude Code or add it to PATH.")
-        except KeyboardInterrupt:
-            pass
+            proc = None
+
+        if proc is not None:
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                interrupted = "timed out"
+                self._kill_process_group(proc)
+            except KeyboardInterrupt:
+                interrupted = "was interrupted"
+                self._kill_process_group(proc)
 
         duration = time.monotonic() - start
-        if timed_out:
-            return SessionResult(resolved=False, duration=duration)
-
         resolved = self._check_resolution(workspace_path)
+        if interrupted and resolved:
+            # The session was killed before it exited normally — it may have
+            # already finished its git commit right before being killed, in
+            # which case HEAD moved and the resolution is real. But a clean
+            # tree with an unmoved HEAD means the session never got anywhere
+            # (e.g. a hard hang before touching git); don't credit that as
+            # resolved just because nothing was ever staged.
+            if self._current_head(workspace_path) == pre_head:
+                logging.warning(
+                    "claude session %s after %.1fs with no new commit in "
+                    "%s; treating as unresolved despite a clean git status",
+                    interrupted, duration, workspace_path)
+                resolved = False
+            else:
+                logging.warning(
+                    "claude session %s after %.1fs but had already "
+                    "committed a resolution in %s before being killed",
+                    interrupted, duration, workspace_path)
         return SessionResult(resolved=resolved, duration=duration)
 
+    @staticmethod
+    def _kill_process_group(proc: subprocess.Popen) -> None:
+        """SIGKILL the whole process group, not just the direct child.
+
+        ``proc`` was started with ``start_new_session=True`` so its pid is
+        also its process group id. Killing only the direct child would leave
+        a grandchild git process (e.g. one claude shelled out to for
+        ``cherry-pick --continue``) free to keep mutating the workspace while
+        the post-timeout resolution check reads git state right after.
+        """
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+
+    def _current_head(self, workspace_path: Path) -> str:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=workspace_path, capture_output=True, text=True, check=False)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
     def _check_resolution(self, workspace_path: Path) -> bool:
+        if has_in_progress_operation(workspace_path):
+            return False
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=workspace_path, capture_output=True, text=True, check=False)

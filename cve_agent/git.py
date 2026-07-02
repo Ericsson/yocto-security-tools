@@ -68,6 +68,25 @@ def get_all_upstream_shas(cve_info: dict, workspace_path: Path) -> list[str]:
     return [hashes[0]] if hashes else []
 
 
+def has_in_progress_operation(workspace_path: Path) -> bool:
+    """Check whether a cherry-pick or merge is still mid-flight.
+
+    Staging a conflicted file (`git add`) clears its U marker in `git status
+    --porcelain` output, but the operation itself isn't finalized until
+    `--continue` commits it. Both backends must treat this as unresolved even
+    when porcelain shows nothing outstanding, or a session that staged but
+    never continued looks identical to a genuinely finished one.
+
+    Args:
+        workspace_path: Path to workspace.
+
+    Returns:
+        True if CHERRY_PICK_HEAD or MERGE_HEAD is present under .git.
+    """
+    git_dir = workspace_path / '.git'
+    return (git_dir / 'CHERRY_PICK_HEAD').exists() or (git_dir / 'MERGE_HEAD').exists()
+
+
 def get_changed_files(git_args: list[str], cwd: Path) -> set[str]:
     """Run a git command and return the output lines as a set.
 

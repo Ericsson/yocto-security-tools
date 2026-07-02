@@ -311,6 +311,38 @@ class TestAgentConflictResolved:
 
         assert result.status == ResultStatus.CONFLICT_RESOLVED
 
+    def test_agent_conflict_resolved_summary_names_actual_backend(
+            self, make_upstream_repo, make_workspace, make_meta_layer,
+            mock_bitbake_env, tmp_path):
+        """The resolution summary must name whichever backend actually ran,
+        not a hardcoded "kiro-cli" — misleading once more than one backend
+        exists, since a claude-resolved CVE would be reported as kiro's work.
+        """
+        bare, hashes = make_upstream_repo(
+            files={'src/file.c': 'line1\nline2\nline3\nvulnerable\nline5\n'},
+            version_tag='v1.36.1',
+            fix_commits=[{'files': {'src/file.c': 'line1\nline2\nline3\nfixed\nline5\n'},
+                          'message': 'Fix vulnerability'}])
+
+        ws = make_workspace(bare, 'busybox', 'v1.36.1',
+                            existing_patch_commits=[
+                                {'files': {'src/file.c': 'line1\nline2\nline3\nexisting\nline5\n'},
+                                 'message': 'Existing patch'}])
+        meta = make_meta_layer('busybox', '1.36.1',
+                               existing_patches={'0001-Existing-patch.patch': 'p\n'})
+        mock_bitbake_env(ws, meta, 'busybox', '1.36.1')
+
+        cve_id = 'CVE-2026-26158'
+        cve_info_path = _write_cve_json(tmp_path, cve_id, 'busybox', hashes)
+        config = _cfg(cve_id, cve_info_path, meta, backend='claude')
+        kb = KnowledgeBase(tmp_path / 'kb.json')
+
+        result = _run(config, kb, session_side_effect=_resolve_conflict_side_effect)
+
+        assert result.status == ResultStatus.CONFLICT_RESOLVED
+        assert 'claude' in result.resolution_summary.lower()
+        assert 'kiro' not in result.resolution_summary.lower()
+
 
 # ---------------------------------------------------------------------------
 # Test 7: Conflict state resume

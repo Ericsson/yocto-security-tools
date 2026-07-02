@@ -11,6 +11,8 @@ from typing import Optional
 
 from shared import build_git_env
 
+from .git import has_in_progress_operation
+
 
 @dataclass
 class SessionResult:
@@ -82,6 +84,8 @@ class KiroBackend(AIBackend):
         return SessionResult(resolved=resolved, duration=duration)
 
     def _check_resolution(self, workspace_path: Path) -> bool:
+        if has_in_progress_operation(workspace_path):
+            return False
         result = subprocess.run(
             ['git', 'status', '--porcelain'],
             cwd=workspace_path, capture_output=True, text=True, check=False)
