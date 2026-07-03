@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [project]
 name = "yocto-security-tools"
-version = "1.0.1"
+version = "1.0.2"
 description = "Standalone CVE management tools for Yocto/OpenEmbedded — find fix commits, automate backporting, and resolve conflicts with AI"
 readme = "README.md"
 requires-python = ">=3.10"
