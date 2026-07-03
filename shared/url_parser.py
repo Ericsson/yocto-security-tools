@@ -228,6 +228,21 @@ def deduce_repo_url(url: str) -> Optional[str]:
     if 'savannah.gnu.org' in host:
         return None  # lookalike host
 
+    # Sourceware /cgit/ or /git/ path style
+    # (e.g. https://sourceware.org/cgit/bzip2/commit/?id=... -> .../git/bzip2)
+    if host == 'sourceware.org' or host.endswith('.sourceware.org'):
+        if '/cgit/' in parsed.path:
+            repo_name = parsed.path.split('/cgit/')[1].split('/')[0]
+        elif '/git/' in parsed.path:
+            repo_name = parsed.path.split('/git/')[1].split('/')[0]
+        else:
+            return None
+        if not repo_name:
+            return None
+        return f'https://sourceware.org/git/{repo_name}'
+    if 'sourceware.org' in host:
+        return None  # lookalike host
+
     # Strip commit/PR/MR path suffixes to get base repo URL
     base_url = (url.replace("gitweb.cgi?p=", "")
                 .split("-/commit")[0].split("-/merge_requests")[0]

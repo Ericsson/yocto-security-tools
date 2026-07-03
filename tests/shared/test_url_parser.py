@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from shared.url_parser import (
+    deduce_repo_url,
     extract_commit_hash,
     fetch_github_pr_commits,
     fetch_gitlab_issue_commits,
@@ -156,3 +157,36 @@ class TestFetchGitlabIssueCommits:
 
         headers = mock_get.call_args[1].get('headers', {})
         assert 'PRIVATE-TOKEN' not in headers
+
+
+class TestDeduceRepoUrl:
+    def test_sourceware_cgit_commit_url(self):
+        # Regression: CVE-2026-42250 fix commit lived in the bzip2 source repo,
+        # exposed via a /cgit/ URL that previously deduced to None.
+        url = ("https://sourceware.org/cgit/bzip2/commit/"
+               "?id=35d122a3df8b0cc4082a4d89fdc6ee99f375fe67")
+        assert deduce_repo_url(url) == "https://sourceware.org/git/bzip2"
+
+    def test_sourceware_git_path_url(self):
+        url = "https://sourceware.org/git/glibc/commit/?id=abc1234"
+        assert deduce_repo_url(url) == "https://sourceware.org/git/glibc"
+
+    def test_sourceware_gitweb_p_style(self):
+        url = "https://sourceware.org/git/gitweb.cgi?p=glibc.git;a=commit;h=abc1234"
+        assert deduce_repo_url(url) == "https://sourceware.org/git/glibc.git"
+
+    def test_sourceware_lookalike_host_rejected(self):
+        url = "https://sourceware.org.evil.com/cgit/bzip2/commit/?id=abc1234"
+        assert deduce_repo_url(url) is None
+
+    def test_sourceware_no_repo_path(self):
+        url = "https://sourceware.org/bzip2/"
+        assert deduce_repo_url(url) is None
+
+    def test_savannah_cgit_still_works(self):
+        url = "https://git.savannah.gnu.org/cgit/coreutils.git/commit/?id=abc1234"
+        assert deduce_repo_url(url) == "https://git.savannah.gnu.org/git/coreutils.git"
+
+    def test_github_commit_url(self):
+        url = "https://github.com/owner/repo/commit/abc1234"
+        assert deduce_repo_url(url) == "https://github.com/owner/repo"
