@@ -459,6 +459,14 @@ def initialize_cve_workflow(
 
     logger.info("Processing %s for recipe: %s", cve_id, recipe)
 
+    # Pre-flight: fail fast if the meta-layer is on a detached HEAD, before the
+    # expensive devtool modify / ptest / build steps. devtool finish needs a
+    # branch to commit the CVE patch onto; catching it here avoids wasting a
+    # full build+ptest cycle only to fail at the finish step (see
+    # _ensure_layer_branch, also re-checked before finish as a safety net).
+    if config.meta_layer:
+        _ensure_layer_branch(config.meta_layer)
+
     workspace_path, version = setup_devtool_workspace(
         recipe, config.clean, config.skip_ptest)
     mirror_name = setup_upstream_remote(
