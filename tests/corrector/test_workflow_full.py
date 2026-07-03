@@ -815,3 +815,53 @@ class TestSetupUpstreamRemoteMismatchWarning:
             "differs from recipe SRC_URI" in str(c.args[0])
             for c in mock_logger.warning.call_args_list)
         assert not warned, "did not expect a mismatch warning for matching repos"
+
+
+class TestSetupUpstreamRemoteFixSource:
+    """On a repo mismatch, the deduced fix repo is added as a secondary
+    'upstream-fix' remote and fetched so fix commits/tags are reachable."""
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=0)
+    @patch("cve_corrector.workspace.run_cmd_capture")
+    @patch("cve_corrector.workspace.find_mirror_repo", return_value=None)
+    @patch("cve_corrector.workspace.get_recipe_src_uri_git",
+           return_value="git://sourceware.org/git/bzip2-tests.git")
+    def test_adds_and_fetches_fix_remote(
+            self, mock_src, mock_mirror, mock_capture, mock_cmd, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_capture.return_value = MagicMock(stdout="")  # git remote listings
+        setup_upstream_remote(
+            ws, None, tmp_path, "bzip2",
+            hash_details=[{
+                "hash": "35d122a3df8b0cc4082a4d89fdc6ee99f375fe67",
+                "url": ("https://sourceware.org/cgit/bzip2/commit/"
+                        "?id=35d122a3df8b0cc4082a4d89fdc6ee99f375fe67"),
+            }])
+        mock_cmd.assert_any_call(
+            ['git', 'remote', 'add', 'upstream-fix',
+             'https://sourceware.org/git/bzip2'], cwd=ws)
+        mock_cmd.assert_any_call(
+            ['git', 'fetch', 'upstream-fix', '--tags', '--progress'], cwd=ws)
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=0)
+    @patch("cve_corrector.workspace.run_cmd_capture")
+    @patch("cve_corrector.workspace.find_mirror_repo", return_value=None)
+    @patch("cve_corrector.workspace.get_recipe_src_uri_git",
+           return_value="https://github.com/openssl/openssl.git")
+    def test_no_fix_remote_when_repos_match(
+            self, mock_src, mock_mirror, mock_capture, mock_cmd, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_capture.return_value = MagicMock(stdout="")
+        setup_upstream_remote(
+            ws, None, tmp_path, "openssl",
+            hash_details=[{
+                "hash": "abc1234",
+                "url": "https://github.com/openssl/openssl/commit/abc1234",
+            }])
+        fix_calls = [
+            c for c in mock_cmd.call_args_list
+            if len(c.args) and isinstance(c.args[0], list)
+            and 'upstream-fix' in c.args[0]]
+        assert not fix_calls, "should not add a fix remote when repos match"

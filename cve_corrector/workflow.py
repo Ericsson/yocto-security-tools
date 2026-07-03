@@ -487,8 +487,11 @@ def initialize_cve_workflow(
     log_cmd = ['git', 'log', '--grep', f'CVE: {cve_id}', '--format=%h %s',
                'original-version']
     remotes = run_cmd_capture(['git', 'remote'], cwd=workspace_path)
-    if 'upstream' in remotes.stdout:
-        log_cmd += ['--not', '--remotes=upstream']
+    remote_names = remotes.stdout.split()
+    upstream_remotes = [r for r in remote_names if r.startswith('upstream')]
+    if upstream_remotes:
+        log_cmd.append('--not')
+        log_cmd += [f'--remotes={r}' for r in upstream_remotes]
     existing = run_cmd_capture(log_cmd, cwd=workspace_path)
     if existing.stdout.strip():
         logger.info("CVE %s: already patched in recipe — %s",

@@ -102,6 +102,10 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
 
     # Determine the recipe's authoritative upstream URL for comparison
     recipe_upstream: Optional[str] = None
+    # A patch-deduced repo that differs from the fetch source (e.g. the fix
+    # commit lives in bzip2 while the recipe SRC_URI is bzip2-tests). When set,
+    # it is fetched as a secondary remote so the fix commits/tags are reachable.
+    fix_repo_url: Optional[str] = None
 
     if mirror_path:
         upstream_url: Optional[str] = str(mirror_path.absolute())
@@ -151,6 +155,7 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
                 logger.warning(
                     "⚠ Deduced upstream (%s) differs from recipe SRC_URI (%s) "
                     "— verify patch origin", deduced, recipe_upstream)
+                fix_repo_url = deduced
 
     logger.info("Adding upstream remote: %s", upstream_url)
     assert upstream_url is not None
@@ -165,6 +170,24 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
         logger.warning("Failed to fetch upstream — continuing without upstream history")
         run_cmd(['git', 'remote', 'remove', 'upstream'], cwd=workspace_path)
         return None
+
+    # When the fix commits live in a different repo than the recipe fetches,
+    # add that repo as a secondary remote and fetch it so the fix commits and
+    # their release tags are reachable for diff/blame/cherry-pick. This does
+    # not change the primary 'upstream' used as the build/version source.
+    if fix_repo_url:
+        logger.info("Adding fix-source remote: %s", fix_repo_url)
+        result = run_cmd_capture(['git', 'remote'], cwd=workspace_path)
+        if 'upstream-fix' not in result.stdout.split():
+            run_cmd(['git', 'remote', 'add', 'upstream-fix', fix_repo_url],
+                    cwd=workspace_path)
+        logger.info("Fetching fix-source references")
+        if run_cmd(['git', 'fetch', 'upstream-fix', '--tags', '--progress'],
+                   cwd=workspace_path) != 0:
+            logger.warning(
+                "Failed to fetch fix-source repo %s — fix commits may be "
+                "unavailable", fix_repo_url)
+            run_cmd(['git', 'remote', 'remove', 'upstream-fix'], cwd=workspace_path)
 
     # Return mirror_name if available, else derive from upstream URL
     if mirror_name:
