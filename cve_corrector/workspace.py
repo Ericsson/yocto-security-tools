@@ -138,10 +138,15 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
                     logger.warning("Could not deduce upstream repo")
                     return None
 
-        # Warn if deduced URL differs from recipe's known upstream
-        if recipe_upstream and upstream_url != recipe_upstream:
-            deduced = deduce_repo_from_patches(
-                [d['url'] for d in hash_details if d.get('url')])
+        # Warn if the patch-deduced upstream differs from the recipe's known
+        # upstream. This must run even when SRC_URI/UPSTREAM_CHECK_URI was used
+        # as the fetch source, to surface cases where the fix commit lives in a
+        # different repo than the recipe fetches (e.g. bzip2 vs bzip2-tests).
+        if recipe_upstream:
+            patch_urls = [d['url'] for d in hash_details if d.get('url')]
+            if not patch_urls and references:
+                patch_urls = [r['url'] for r in references if r.get('url')]
+            deduced = deduce_repo_from_patches(patch_urls)
             if deduced and _urls_differ(deduced, recipe_upstream):
                 logger.warning(
                     "⚠ Deduced upstream (%s) differs from recipe SRC_URI (%s) "

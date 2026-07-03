@@ -762,3 +762,56 @@ class TestSetupUpstreamRemoteSeriesFallback:
         result = setup_upstream_remote(
             ws, None, tmp_path, "libsolv", hash_details=[], series=[])
         assert result is None
+
+
+class TestSetupUpstreamRemoteMismatchWarning:
+    """The patch-deduced upstream must be compared against the recipe SRC_URI
+    even when SRC_URI is used as the fetch source (regression: CVE-2026-42250,
+    fix commit in bzip2 repo while recipe SRC_URI points to bzip2-tests)."""
+
+    @patch("cve_corrector.workspace.logger")
+    @patch("cve_corrector.workspace.run_cmd", return_value=0)
+    @patch("cve_corrector.workspace.run_cmd_capture")
+    @patch("cve_corrector.workspace.find_mirror_repo", return_value=None)
+    @patch("cve_corrector.workspace.get_recipe_src_uri_git",
+           return_value="git://sourceware.org/git/bzip2-tests.git")
+    def test_warns_when_patch_repo_differs_from_src_uri(
+            self, mock_src, mock_mirror, mock_capture, mock_cmd, mock_logger,
+            tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_capture.return_value = MagicMock(stdout="")  # git remote: no upstream
+        setup_upstream_remote(
+            ws, None, tmp_path, "bzip2",
+            hash_details=[{
+                "hash": "35d122a3df8b0cc4082a4d89fdc6ee99f375fe67",
+                "url": ("https://sourceware.org/cgit/bzip2/commit/"
+                        "?id=35d122a3df8b0cc4082a4d89fdc6ee99f375fe67"),
+            }])
+        warned = any(
+            "differs from recipe SRC_URI" in str(c.args[0])
+            for c in mock_logger.warning.call_args_list)
+        assert warned, "expected supply-chain mismatch warning"
+
+    @patch("cve_corrector.workspace.logger")
+    @patch("cve_corrector.workspace.run_cmd", return_value=0)
+    @patch("cve_corrector.workspace.run_cmd_capture")
+    @patch("cve_corrector.workspace.find_mirror_repo", return_value=None)
+    @patch("cve_corrector.workspace.get_recipe_src_uri_git",
+           return_value="https://github.com/openssl/openssl.git")
+    def test_no_warning_when_patch_repo_matches(
+            self, mock_src, mock_mirror, mock_capture, mock_cmd, mock_logger,
+            tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        mock_capture.return_value = MagicMock(stdout="")
+        setup_upstream_remote(
+            ws, None, tmp_path, "openssl",
+            hash_details=[{
+                "hash": "abc1234",
+                "url": "https://github.com/openssl/openssl/commit/abc1234",
+            }])
+        warned = any(
+            "differs from recipe SRC_URI" in str(c.args[0])
+            for c in mock_logger.warning.call_args_list)
+        assert not warned, "did not expect a mismatch warning for matching repos"
