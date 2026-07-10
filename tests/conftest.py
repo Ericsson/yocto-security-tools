@@ -38,7 +38,7 @@ def make_upstream_repo(tmp_path):
     def _factory(files: dict, version_tag: str, fix_commits: list,
                  monorepo_prefix: Optional[str] = None):
         bare = tmp_path / 'upstream.git'
-        git(tmp_path, 'init', '--bare', str(bare))
+        git(tmp_path, 'init', '--bare', '--initial-branch=main', str(bare))
 
         work = tmp_path / 'upstream_work'
         git(tmp_path, 'clone', str(bare), str(work))
