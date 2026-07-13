@@ -38,7 +38,12 @@ source_build_env() {
     if [[ -z "${BBPATH:-}" ]]; then
         log "Sourcing build environment from $BUILD_DIR..."
         [[ -n "$BUILDTOOLS_ENV" && -f "$BUILDTOOLS_ENV" ]] && source "$BUILDTOOLS_ENV"
-        local oe_init="${OE_DIR}/../oe-init-build-env"
+        # oe-init-build-env sets OEROOT=$(dirname "$THIS_SCRIPT"), so it lives at
+        # the root of the OE checkout itself — true for both poky (poky/) and a
+        # standalone openembedded-core checkout (whinlatter/wrynose have no poky
+        # branch). The ../ forms are kept as fallbacks for superproject layouts.
+        local oe_init="${OE_DIR}/oe-init-build-env"
+        [[ -f "$oe_init" ]] || oe_init="${OE_DIR}/../oe-init-build-env"
         [[ -f "$oe_init" ]] || oe_init="${OE_DIR}/../../oe-init-build-env"
         [[ -f "$oe_init" ]] || die "Cannot find oe-init-build-env relative to OE_DIR"
         set +u
