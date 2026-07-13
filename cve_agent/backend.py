@@ -104,6 +104,19 @@ class KiroBackend(AIBackend):
 _BACKENDS: dict[str, AIBackend] = {"kiro": KiroBackend()}
 
 
+def _ensure_builtin_backends() -> None:
+    """Register built-in backends that live in their own modules.
+
+    Imported lazily (not at module bottom) because those modules import
+    AIBackend/SessionResult from here — an import at the bottom of this
+    module makes ``import cve_agent.claude_backend`` fail with a circular
+    import whenever it is imported before ``cve_agent.backend``.
+    """
+    if "claude" not in _BACKENDS:
+        from .claude_backend import ClaudeBackend
+        _BACKENDS["claude"] = ClaudeBackend()
+
+
 def register_backend(backend: AIBackend) -> None:
     """Register an additional AI backend."""
     _BACKENDS[backend.name] = backend
@@ -111,6 +124,7 @@ def register_backend(backend: AIBackend) -> None:
 
 def get_backend(name: str = "kiro") -> AIBackend:
     """Get backend by name."""
+    _ensure_builtin_backends()
     if name not in _BACKENDS:
         raise ValueError(
             f"Unknown backend '{name}'. Available: {list(_BACKENDS.keys())}")
@@ -119,6 +133,7 @@ def get_backend(name: str = "kiro") -> AIBackend:
 
 def available_backends() -> list:
     """List registered backend names."""
+    _ensure_builtin_backends()
     return list(_BACKENDS.keys())
 
 
@@ -175,11 +190,3 @@ def load_extra_backends() -> None:
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
         except Exception as e:
             logging.debug("Extra backend load %s: %s", py_file.name, e)
-
-
-# Register additional built-in backends. Imported here (after the registry
-# helpers are defined) so ClaudeBackend can import AIBackend/SessionResult from
-# this module without a circular import.
-from .claude_backend import ClaudeBackend  # noqa: E402
-
-register_backend(ClaudeBackend())

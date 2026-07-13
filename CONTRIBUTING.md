@@ -58,8 +58,9 @@ See [extra/README.md](extra/README.md) for a complete example.
 
 The built-in backends are `kiro` (`KiroBackend`) and `claude` (`ClaudeBackend`),
 both in `cve_agent/`. `cve_agent/claude_backend.py` is a good reference for a
-first-class backend that shells out to a CLI: it is registered at import in
-`cve_agent/backend.py` (whereas `extra/` plugins are auto-discovered at runtime).
+first-class backend that shells out to a CLI: it is registered on first use by
+`_ensure_builtin_backends()` in `cve_agent/backend.py` (whereas `extra/` plugins
+are auto-discovered at runtime).
 
 ## Commit Messages
 
