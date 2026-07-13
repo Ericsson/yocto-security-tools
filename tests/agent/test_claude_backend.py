@@ -3,10 +3,12 @@
 """Tests for the Claude Code (`claude` CLI) AI backend."""
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import cve_agent
 from cve_agent.backend import available_backends, get_backend
 from cve_agent.claude_backend import (
     _DENIED_READ_WRITE,
@@ -72,6 +74,19 @@ def test_claude_backend_registered():
     backend = get_backend("claude")
     assert backend.name == "claude"
     assert isinstance(backend, ClaudeBackend)
+
+
+def test_claude_backend_module_imports_standalone():
+    """Regression: importing cve_agent.claude_backend BEFORE cve_agent.backend
+    used to raise ImportError — backend.py's module-bottom registration import
+    re-entered the partially initialized claude_backend module. A fresh
+    interpreter is the only reliable way to test import order.
+    """
+    project_root = Path(cve_agent.__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-c", "import cve_agent.claude_backend"],
+        capture_output=True, text=True, check=False, cwd=project_root)
+    assert result.returncode == 0, result.stderr
 
 
 def test_is_available_true(monkeypatch):
@@ -178,6 +193,36 @@ def test_run_session_passes_claude_auth_env(tmp_path, monkeypatch):
     _, claude_kwargs = popen_calls[0]
     assert claude_kwargs["env"]["ANTHROPIC_API_KEY"] == "sk-test-123"
     assert claude_kwargs["env"]["CLAUDE_CODE_USE_BEDROCK"] == "1"
+
+
+def test_run_session_excludes_unrelated_secrets(tmp_path, monkeypatch):
+    """Restoring Claude auth vars must not reopen the filtered environment:
+    secrets outside the Claude/cloud allow-set stay out of the session env.
+    (The inverse of test_run_session_passes_claude_auth_env.)
+    """
+    workspace = _make_workspace(tmp_path)
+    secrets = {
+        "GITHUB_TOKEN": "ghp_secret",
+        "OPENAI_API_KEY": "sk-other-vendor",
+        "GPG_PASSPHRASE": "hunter2",
+        "DATABASE_URL": "postgres://user:pass@host/db",
+        "MY_APP_SECRET": "s3cr3t",
+    }
+    for key, value in secrets.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-123")
+    popen_calls = []
+
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.Popen",
+                        _popen_ctor(popen_calls))
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.run", _git_stub())
+    ClaudeBackend().run_session("prompt", workspace, set(), "sonnet", 60, False)
+
+    _, claude_kwargs = popen_calls[0]
+    session_env = claude_kwargs["env"]
+    for key in secrets:
+        assert key not in session_env
+    assert session_env["ANTHROPIC_API_KEY"] == "sk-test-123"
 
 
 def test_run_session_missing_binary_does_not_crash(tmp_path, monkeypatch):
