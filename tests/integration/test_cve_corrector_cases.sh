@@ -28,6 +28,12 @@ LOG_DIR="${SCRIPT_DIR}/test-results/cases_$(date +%Y%m%d_%H%M%S)"
 RESULTS_FILE="${LOG_DIR}/results.txt"
 RUN_TEST=""
 
+# AI backend for the agent test cases (6, 7, 11, 13). Any backend registered
+# with cve_agent works: kiro (default), claude, or a plugin from extra/.
+# AGENT_MODEL optionally overrides the model passed to the backend.
+AGENT_BACKEND="${AGENT_BACKEND:-kiro}"
+AGENT_MODEL="${AGENT_MODEL:-}"
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --test) shift; RUN_TEST="$1" ;;
@@ -172,12 +178,17 @@ run_test() {
     log "  [$TEST_NUM] Running $runner..."
     local exit_code=0
     if [[ "$runner" == "agent" ]]; then
+        local backend_flags=(--backend "${AGENT_BACKEND}")
+        if [[ -n "$AGENT_MODEL" ]]; then
+            backend_flags+=(--model "${AGENT_MODEL}")
+        fi
         echo "y" | python3 -m cve_agent \
             --cve-info "$metadata_file" \
             --cve-id "$cve_id" \
             --mirror-dir "$MIRROR_DIR" \
             --trust \
             --clean \
+            "${backend_flags[@]}" \
             $extra_flags \
             >> "$log_file" 2>&1 || exit_code=$?
     else
@@ -244,6 +255,7 @@ log "OE_DIR:     $OE_DIR"
 log "BUILD_DIR:  $BUILD_DIR"
 log "BBPATH:     ${BBPATH:-(not set)}"
 log "MIRROR_DIR: $MIRROR_DIR"
+log "BACKEND:    $AGENT_BACKEND${AGENT_MODEL:+ (model: $AGENT_MODEL)}"
 log "Results:    $LOG_DIR"
 echo
 

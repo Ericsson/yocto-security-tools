@@ -19,6 +19,8 @@ pytest                              # all tests
 pytest tests/corrector/ -v          # specific component
 pytest -m "not integration"         # skip integration tests
 pytest --cov --cov-report=term      # with coverage
+CLAUDE_LIVE_TESTS=1 pytest -m live  # live AI-backend smoke tests (needs an
+                                    # authenticated `claude` CLI on PATH)
 ```
 
 ## Code Quality

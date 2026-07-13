@@ -21,6 +21,8 @@ export MIRROR_DIR=/path/to/upstream-git     # Git mirrors of upstream repos
 Optional:
 ```bash
 export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
+export AGENT_BACKEND=claude    # AI backend for agent cases (default: kiro)
+export AGENT_MODEL=sonnet      # model override for the chosen backend
 ```
 
 ## Running
@@ -31,6 +33,22 @@ export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
 
 # Single test
 ./test_cve_corrector_cases.sh --test 2
+
+# Agent cases (6, 7, 11, 13) with the Claude Code backend
+# (requires an authenticated `claude` CLI on PATH)
+AGENT_BACKEND=claude ./test_cve_corrector_cases.sh --test 6
+```
+
+The agent test cases run whichever backend `AGENT_BACKEND` selects; any
+backend registered with `cve_agent` works (`kiro`, `claude`, or a plugin
+from `extra/`). `cve-agent` itself verifies the backend CLI is available
+before starting and exits with a clear error if not.
+
+For live pytest smoke tests of the Claude backend that do **not** need a
+Yocto build environment, see `tests/agent/test_claude_live.py`:
+
+```bash
+CLAUDE_LIVE_TESTS=1 pytest -m live -v
 ```
 
 ## Test Cases
