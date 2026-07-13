@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from cve_agent import AgentConfig
-from cve_agent.backend import KiroBackend
+from cve_agent.kiro_backend import KiroBackend
 
 _kiro = KiroBackend()
 

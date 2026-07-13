@@ -5,7 +5,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from cve_agent.backend import KiroBackend, SessionResult
+from cve_agent.backend import SessionResult
+from cve_agent.kiro_backend import KiroBackend
 from cve_agent.session import (
     _build_deviation_section,
     _extract_diff_hunks,
@@ -169,7 +170,7 @@ class TestGuardedKiroSession:
     @patch("cve_agent.session._write_audit_log")
     @patch("cve_agent.session.revert_unauthorized_changes")
     @patch("cve_agent.session.remove_scope_hook")
-    @patch("cve_agent.backend.KiroBackend.run_session",
+    @patch("cve_agent.kiro_backend.KiroBackend.run_session",
            return_value=SessionResult(resolved=True, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
     @patch("cve_agent.session.run_git_stdout", return_value="")
@@ -185,7 +186,7 @@ class TestGuardedKiroSession:
         assert result.resolved is True
 
     @patch("cve_agent.session.remove_scope_hook")
-    @patch("cve_agent.backend.KiroBackend.run_session",
+    @patch("cve_agent.kiro_backend.KiroBackend.run_session",
            return_value=SessionResult(resolved=False, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
     @patch("cve_agent.session.run_git_stdout", return_value="")

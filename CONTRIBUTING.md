@@ -58,11 +58,12 @@ See [extra/README.md](extra/README.md) for a complete example.
 3. Implement `run_session()` and `is_available()`
 4. Call `register_backend(YourBackend())`
 
-The built-in backends are `kiro` (`KiroBackend`) and `claude` (`ClaudeBackend`),
-both in `cve_agent/`. `cve_agent/claude_backend.py` is a good reference for a
-first-class backend that shells out to a CLI: it is registered on first use by
-`_ensure_builtin_backends()` in `cve_agent/backend.py` (whereas `extra/` plugins
-are auto-discovered at runtime).
+The built-in backends are `kiro` (`cve_agent/kiro_backend.py`) and `claude`
+(`cve_agent/claude_backend.py`) — one module per backend, so a new first-class
+backend is a new file next to them. Either is a good reference for a backend
+that shells out to a CLI: both are registered on first use by
+`_ensure_builtin_backends()` in `cve_agent/backend.py` (whereas `extra/`
+plugins are auto-discovered at runtime).
 
 ## Commit Messages
 

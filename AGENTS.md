@@ -26,7 +26,8 @@
 ├── cve_agent/                   # Tool 3: AI orchestration
 │   ├── orchestrator.py          # Resolution loop (run corrector → AI → retry)
 │   ├── session.py               # Guarded sessions (file-scope enforcement)
-│   ├── backend.py               # AIBackend interface + KiroBackend
+│   ├── backend.py               # AIBackend interface + backend registry
+│   ├── kiro_backend.py          # KiroBackend (drives `kiro-cli`, default)
 │   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
 │   └── context.py / knowledge.py / review.py
 ├── extra/                       # Plugin directory (.gitignore'd .py files)

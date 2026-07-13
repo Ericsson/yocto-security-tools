@@ -2,18 +2,20 @@
 # SPDX-License-Identifier: MIT
 """Tests for pluggable AI backend interface."""
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import cve_agent
 from cve_agent.backend import (
     AIBackend,
-    KiroBackend,
     SessionResult,
     available_backends,
     get_backend,
     register_backend,
 )
+from cve_agent.kiro_backend import KiroBackend
 
 
 def _completed(cmd, stdout=""):
@@ -53,6 +55,18 @@ def test_default_backend_is_kiro():
     assert backend.name == 'kiro'
 
 
+def test_kiro_backend_module_imports_standalone():
+    """Importing cve_agent.kiro_backend before cve_agent.backend must work —
+    same import-order guarantee test_claude_backend.py asserts for the claude
+    module. A fresh interpreter is the only reliable way to test import order.
+    """
+    project_root = Path(cve_agent.__file__).resolve().parent.parent
+    result = subprocess.run(
+        [sys.executable, "-c", "import cve_agent.kiro_backend"],
+        capture_output=True, text=True, check=False, cwd=project_root)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("marker", ["CHERRY_PICK_HEAD", "MERGE_HEAD"])
 def test_kiro_check_resolution_mid_operation_is_unresolved(tmp_path, monkeypatch, marker):
     """Same false-positive this backend shares with ClaudeBackend: staging a
@@ -68,5 +82,5 @@ def test_kiro_check_resolution_mid_operation_is_unresolved(tmp_path, monkeypatch
     def fake_run(cmd, **kwargs):
         return _completed(cmd, stdout="")  # staged: no U markers left
 
-    monkeypatch.setattr("cve_agent.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("cve_agent.kiro_backend.subprocess.run", fake_run)
     assert KiroBackend()._check_resolution(workspace) is False

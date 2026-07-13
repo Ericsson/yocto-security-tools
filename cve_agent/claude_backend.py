@@ -3,7 +3,7 @@
 """Claude Code AI backend for CVE agent sessions.
 
 Drives the ``claude`` CLI (Claude Code) directly — no kiro-cli in the loop.
-Mirrors :class:`cve_agent.backend.KiroBackend`: it builds a headless command,
+Mirrors :class:`cve_agent.kiro_backend.KiroBackend`: it builds a headless command,
 runs it in the recipe workspace, and reports whether the conflict was resolved.
 
 The authoritative file-scope guard remains the git pre-commit hook plus the
