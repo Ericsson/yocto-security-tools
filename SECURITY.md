@@ -14,7 +14,8 @@ responsibly. **Do not open a public GitHub issue.**
 
 ### How to Report
 
-Email: [daniel.turull@ericsson.com](mailto:daniel.turull@ericsson.com)
+Please use the "Report a vulnerability" button on this repository's Security
+tab.
 
 Include:
 - Description of the vulnerability
