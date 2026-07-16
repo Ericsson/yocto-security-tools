@@ -70,7 +70,7 @@ def update_recipe_patch(recipe: str, new_patch_name: str, original_patch_name: s
         for pattern in ('**/*.bbappend', '**/*.bb', '**/*.inc'):
             for f in meta_layer.glob(pattern):
                 try:
-                    if original_patch_name in f.read_text(encoding='utf-8'):
+                    if original_patch_name in f.read_text(encoding='utf-8', errors='ignore'):
                         recipe_files.append(f)
                 except OSError:
                     pass
@@ -163,7 +163,7 @@ def _split_src_uri_line(cve_id: str, meta_layer: Path) -> None:
                         *meta_layer.glob('**/*.bbappend')):
         try:
             content = recipe_file.read_text(encoding='utf-8')
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         if f'file://{cve_id}' not in content:
             continue
@@ -200,7 +200,7 @@ def sort_cve_lines_in_recipe(cve_id: str, meta_layer: Path) -> None:
                         *meta_layer.glob('**/*.bbappend')):
         try:
             content = recipe_file.read_text(encoding='utf-8')
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         if f'file://{cve_id}-' not in content:
             continue

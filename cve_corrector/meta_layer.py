@@ -227,7 +227,7 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
                     if 'file://' in candidate.read_text(encoding='utf-8'):
                         target = candidate
                         break
-                except OSError:
+                except (OSError, UnicodeDecodeError):
                     continue
             if target:
                 break
