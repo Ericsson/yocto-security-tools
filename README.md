@@ -3,7 +3,7 @@
 
 [![CI](https://github.com/Ericsson/yocto-security-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/Ericsson/yocto-security-tools/actions/workflows/ci.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13578/badge)](https://www.bestpractices.dev/projects/13578)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools/badge)](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools/badge)](https://scorecard.dev/viewer/?uri=github.com/Ericsson/yocto-security-tools)
 [![PyPI version](https://img.shields.io/pypi/v/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
 [![Python versions](https://img.shields.io/pypi/pyversions/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
 [![Downloads](https://static.pepy.tech/badge/yocto-security-tools)](https://pepy.tech/project/yocto-security-tools)
