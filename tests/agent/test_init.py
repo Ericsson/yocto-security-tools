@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for cve_agent — data classes, config, and helpers."""
 from pathlib import Path
+from unittest.mock import patch
 
 from cve_agent import (
     EXIT_NOT_APPLICABLE,
@@ -10,6 +11,7 @@ from cve_agent import (
     AgentConfig,
     ResultStatus,
     get_agent_dir,
+    resolve_agent_instructions,
 )
 
 
@@ -51,3 +53,27 @@ def test_exit_code_sets():
 def test_exit_not_applicable_in_unrecoverable():
     assert EXIT_NOT_APPLICABLE in UNRECOVERABLE_EXITS
     assert EXIT_NOT_APPLICABLE not in RECOVERABLE_EXITS
+
+
+def test_resolve_agent_instructions_prefers_stable_copy(tmp_path):
+    stable = tmp_path / "stable" / "AGENT_INSTRUCTIONS.md"
+    packaged = tmp_path / "packaged" / "AGENT_INSTRUCTIONS.md"
+    stable.parent.mkdir()
+    packaged.parent.mkdir()
+    stable.write_text("stable")
+    packaged.write_text("packaged")
+
+    with patch("cve_agent.setup.STABLE_AGENT_INSTRUCTIONS", stable), \
+         patch("cve_agent.setup.PACKAGED_AGENT_INSTRUCTIONS", packaged):
+        assert resolve_agent_instructions() == stable
+
+
+def test_resolve_agent_instructions_falls_back_to_packaged(tmp_path):
+    stable = tmp_path / "stable" / "AGENT_INSTRUCTIONS.md"  # never created
+    packaged = tmp_path / "packaged" / "AGENT_INSTRUCTIONS.md"
+    packaged.parent.mkdir()
+    packaged.write_text("packaged")
+
+    with patch("cve_agent.setup.STABLE_AGENT_INSTRUCTIONS", stable), \
+         patch("cve_agent.setup.PACKAGED_AGENT_INSTRUCTIONS", packaged):
+        assert resolve_agent_instructions() == packaged
