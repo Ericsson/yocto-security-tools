@@ -6,13 +6,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-07-20
 
 ### Added
 
 - **cve-agent**: `claude` backend that drives the Claude Code CLI directly, selectable with `--backend claude` (kiro remains the default). Model names are mapped to Claude aliases, and the backend passes through Anthropic/cloud auth environment variables.
 - **tests**: integration test runner accepts `AGENT_BACKEND` / `AGENT_MODEL` environment variables so the agent test cases can run against any registered backend (e.g. `AGENT_BACKEND=claude`), plus opt-in live smoke tests (`CLAUDE_LIVE_TESTS=1 pytest -m live`) that verify the emitted CLI flags and a real conflict resolution against an installed `claude` binary.
 - **tests**: CLI contract tests using a stub `claude` executable (argv/env/cwd recording, no API key needed) and guard-parity tests that fail if the Claude backend's tool allow/deny lists drift from the kiro agent manifest.
+- **docs**: CI, OpenSSF Best Practices, OpenSSF Scorecard, PyPI, Downloads, Ruff, and mypy status badges added to the README.
+
+### Changed
+
+- **security**: `SECURITY.md` now directs reporters to GitHub's "Report a vulnerability" button instead of email.
+
+### Fixed
+
+- **cve-agent**: don't credit a killed Claude session as resolved.
+- **cve-agent**: register the Claude backend lazily to break a circular import.
 
 ## [1.0.1] - 2026-07-03
 
