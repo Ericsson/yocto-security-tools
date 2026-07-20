@@ -77,11 +77,12 @@ class TestBuildPhaseInstructions:
     def test_file_exists(self, tmp_path):
         instructions = tmp_path / "AGENT_INSTRUCTIONS.md"
         instructions.write_text("# Do stuff")
-        with patch("cve_agent.context.AGENT_INSTRUCTIONS", instructions):
+        with patch("cve_agent.context.resolve_agent_instructions", return_value=instructions):
             assert "Do stuff" in _build_phase_instructions()
 
     def test_file_missing(self, tmp_path):
-        with patch("cve_agent.context.AGENT_INSTRUCTIONS", tmp_path / "nope"):
+        with patch("cve_agent.context.resolve_agent_instructions",
+                  return_value=tmp_path / "nope"):
             result = _build_phase_instructions()
             assert "AGENT_INSTRUCTIONS.md" in result
 

@@ -46,7 +46,36 @@ DEFAULT_KNOWLEDGE_PATH = data_dir() / 'knowledge.json'
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_SESSION_TIMEOUT = 600
 CORRECTOR_CMD = [sys.executable, '-m', 'cve_corrector']
-AGENT_INSTRUCTIONS = Path(__file__).resolve().parent / 'AGENT_INSTRUCTIONS.md'
+
+
+def resolve_agent_instructions() -> Path:
+    """Resolve the agent prompt file, preferring the stable synced copy.
+
+    ``cve_agent.setup.sync_agent_instructions()`` copies the packaged
+    AGENT_INSTRUCTIONS.md to a stable, package-location-independent path
+    under data_dir() whenever agents are (re)installed. Prefer that copy so
+    behavior stays consistent with what the kiro agent JSON's ``prompt``
+    field points at; fall back to the packaged file if the sync hasn't run
+    yet (e.g. before the first ``ensure_agents()`` call, or when running the
+    ``claude`` backend, which doesn't install kiro agents).
+
+    Resolved fresh on each call (not cached) so a sync that happens after
+    this module was first imported — e.g. ``ensure_agents()`` running later
+    in the same process as ``main()`` does — is picked up.
+    """
+    from .setup import PACKAGED_AGENT_INSTRUCTIONS, STABLE_AGENT_INSTRUCTIONS
+    if STABLE_AGENT_INSTRUCTIONS.is_file():
+        return STABLE_AGENT_INSTRUCTIONS
+    return PACKAGED_AGENT_INSTRUCTIONS
+
+
+# Kept for backward compatibility (existing tests/callers patch this
+# constant directly). Computed once at import time; DO NOT use in new code —
+# call resolve_agent_instructions() instead, which re-checks the stable
+# synced copy on every call and picks up a sync that happens later in the
+# same process (e.g. ensure_agents() runs before context building in the
+# real CLI flow).
+AGENT_INSTRUCTIONS = resolve_agent_instructions()
 
 
 class ResultStatus(Enum):
@@ -128,7 +157,7 @@ __all__ = [
     'AgentConfig', 'CveResult', 'ResultStatus',
     'RECOVERABLE_EXITS', 'UNRECOVERABLE_EXITS',
     'DEFAULT_KNOWLEDGE_PATH', 'DEFAULT_MAX_RETRIES', 'DEFAULT_SESSION_TIMEOUT',
-    'CORRECTOR_CMD', 'AGENT_INSTRUCTIONS',
+    'CORRECTOR_CMD', 'AGENT_INSTRUCTIONS', 'resolve_agent_instructions',
     'get_build_dir', 'get_agent_dir',
     'EXIT_SUCCESS', 'EXIT_CONFLICT', 'EXIT_CHECKOUT_ERROR', 'EXIT_PTEST_ERROR',
     'EXIT_BUILD_ERROR', 'EXIT_PATCH_ERROR', 'EXIT_METADATA_ERROR', 'EXIT_GIT_ERROR',

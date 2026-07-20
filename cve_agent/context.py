@@ -16,12 +16,12 @@ if TYPE_CHECKING:
     from .knowledge import KnowledgeBase
 
 from . import (
-    AGENT_INSTRUCTIONS,
     EXIT_BUILD_ERROR,
     EXIT_CONFLICT,
     EXIT_PTEST_ERROR,
     get_agent_dir,
     get_build_dir,
+    resolve_agent_instructions,
 )
 from .git import get_all_upstream_shas, get_upstream_sha, run_git_stdout
 
@@ -166,9 +166,10 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
 
 def _build_phase_instructions() -> str:
     """Load agent instructions from AGENT_INSTRUCTIONS.md."""
-    if not AGENT_INSTRUCTIONS.exists():
+    instructions_path = resolve_agent_instructions()
+    if not instructions_path.exists():
         return "## Instructions\n\nSee cve_agent/AGENT_INSTRUCTIONS.md for workflow details."
-    return AGENT_INSTRUCTIONS.read_text(encoding='utf-8')
+    return instructions_path.read_text(encoding='utf-8')
 
 
 def _gather_context_for_exit_code(workspace_path: Path, exit_code: int,
