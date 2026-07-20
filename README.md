@@ -1,6 +1,16 @@
 <!-- SPDX-License-Identifier: MIT -->
 # yocto-security-tools
 
+[![CI](https://github.com/Ericsson/yocto-security-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/Ericsson/yocto-security-tools/actions/workflows/ci.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13578/badge)](https://www.bestpractices.dev/projects/13578)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools/badge)](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools)
+[![PyPI version](https://img.shields.io/pypi/v/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
+[![Python versions](https://img.shields.io/pypi/pyversions/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
+[![Downloads](https://static.pepy.tech/badge/yocto-security-tools)](https://pepy.tech/project/yocto-security-tools)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Ericsson/yocto-security-tools/blob/main/LICENSE)
+
 Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 
 ## Tools
