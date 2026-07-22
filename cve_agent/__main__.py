@@ -219,7 +219,7 @@ def _parse_args() -> argparse.Namespace:
     ai_group = parser.add_argument_group('AI session')
     ai_group.add_argument('--backend', default='kiro',
                         help='AI backend: kiro or claude (default: %(default)s)')
-    ai_group.add_argument('--model', default='claude-sonnet-4.6',
+    ai_group.add_argument('--model', default='claude-sonnet-5',
                         help='Model for AI sessions; the claude backend also '
                              'accepts aliases like sonnet/opus (default: %(default)s)')
     ai_group.add_argument('--max-retries', type=int, default=DEFAULT_MAX_RETRIES,

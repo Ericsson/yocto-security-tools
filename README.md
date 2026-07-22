@@ -92,7 +92,7 @@ The Claude Code backend needs a recent `claude` on `PATH`, already authenticated
 (Anthropic API key, or Bedrock/Vertex), supporting `-p`, `--permission-mode`,
 `--allowedTools`/`--disallowedTools`, `--append-system-prompt`, and `--add-dir`.
 Pass `--model sonnet|opus|haiku` (or a full model id); the default
-`claude-sonnet-4.6` is mapped to `sonnet`. Both backends run under the same
+`claude-sonnet-5` is mapped to `sonnet`. Both backends run under the same
 file-scope guard, so the AI can only modify the files the upstream fix touches.
 
 ## How It Works
