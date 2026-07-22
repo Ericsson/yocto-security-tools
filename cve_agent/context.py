@@ -24,6 +24,7 @@ from . import (
     resolve_agent_instructions,
 )
 from .git import get_all_upstream_shas, get_upstream_sha, run_git_stdout
+from .interdiff import generate_interdiff
 
 
 def build_context(workspace_path: Path, exit_code: int, cve_id: str,
@@ -53,6 +54,11 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
         _build_phase_instructions(),
         _gather_context_for_exit_code(workspace_path, exit_code, cve_info),
     ]
+
+    if exit_code != EXIT_CONFLICT:
+        interdiff_section = _gather_interdiff(workspace_path, cve_info)
+        if interdiff_section:
+            sections.append(interdiff_section)
 
     similar_patterns = _gather_knowledge(knowledge_base, recipe, workspace_path)
     if similar_patterns:
@@ -355,6 +361,43 @@ def _gather_analysis_context(workspace_path: Path, cve_info: dict) -> str:
         f"{upstream_info}\n\n"
         f"Analyse the applied commits. If incompatible with the stable base, "
         f"adapt and document changes in the commit message."
+    )
+
+
+def _gather_interdiff(workspace_path: Path, cve_info: dict) -> str:
+    """Build an optional interdiff section showing the adaptation delta.
+
+    Computes the diff-of-diffs between the upstream commit and the
+    backported change on HEAD, so the AI sees precisely how the backport
+    already deviates from upstream. Returns an empty string whenever a
+    concise delta can't be produced (e.g. the ``interdiff`` binary isn't
+    installed) — callers should skip appending it in that case.
+
+    Args:
+        workspace_path: Path to workspace with an applied backport commit.
+        cve_info: CVE metadata dict (used to resolve upstream SHA).
+
+    Returns:
+        Formatted interdiff section, or empty string if unavailable.
+    """
+    upstream_sha = get_upstream_sha(cve_info, workspace_path)
+    if not upstream_sha or upstream_sha == "unknown":
+        return ""
+
+    upstream_diff = run_git_stdout(['show', upstream_sha], cwd=workspace_path)
+    backport_diff = run_git_stdout(
+        ['diff', 'original-version..HEAD'], cwd=workspace_path
+    )
+    interdiff = generate_interdiff(upstream_diff, backport_diff)
+    if not interdiff:
+        return ""
+
+    return (
+        f"## Interdiff (upstream \u2192 backport)\n\n"
+        f"The following shows only the lines that differ between the "
+        f"upstream patch and the current backport — i.e. how the backport "
+        f"already deviates from upstream.\n\n"
+        f"```diff\n{interdiff}\n```"
     )
 
 
