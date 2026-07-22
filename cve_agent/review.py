@@ -12,6 +12,7 @@ from shared import build_git_env
 
 from . import AgentConfig, get_agent_dir
 from .git import get_changed_files, run_git_display, run_git_stdout
+from .interdiff import generate_interdiff
 
 
 def request_approval(workspace_path: Path, upstream_sha: str,
@@ -244,13 +245,19 @@ def _save_review_diff(workspace_path: Path, upstream_sha: str) -> Path:
             encoding='utf-8',
         )
     else:
-        diff_path.write_text(
+        content = (
             f"=== UPSTREAM COMMIT {upstream_sha} ===\n\n"
             f"{upstream_diff}\n\n"
             f"=== BACKPORTED DIFF (original-version..HEAD) ===\n\n"
-            f"{backport_diff}\n",
-            encoding='utf-8',
+            f"{backport_diff}\n"
         )
+        interdiff = generate_interdiff(upstream_diff, backport_diff)
+        if interdiff:
+            content += (
+                f"\n=== INTERDIFF (upstream \u2192 backport) ===\n\n"
+                f"{interdiff}\n"
+            )
+        diff_path.write_text(content, encoding='utf-8')
     return diff_path
 
 
@@ -299,6 +306,15 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
 
         print("\n--- Changes from upstream ---")
         print(summary)
+
+        upstream_diff = run_git_stdout(['show', upstream_sha], workspace_path)
+        interdiff = generate_interdiff(upstream_diff, applied_diff)
+        print("\n--- Interdiff (upstream \u2192 backport) ---")
+        if interdiff:
+            print(interdiff)
+        else:
+            print("(interdiff unavailable — install patchutils for a "
+                  "concise adaptation diff)")
 
         print("\n--- Final commit ---")
         run_git_display(['log', '-1', '--format=%B', 'HEAD'], workspace_path)

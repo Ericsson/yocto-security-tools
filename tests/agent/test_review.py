@@ -141,6 +141,34 @@ class TestSaveReviewDiff:
             result = _save_review_diff(Path("/ws"), "abc123456789")
         assert result.exists()
 
+    @patch("cve_agent.review.generate_interdiff", return_value=None)
+    @patch("cve_agent.review.run_git_stdout", return_value="diff content")
+    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    def test_no_interdiff_section_when_unavailable(self, mock_files, mock_git,
+                                                    mock_interdiff, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with patch("cve_agent.review.get_agent_dir", return_value=agent_dir):
+            result = _save_review_diff(Path("/ws"), "abc123456789")
+        content = result.read_text()
+        assert "INTERDIFF" not in content
+
+    @patch("cve_agent.review.generate_interdiff", return_value="-old\n+new\n")
+    @patch("cve_agent.review.run_git_stdout", return_value="diff content")
+    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    def test_interdiff_section_appended_when_available(self, mock_files, mock_git,
+                                                        mock_interdiff, tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with patch("cve_agent.review.get_agent_dir", return_value=agent_dir):
+            result = _save_review_diff(Path("/ws"), "abc123456789")
+        content = result.read_text()
+        assert "INTERDIFF (upstream" in content
+        assert "-old\n+new\n" in content
+        # Existing sections are preserved as before
+        assert "UPSTREAM COMMIT" in content
+        assert "BACKPORTED DIFF" in content
+
 
 class TestDisplayChanges:
     @patch("cve_agent.review.get_agent_dir")
@@ -168,3 +196,30 @@ class TestDisplayChanges:
         log = tmp_path / "busybox-CVE-2025-0001-ai-changes.log"
         log.write_text("AI did things")
         _display_changes(tmp_path / "busybox", "abc123", "summary", "CVE-2025-0001")
+
+    @patch("cve_agent.review.generate_interdiff", return_value="-old\n+new\n")
+    @patch("cve_agent.review.run_git_stdout", return_value="upstream diff text")
+    @patch("cve_agent.review.get_agent_dir")
+    @patch("cve_agent.review.run_git_display")
+    @patch("cve_agent.review.get_changed_files")
+    def test_display_prints_interdiff_when_available(
+            self, mock_files, mock_display, mock_dir, mock_git, mock_interdiff, tmp_path, capsys):
+        mock_files.return_value = {"a.c"}
+        mock_dir.return_value = tmp_path
+        _display_changes(Path("/ws"), "abc123", "summary", "CVE-2025-0001")
+        out = capsys.readouterr().out
+        assert "Interdiff (upstream" in out
+        assert "-old\n+new\n" in out
+
+    @patch("cve_agent.review.generate_interdiff", return_value=None)
+    @patch("cve_agent.review.run_git_stdout", return_value="upstream diff text")
+    @patch("cve_agent.review.get_agent_dir")
+    @patch("cve_agent.review.run_git_display")
+    @patch("cve_agent.review.get_changed_files")
+    def test_display_notes_when_interdiff_unavailable(
+            self, mock_files, mock_display, mock_dir, mock_git, mock_interdiff, tmp_path, capsys):
+        mock_files.return_value = {"a.c"}
+        mock_dir.return_value = tmp_path
+        _display_changes(Path("/ws"), "abc123", "summary", "CVE-2025-0001")
+        out = capsys.readouterr().out
+        assert "interdiff unavailable" in out
