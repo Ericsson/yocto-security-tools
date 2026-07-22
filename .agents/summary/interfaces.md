@@ -105,7 +105,7 @@ Options:
   --trust                 Auto-approve AI changes (no human review)
   --interactive           Use interactive AI agent (human-in-the-loop)
   --backend NAME          AI backend to use (default: kiro)
-  --model NAME            AI model (default: claude-sonnet-4.6)
+  --model NAME            AI model (default: claude-sonnet-5)
   --max-retries N         Per-step retry limit (default: 3)
   --session-timeout SECS  AI session timeout (default: 600)
   --skip-ptest            Skip ptest verification

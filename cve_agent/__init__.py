@@ -99,7 +99,7 @@ class AgentConfig:
     meta_layer: Optional[Path] = None
     skip_ptest: bool = False
     clean: bool = False
-    model: str = "claude-sonnet-4.6"
+    model: str = "claude-sonnet-5"
     session_timeout: int = DEFAULT_SESSION_TIMEOUT
     interactive: bool = False
     bbappend: bool = False

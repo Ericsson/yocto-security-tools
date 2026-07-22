@@ -36,6 +36,7 @@ from .git import has_in_progress_operation
 # Map kiro-style model names to Claude Code aliases. Valid Claude aliases and
 # full model IDs pass through unchanged; an empty value falls back to "sonnet".
 _MODEL_ALIASES = {
+    "claude-sonnet-5": "sonnet",
     "claude-sonnet-4.6": "sonnet",
     "claude-sonnet-4-6": "sonnet",
     "claude-opus-4.6": "opus",

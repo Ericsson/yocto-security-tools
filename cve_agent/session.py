@@ -80,7 +80,7 @@ def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
 
 def guarded_session(context_file: Path, workspace_path: Path,
                     upstream_sha: str, cve_info: dict,
-                    model: str = "claude-sonnet-4.6",
+                    model: str = "claude-sonnet-5",
                     timeout: int = 300,
                     cve_id: str = "",
                     interactive: bool = False,
