@@ -128,6 +128,42 @@ def test_ensure_agents_reinstalls_stale_prompt_path(fake_dirs, tmp_path, monkeyp
         assert str(stale_prompt) not in data['prompt']
 
 
+def test_ensure_agents_refreshes_present_agents(fake_dirs, monkeypatch):
+    """ensure_agents() overwrites already-installed agents from the packaged
+    source every run, so config changes (e.g. new allowedCommands) propagate
+    without a manual reinstall. Regression guard for stale installed configs."""
+    source, target = fake_dirs
+    # The prompt path must resolve for the pre-installed agents to count as
+    # "present" (not stale), so create the stable instructions file first.
+    setup.STABLE_AGENT_INSTRUCTIONS.parent.mkdir(parents=True, exist_ok=True)
+    setup.STABLE_AGENT_INSTRUCTIONS.write_text("instructions")
+    # Pre-install both agents with a STALE body (missing a command the source
+    # grants) but a VALID prompt path, so get_missing_agents() sees them as
+    # present and would otherwise skip reinstalling them.
+    for name in REQUIRED_AGENTS:
+        (target / f"{name}.json").write_text(
+            f'{{"name": "{name}", "prompt": "file://{setup.STABLE_AGENT_INSTRUCTIONS}",'
+            f' "toolsSettings": {{"execute_bash": {{"allowedCommands": ["^git status$"]}}}}}}')
+    # The packaged source grants an extra command the stale copy lacks.
+    for name in REQUIRED_AGENTS:
+        (source / f"{name}.json").write_text(
+            f'{{"name": "{name}", "prompt": "file://cve_agent/AGENT_INSTRUCTIONS.md",'
+            f' "toolsSettings": {{"execute_bash": {{"allowedCommands":'
+            f' ["^git status$", "^git cherry-pick [^;&|]+$"]}}}}}}')
+
+    monkeypatch.setattr("cve_agent.setup.check_kiro_cli", lambda: True)
+    assert verify_agents_installed() is True  # present → skipped before this change
+
+    ensure_agents(interactive=False)
+
+    for name in REQUIRED_AGENTS:
+        data = json.loads((target / f"{name}.json").read_text())
+        cmds = data['toolsSettings']['execute_bash']['allowedCommands']
+        assert "^git cherry-pick [^;&|]+$" in cmds, \
+            "installed agent config was not refreshed from the packaged source"
+        assert data['prompt'] == f"file://{setup.STABLE_AGENT_INSTRUCTIONS}"
+
+
 def test_verify_agents_installed_false(fake_dirs):
     assert verify_agents_installed() is False
 
@@ -199,7 +235,20 @@ def test_sync_agent_instructions_copies_to_stable_path(fake_dirs):
     result = sync_agent_instructions()
     assert result == setup.STABLE_AGENT_INSTRUCTIONS
     assert setup.STABLE_AGENT_INSTRUCTIONS.is_file()
-    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text() == "instructions"
+    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text().endswith("instructions")
+
+
+def test_sync_agent_instructions_prepends_kiro_tool_preamble(fake_dirs):
+    """The stable copy consumed by kiro-cli's static file:// prompt must
+    carry kiro's tool-name mapping, since AGENT_INSTRUCTIONS.md itself is
+    shared verbatim across backends and stays tool-name-neutral."""
+    from cve_agent.kiro_backend import KiroBackend
+
+    sync_agent_instructions()
+
+    content = setup.STABLE_AGENT_INSTRUCTIONS.read_text()
+    assert content.startswith(KiroBackend().tool_preamble())
+    assert content.endswith("instructions")
 
 
 def test_sync_agent_instructions_overwrites_existing_stable_copy(fake_dirs):
@@ -208,19 +257,20 @@ def test_sync_agent_instructions_overwrites_existing_stable_copy(fake_dirs):
 
     sync_agent_instructions()
 
-    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text() == "instructions"
+    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text().endswith("instructions")
+    assert "old content" not in setup.STABLE_AGENT_INSTRUCTIONS.read_text()
 
 
 def test_sync_agent_instructions_propagates_content_upgrades(fake_dirs):
     """A newer packaged AGENT_INSTRUCTIONS.md must overwrite the stable copy
     on re-sync, so content upgrades reach the kiro agent's prompt."""
     sync_agent_instructions()
-    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text() == "instructions"
+    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text().endswith("instructions")
 
     setup.PACKAGED_AGENT_INSTRUCTIONS.write_text("updated instructions v2")
     sync_agent_instructions()
 
-    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text() == "updated instructions v2"
+    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text().endswith("updated instructions v2")
 
 
 def test_sync_agent_instructions_missing_packaged_file_raises(fake_dirs):
@@ -264,7 +314,8 @@ def test_ensure_agents_syncs_instructions_even_when_already_installed(fake_dirs,
 
     ensure_agents(interactive=False)
 
-    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text() == "instructions"
+    assert setup.STABLE_AGENT_INSTRUCTIONS.read_text().endswith("instructions")
+    assert "stale content" not in setup.STABLE_AGENT_INSTRUCTIONS.read_text()
 
 
 def test_ensure_agents_exits_when_packaged_instructions_missing(fake_dirs, monkeypatch):

@@ -93,7 +93,58 @@ class TestAgentConfig:
         config_path = _KIRO_CONFIG
         config = json.loads(config_path.read_text())
         assert config['tools'] == ['fs_read', 'fs_write', 'execute_bash']
-        assert config['allowedTools'] == ['fs_read', 'fs_write', 'execute_bash']
+        # execute_bash is deliberately excluded from allowedTools so that
+        # toolsSettings.execute_bash.allowedCommands (a lower-priority rule)
+        # actually gates bash commands instead of being shadowed by blanket
+        # tool-level trust.
+        assert config['allowedTools'] == ['fs_read', 'fs_write']
+        assert config['toolsSettings']['execute_bash']['denyByDefault'] is True
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_prerequisite_cherry_pick_allowed(self):
+        """The agent must be able to start a fresh cherry-pick of an in-scope
+        prerequisite (Strategy A), but the rule must not permit command
+        chaining. The pre-commit scope hook remains the hard boundary for
+        what actually gets committed."""
+        import re
+        config = json.loads(_KIRO_CONFIG.read_text())
+        allowed = config['toolsSettings']['execute_bash']['allowedCommands']
+
+        def permitted(cmd):
+            return any(re.fullmatch(pat, cmd) for pat in allowed)
+
+        # Fresh cherry-picks (with/without -x, refs, multiple SHAs) are allowed.
+        assert permitted("git cherry-pick -x deadbeefcafe1234")
+        assert permitted("git cherry-pick abc1234")
+        assert permitted("git cherry-pick -x --no-edit abc1234 def5678")
+        # Chaining / injection via the cherry-pick rule is rejected.
+        assert not permitted("git cherry-pick abc1234 && rm -rf /")
+        assert not permitted("git cherry-pick abc1234; rm -rf /")
+        assert not permitted("git cherry-pick abc1234 | tee x")
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_build_verify_command_is_single_line(self):
+        """The build-verify command must be run as ONE line. The recommended
+        single-line form is allowed; a multi-line (build + echo on separate
+        lines) submission is rejected — regression guard for the
+        `devtool build ... \\n echo "Exit code: $?"` rejection."""
+        import re
+        config = json.loads(_KIRO_CONFIG.read_text())
+        allowed = config['toolsSettings']['execute_bash']['allowedCommands']
+
+        def permitted(cmd):
+            return any(re.fullmatch(pat, cmd) for pat in allowed)
+
+        assert permitted("devtool build libarchive")
+        assert permitted(
+            'devtool build libarchive > /ws/cve_agent/libarchive/build.log '
+            '2>&1; echo "Exit code: $?"')
+        # A two-line submission matches nothing (the newline breaks it).
+        assert not permitted(
+            'devtool build libarchive > /ws/build.log 2>&1\n'
+            'echo "Exit code: $?"')
 
     @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
                         reason="kiro agent config not installed")
@@ -112,8 +163,12 @@ class TestAgentConfig:
 
 class TestTrustToolsInNonInteractiveMode:
     @patch('subprocess.run')
-    def test_non_interactive_trusts_only_allowed_tools(self, mock_run):
-        """Non-interactive mode trusts only fs_read, fs_write, execute_bash."""
+    def test_non_interactive_does_not_pass_trust_flags(self, mock_run):
+        """Non-interactive mode passes no --trust-tools/--trust-all-tools —
+        permissions live entirely in the agent config JSON (allowedTools +
+        toolsSettings.execute_bash.allowedCommands), so execute_bash relies
+        on that allowlist instead of blanket tool trust (which would
+        shadow it)."""
         mock_run.return_value = MagicMock(returncode=0, stdout='')
         with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
             _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
@@ -122,7 +177,7 @@ class TestTrustToolsInNonInteractiveMode:
         cmd_str = ' '.join(cmd)
         assert '--agent' in cmd_str
         assert 'yocto-cve-backport' in cmd_str
-        assert '--trust-tools=fs_read,fs_write,execute_bash' in cmd_str
+        assert '--trust-tools' not in cmd_str
         assert '--trust-all-tools' not in cmd_str
 
     @patch('subprocess.run')

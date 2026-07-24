@@ -37,12 +37,22 @@ STABLE_AGENT_INSTRUCTIONS = data_dir() / "AGENT_INSTRUCTIONS.md"
 
 
 def sync_agent_instructions() -> Path:
-    """Copy the packaged AGENT_INSTRUCTIONS.md to the stable data_dir() path.
+    """Write the kiro-preamble + packaged AGENT_INSTRUCTIONS.md to the
+    stable data_dir() path.
 
     The kiro agent JSON's ``prompt`` field points at this stable copy rather
     than at the package's own copy, so the prompt keeps resolving correctly
     even if the project/package is later moved, reinstalled into a different
     environment, or upgraded — none of which change the XDG data directory.
+
+    AGENT_INSTRUCTIONS.md itself is shared verbatim across AI backends and
+    intentionally avoids naming concrete tools (kiro-cli and Claude Code
+    expose different tool names). Because kiro-cli's ``prompt: file://...``
+    field is a static file reference with no runtime templating, the
+    kiro-specific tool-name mapping (:meth:`cve_agent.kiro_backend.KiroBackend.
+    tool_preamble`) is prepended here at sync time — mirroring how
+    :class:`cve_agent.claude_backend.ClaudeBackend` prepends its own
+    preamble in Python via ``--append-system-prompt``.
 
     Always overwrites the destination so upgrades to the packaged file
     propagate on the next install. Writes to a temporary sibling file and
@@ -58,10 +68,13 @@ def sync_agent_instructions() -> Path:
     if not PACKAGED_AGENT_INSTRUCTIONS.is_file():
         raise FileNotFoundError(
             f"Packaged agent instructions not found: {PACKAGED_AGENT_INSTRUCTIONS}")
+    from .kiro_backend import KiroBackend
+    content = (KiroBackend().tool_preamble()
+              + PACKAGED_AGENT_INSTRUCTIONS.read_text(encoding='utf-8'))
     STABLE_AGENT_INSTRUCTIONS.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = STABLE_AGENT_INSTRUCTIONS.with_suffix(
         STABLE_AGENT_INSTRUCTIONS.suffix + '.tmp')
-    shutil.copyfile(PACKAGED_AGENT_INSTRUCTIONS, tmp_path)
+    tmp_path.write_text(content, encoding='utf-8')
     os.replace(tmp_path, STABLE_AGENT_INSTRUCTIONS)
     return STABLE_AGENT_INSTRUCTIONS
 
@@ -142,8 +155,8 @@ def verify_agents_installed() -> bool:
     return len(get_missing_agents()) == 0
 
 
-def install_agents(missing: list[str]) -> bool:
-    """Install missing agents by copying into ~/.kiro/agents/ with resolved paths.
+def install_agents(missing: list[str], quiet: bool = False) -> bool:
+    """Install (overwrite) agents by copying into ~/.kiro/agents/ with resolved paths.
 
     Copies agent JSON files (rather than symlinking) so that relative file://
     URIs in the 'prompt' field are rewritten to absolute paths that kiro-cli
@@ -151,8 +164,13 @@ def install_agents(missing: list[str]) -> bool:
     the stable data_dir() copy (synced from the packaged file here), not at
     the package's own copy, so it survives moves/reinstalls/upgrades.
 
+    Always overwrites the destination JSONs so packaged config changes (e.g.
+    ``execute_bash.allowedCommands``) propagate on every install.
+
     Args:
         missing: List of agent names to install.
+        quiet: When True, suppress the per-agent "Installed:" lines (used for
+            the routine refresh of already-present agents).
 
     Returns:
         True if all agents were installed successfully.
@@ -185,10 +203,11 @@ def install_agents(missing: list[str]) -> bool:
             target.unlink()
 
         target.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
-        if prompt_target:
-            print(f"  Installed: {name} (prompt -> {prompt_target})")
-        else:
-            print(f"  Installed: {name}")
+        if not quiet:
+            if prompt_target:
+                print(f"  Installed: {name} (prompt -> {prompt_target})")
+            else:
+                print(f"  Installed: {name}")
 
     return True
 
@@ -210,9 +229,13 @@ def ensure_agents(interactive: bool = True) -> None:
     Exits with error if prerequisites cannot be met.
 
     Always re-syncs the stable AGENT_INSTRUCTIONS.md copy (data_dir()) from
-    the packaged file, even if the agent JSONs themselves are already
-    installed — so content upgrades to the packaged instructions propagate
-    on every run, not just on (re)install.
+    the packaged file AND overwrites the installed agent JSONs from the
+    packaged sources, even if they are already present — so content upgrades
+    to the instructions or the agent configs (e.g. new
+    ``execute_bash.allowedCommands``) propagate on every run, not just on
+    first install. Already-present agents are refreshed quietly; genuinely
+    missing agents still trigger the informative (and, when interactive,
+    consented) install path.
 
     Args:
         interactive: If True, prompt user for approval before installing.
@@ -232,6 +255,15 @@ def ensure_agents(interactive: bool = True) -> None:
         sys.exit(EXIT_AGENT_ERROR)
 
     missing = get_missing_agents()
+    present = [name for name in REQUIRED_AGENTS if name not in missing]
+
+    # Refresh already-installed agents in place so packaged config changes
+    # propagate every run (mirrors sync_agent_instructions()). Quiet, since
+    # it's a routine overwrite, not a first-time install.
+    if present and not install_agents(present, quiet=True):
+        print("Error: Failed to refresh installed agents.", file=sys.stderr)
+        sys.exit(EXIT_AGENT_ERROR)
+
     if not missing:
         return
 

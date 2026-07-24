@@ -113,6 +113,19 @@ class ClaudeBackend(AIBackend):
     def is_available(self) -> bool:
         return shutil.which("claude") is not None
 
+    def tool_preamble(self) -> str:
+        """Claude Code's Read/Write/Edit/Bash tool-name mapping.
+
+        See :meth:`AIBackend.tool_preamble`. Mirrors the tool names in
+        ``_ALLOWED_TOOLS``/``_DENIED_READ_WRITE``/``_DENIED_WRITE`` above.
+        """
+        return (
+            "Your file/directory inspection and editing tools are `Read`, "
+            "`Edit`, `Write`, and `MultiEdit`; your bash-equivalent command "
+            "runner is `Bash`. Do not use `Glob` for file discovery — "
+            "everything you need is in the context file.\n\n"
+        )
+
     def _map_model(self, model: str) -> str:
         if not model:
             return "sonnet"
@@ -132,8 +145,9 @@ class ClaudeBackend(AIBackend):
         cmd += ["--add-dir", str(agent_dir)]
         agent_instructions = resolve_agent_instructions()
         if agent_instructions.is_file():
-            cmd += ["--append-system-prompt",
-                    agent_instructions.read_text(encoding="utf-8")]
+            system_prompt = (self.tool_preamble()
+                            + agent_instructions.read_text(encoding="utf-8"))
+            cmd += ["--append-system-prompt", system_prompt]
         else:
             logging.warning(
                 "Agent instructions not found (%s); running without a system "

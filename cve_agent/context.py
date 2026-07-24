@@ -161,7 +161,11 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
         f"- **Backend**: {backend}\n"
         f"- **Model**: {model}\n"
         f"- **Workspace**: `{workspace_path}`\n"
-        f"- **Working directory**: `cd {workspace_path}`\n"
+        f"- **Working directory**: your shell ALREADY runs inside the "
+        f"workspace above. Run every command **bare** (e.g. `git status`) — "
+        f"do NOT prefix `cd` and do NOT chain with `&&`, `;`, or `|`. The "
+        f"command allow-list matches whole commands, so `cd ... && git "
+        f"status` is rejected while a plain `git status` is accepted.\n"
         f"- **Upstream SHA(s)**: {sha_display}\n"
         f"{log_lines}\n\n"
         f"## Allowed Files (ONLY these may be staged with `git add`)\n\n"
@@ -171,11 +175,23 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
 
 
 def _build_phase_instructions() -> str:
-    """Load agent instructions from AGENT_INSTRUCTIONS.md."""
+    """Reference agent instructions without re-embedding their full text.
+
+    The full AGENT_INSTRUCTIONS.md content already reaches the model via the
+    session's system prompt (the kiro-cli agent's ``prompt: file://...``
+    field, or the ``claude`` CLI's ``--append-system-prompt``; see
+    ``cve_agent.kiro_backend`` / ``cve_agent.claude_backend``). Embedding it
+    again here would just pay its token cost a second (or third) time on
+    every context.md this function contributes to, including retries, with
+    no new information. A short pointer is enough since the workflow steps
+    are already active in the model's system prompt.
+    """
     instructions_path = resolve_agent_instructions()
     if not instructions_path.exists():
         return "## Instructions\n\nSee cve_agent/AGENT_INSTRUCTIONS.md for workflow details."
-    return instructions_path.read_text(encoding='utf-8')
+    return ("## Instructions\n\nFollow the workflow, scope rules, and commit "
+            "message format from AGENT_INSTRUCTIONS.md (already provided as "
+            "your system prompt / agent instructions for this session).")
 
 
 def _gather_context_for_exit_code(workspace_path: Path, exit_code: int,

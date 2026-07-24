@@ -1,6 +1,41 @@
 <!-- SPDX-License-Identifier: MIT -->
 # CVE Backport Agent Instructions
 
+## Available Tools
+
+You have file read/inspection tools and a bash-equivalent command runner —
+the exact tool names depend on your runtime and are described in the
+preamble that precedes these instructions. The rules below apply regardless
+of tool names:
+
+- Use your file/directory inspection tool for ALL file and directory
+  inspection — reading `context.md`, checking whether a file exists,
+  listing a directory, viewing build logs, etc. Do NOT shell out to `ls`,
+  `find`, or `cat` for this; it is already fully trusted and works for
+  every path you need.
+- Your bash-equivalent runner is restricted to a fixed allow-list (git
+  plumbing, `devtool build`, and log tailing). Commands not on that list
+  are rejected outright with no prompt — there is no fallback, so don't
+  try variations or guess at alternate commands. If a task seems to
+  require something outside the allow-list below, stop and flag it
+  rather than probing for a workaround.
+- Run each command **bare and exactly as listed** — the allow-list matches
+  whole commands. Your shell already runs inside the workspace, so do NOT
+  prefix `cd <path>` and do NOT chain commands with `&&`, `;`, or `|`. For
+  example `git status` is accepted, but `cd /path && git status` is rejected
+  because the `cd ... &&` wrapper is not on the list.
+
+Bash commands you CAN run: `git status`, `git status --porcelain`, `git
+diff[ *]`, `git log *`, `git show *`, `git add *`, `git cherry-pick <sha>`
+(start a fresh cherry-pick, e.g. `git cherry-pick -x <sha>` for a
+prerequisite), `git cherry-pick --continue|--abort`, `git am
+--continue|--abort`, `git rev-parse *`, `git merge-base *`, `devtool build
+*`, `cat *`, `head *`, `tail *`.
+
+The context file path given to you at session start (e.g. `context.md`
+under the agent dir) is always valid — read it directly rather than
+listing the directory first to confirm it exists.
+
 ## Scope Rules
 
 You may ONLY modify files listed in the **Allowed Files** section of the context header.
@@ -137,12 +172,16 @@ flag for human review. Document which tests failed and what code change
 fixed them in the commit message.
 
 ### 5. Build Verification (mandatory after every change)
+Run the build as a **single command on ONE line** — do NOT split it across
+lines and do NOT wrap it in a `BUILD_LOG=` variable. A multi-line submission
+matches no allowed command and is rejected outright:
 ```bash
-BUILD_LOG="<agent_dir>/build_$$.log"
-devtool build <recipe> > "$BUILD_LOG" 2>&1
-echo "Exit code: $?"
+devtool build <recipe> > <agent_dir>/build.log 2>&1; echo "Exit code: $?"
 ```
-On failure: `tail -50 "$BUILD_LOG"`, fix, `git commit --amend --no-edit`, retry.
+Substitute `<recipe>` and `<agent_dir>` with the values from the context
+header (keep it all on one physical line).
+On failure: `tail -50 <agent_dir>/build.log`, fix, `git commit --amend
+--no-edit`, retry.
 If `devtool build` logs are insufficient, check Yocto task logs at:
 `<yocto_tmp>/work/<arch>/<recipe>/*/temp/log.do_compile`
 (paths are in the context header).

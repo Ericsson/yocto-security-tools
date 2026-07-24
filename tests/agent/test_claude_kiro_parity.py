@@ -44,8 +44,23 @@ def _claude_bash_prefixes() -> list[str]:
 
 
 def _base_command(command: str) -> str:
-    """Normalize a kiro allowedCommands entry: strip trailing glob."""
-    return command.rstrip("*").strip()
+    """Normalize a kiro allowedCommands regex entry: strip anchors/wildcard.
+
+    kiro's ``allowedCommands`` entries are regex patterns anchored with
+    ``^``/``$``; a trailing "anything after the prefix" match is spelled
+    ``.*$`` (e.g. ``^git add .*$``). Strip both anchors and the wildcard
+    tail so the remaining literal prefix (e.g. ``git add``) can be compared
+    against Claude's plain-text ``Bash(<prefix>:*)`` rules.
+    """
+    base = command
+    if base.startswith("^"):
+        base = base[1:]
+    if base.endswith("$"):
+        base = base[:-1]
+    if base.endswith(".*"):
+        base = base[:-2]
+    base = base.replace("\\.", ".").strip()
+    return base
 
 
 def _to_claude_path(kiro_path: str) -> str:
