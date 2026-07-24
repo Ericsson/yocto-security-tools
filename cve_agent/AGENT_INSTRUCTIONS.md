@@ -9,18 +9,67 @@ A git pre-commit hook enforces this — commits with unauthorized files will be 
 **NEVER do any of these:**
 - `git add .` or `git add -A`
 - `git commit --no-verify` or `git cherry-pick --no-verify`
-- Cherry-pick additional upstream commits beyond what cve_corrector already applied
+- Cherry-pick, squash, or inline changes that reach files **outside** the
+  Allowed Files list (see **Prerequisite / dependency handling** for how to
+  bring in an in-scope prerequisite, or when to escalate instead)
 - Create or rename files not in the Allowed Files list
 - Modify `.gitignore` or any file not in the Allowed Files list
 - Run `cve_corrector.py` (the agent handles workflow progression)
 - Read files outside the workspace directory
-- Use the `glob` tool
+- Use a file-glob / fuzzy-file-discovery tool
 
-**Prerequisite commits**: If the upstream fix depends on a prior commit, do NOT
-cherry-pick it separately. Instead, manually adapt the conflicting code to work
-without the prerequisite — inline the necessary changes into the files already
-being modified. The generated patch must only contain the upstream fix commit's
-changes, adapted for the stable branch.
+### Prerequisite / dependency handling
+
+When the fix references code that is missing or conflicts, first decide WHICH
+situation you are in — **most cases are adaptation, not a real dependency.**
+
+**Step 1 — does the referenced symbol already EXIST in the stable branch under
+a different name, signature, or location?**
+If a function was renamed, a signature changed, a struct member renamed, or a
+function moved, the functionality is already present — this is *adaptation, not
+a prerequisite*. Adapt the fix in place to match the stable name/shape and do
+**NOT** cherry-pick anything. See **Common Conflict Patterns** below. This is
+the common case.
+
+**Step 2 — only if the referenced code genuinely does NOT exist in the stable
+branch in any form is it a real prerequisite.** Then choose one of:
+
+- **(C) Trivial inline.** The missing piece is a small, self-contained helper,
+  macro, or struct field (roughly a few lines). Run `git show <prereq_sha>`
+  first to read the real code — never reconstruct it from the commit message —
+  then inline just the needed lines into a file already in the Allowed Files
+  list. Record the source SHA in your `Conflicts Resolved:` notes.
+
+- **(A) Separate prerequisite patch — the default for anything non-trivial.**
+  The missing code is more than a few lines but touches **only files already in
+  the Allowed Files list**. Cherry-pick the prerequisite as its own commit
+  *before* the fix, recording its upstream origin:
+  ```bash
+  git show <prereq_sha>            # confirm exactly what it changes and where
+  git cherry-pick -x <prereq_sha>  # -x records the upstream SHA in the message
+  ```
+  Keep it as a **separate commit** — do NOT squash it into the fix.
+  cve_corrector emits each commit as its own patch file. A prerequisite is not
+  itself a CVE fix, so cve_corrector tags it `Upstream-Status: Backport` only
+  (no `CVE:` tag); leave its commit message intact. If the cherry-pick
+  conflicts, resolve it the same way you resolve the fix's conflicts.
+
+- **(E) Escalate to human review.** Make **NO** code changes and stop if any of
+  these hold:
+  - the prerequisite touches files **outside** the Allowed Files list (the
+    pre-commit hook will reject the commit — do not try to work around it);
+  - it is a large or structural change (a refactor or API redesign);
+  - it itself depends on further prerequisites (a dependency chain).
+
+  Write an escalation conclusion and stop — do not mark the CVE not-applicable,
+  because it *is* applicable, just not safe to automate:
+  ```bash
+  cat > "<agent_dir>/conclusion.json" <<'EOF'
+  {"needs_human": true, "reason": "<why this prerequisite can't be safely automated, naming the prerequisite SHA and what it changes>"}
+  EOF
+  ```
+  Replace `<agent_dir>` with the actual agent dir path from the context header.
+  After writing the file, **stop — make no other changes.**
 
 **Files not in the baseline**: If the upstream commit adds a NEW file that is
 in the Allowed Files list, include it — `git cherry-pick` will stage it

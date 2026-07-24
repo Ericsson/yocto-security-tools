@@ -62,6 +62,27 @@ def _read_conclusion(workspace_path: Path) -> Optional[str]:
     return None
 
 
+def _read_escalation(workspace_path: Path) -> Optional[str]:
+    """Read the agent conclusion file if it asked for human review.
+
+    Distinct from :func:`_read_conclusion`: a ``needs_human`` conclusion means
+    the CVE *is* applicable but can't be safely auto-backported (e.g. a
+    prerequisite that reaches outside the allowed files, or a structural
+    dependency). It must escalate to a human — NOT be marked not-applicable,
+    which would wrongly report the vulnerability as a non-issue.
+    """
+    try:
+        conclusion_file = get_agent_dir(workspace_path) / 'conclusion.json'
+        if not conclusion_file.exists():
+            return None
+        data = json.loads(conclusion_file.read_text(encoding='utf-8'))
+        if data.get('needs_human'):
+            return data.get('reason', 'Agent requested human review (no details)')
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
 def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
     """Check if the upstream commit produced no actual changes in the workspace."""
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
@@ -159,6 +180,15 @@ def _run_single_resolution_attempt(
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.SKIPPED,
             attempt, start_time, conclusion_reason
+        ))
+
+    escalation_reason = _read_escalation(workspace_path)
+    if escalation_reason:
+        print("\n\u26a0 Agent escalated to human review:")
+        print(f"  {escalation_reason}")
+        return _AttemptOutcome(result=_make_result(
+            config.cve_id, ResultStatus.ESCALATED,
+            attempt, start_time, escalation_reason
         ))
 
     if not workspace_path.exists():
