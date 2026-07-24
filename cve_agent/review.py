@@ -12,7 +12,7 @@ from shared import build_git_env
 
 from . import AgentConfig, get_agent_dir
 from .git import get_changed_files, run_git_display, run_git_stdout
-from .interdiff import generate_interdiff
+from .interdiff import generate_interdiff, generate_interdiff_artifacts
 
 
 def request_approval(workspace_path: Path, upstream_sha: str,
@@ -214,6 +214,12 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
 def _save_review_diff(workspace_path: Path, upstream_sha: str) -> Path:
     """Save a combined diff file for external review.
 
+    When the ``interdiff`` binary is available, also persists the two
+    patch files it was run against (upstream commit patch and the final
+    backported patch) under ``cve_agent/<recipe>/interdiff-<sha>/``, and
+    appends the exact ``interdiff`` command to the diff file so the
+    delta can be reproduced standalone, outside this tool.
+
     Args:
         workspace_path: Path to workspace.
         upstream_sha: Upstream commit SHA.
@@ -251,11 +257,18 @@ def _save_review_diff(workspace_path: Path, upstream_sha: str) -> Path:
             f"=== BACKPORTED DIFF (original-version..HEAD) ===\n\n"
             f"{backport_diff}\n"
         )
-        interdiff = generate_interdiff(upstream_diff, backport_diff)
-        if interdiff:
+        interdiff_files_dir = agent_dir / f"interdiff-{upstream_sha[:12]}"
+        artifacts = generate_interdiff_artifacts(
+            upstream_diff, backport_diff, keep_files_dir=interdiff_files_dir
+        )
+        if artifacts:
             content += (
                 f"\n=== INTERDIFF (upstream \u2192 backport) ===\n\n"
-                f"{interdiff}\n"
+                f"{artifacts.output}\n"
+                f"--- Reproduce outside this tool ---\n"
+                f"Original upstream patch : {artifacts.old_patch_path}\n"
+                f"Final backported patch  : {artifacts.new_patch_path}\n"
+                f"Command                 : {artifacts.command}\n"
             )
         diff_path.write_text(content, encoding='utf-8')
     return diff_path
