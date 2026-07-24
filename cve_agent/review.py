@@ -43,7 +43,8 @@ def request_approval(workspace_path: Path, upstream_sha: str,
 
     while True:
         response = input(
-            "\nApprove? [y]es / [n]o (fix manually) / [e]dit (re-enter kiro-cli): "
+            f"\nApprove? [y]es / [n]o (fix manually) / "
+            f"[e]dit (re-enter {config.backend}): "
         ).strip().lower()
         if response in ('y', 'yes'):
             amend_commit_with_summary(workspace_path, upstream_sha, summary)
@@ -59,7 +60,7 @@ def request_approval(workspace_path: Path, upstream_sha: str,
                   f" --cve-info {config.cve_info_path}")
             return "rejected", ""
         if response in ('e', 'edit'):
-            feedback = input("What should kiro change? > ").strip()
+            feedback = input(f"What should the {config.backend} agent change? > ").strip()
             return "edit", feedback
         print("Invalid input. Enter y, n, or e.")
 
@@ -102,6 +103,47 @@ def build_change_summary(workspace_path: Path, upstream_sha: str) -> str:
     return '\n'.join(lines)
 
 
+_AGENT_NOTE_MARKERS = (
+    'Conflicts Resolved:',
+    '## ', '### Conflicts Resolved',
+)
+
+
+def _dedupe_agent_notes(commit_msg: str) -> str:
+    """Collapse repeated AI backport-note blocks into a single block.
+
+    Across resolution retries (e.g. conflict fixed, then a later ptest/build
+    failure triggers another AI session), the AI backend may append a
+    fresh ``Conflicts Resolved:`` block on top of one already present from
+    an earlier attempt instead of updating it in place. This strips all but
+    the last such block, keeping the most recent (most complete) resolution
+    notes.
+
+    Args:
+        commit_msg: Full commit message, possibly with duplicated note
+            blocks.
+
+    Returns:
+        Commit message with only the final note block retained.
+    """
+    lines = commit_msg.splitlines()
+    block_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip().startswith(_AGENT_NOTE_MARKERS)
+    ]
+    if len(block_starts) <= 1:
+        return commit_msg
+
+    # Keep everything before the first block, then only the last block
+    # onward — earlier blocks are superseded duplicates.
+    kept = lines[:block_starts[0]] + lines[block_starts[-1]:]
+
+    result = '\n'.join(kept)
+    if commit_msg.endswith('\n') and not result.endswith('\n'):
+        result += '\n'
+    return result
+
+
 def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
                               summary: str) -> None:
     """Amend the HEAD commit message to append the change summary.
@@ -119,74 +161,61 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
     if f"Changes from upstream commit {upstream_sha[:12]}" in current_msg:
         return
 
+    current_msg = _dedupe_agent_notes(current_msg)
     lines = current_msg.rstrip().splitlines()
 
-    has_kiro_notes = any(
-        line.strip().startswith((
-            'Backport-Resolution:', 'Backport changes:',
-            'Conflict resolution notes:',
-            '## ', '### Conflicts Resolved',
-        ))
-        for line in lines
+    has_agent_notes = any(
+        line.strip().startswith(_AGENT_NOTE_MARKERS) for line in lines
     )
 
-    # Detect if 'Backport Resolution:' is the start of the message body
-    # (AI replaced original instead of appending).
-    kiro_note_markers = ('Backport Resolution:', 'Backport-Resolution:',
-                         'Backport changes:', 'Conflict resolution notes:')
-    if not has_kiro_notes:
-        has_kiro_notes = any(
-            line.strip().startswith(kiro_note_markers) for line in lines
-        )
-
     # Check if original upstream message body was preserved.
-    # If the first non-blank line after the subject is a kiro note marker,
-    # or the subject itself is a kiro note, the AI replaced the body.
+    # If the first non-blank line after the subject is a note marker,
+    # or the subject itself is a note, the AI replaced the body.
     original_subject = run_git_stdout(
         ['log', '-1', '--format=%s', upstream_sha], workspace_path
     ).strip()
 
     body_preserved = True
-    if has_kiro_notes and original_subject:
-        # Case 1: subject itself is a kiro marker (entire message replaced)
-        if lines and lines[0].strip().startswith(kiro_note_markers):
+    if has_agent_notes and original_subject:
+        # Case 1: subject itself is a marker (entire message replaced)
+        if lines and lines[0].strip().startswith(_AGENT_NOTE_MARKERS):
             body_preserved = False
         else:
-            # Case 2: subject kept but body starts with kiro note
+            # Case 2: subject kept but body starts with a note
             body_start = 1
             while body_start < len(lines) and not lines[body_start].strip():
                 body_start += 1
             if body_start < len(lines) and lines[body_start].strip().startswith(
-                kiro_note_markers
+                _AGENT_NOTE_MARKERS
             ):
                 body_preserved = False
 
-    if has_kiro_notes and not body_preserved and original_subject:
-        # AI replaced the body — restore original and append kiro notes
+    if has_agent_notes and not body_preserved and original_subject:
+        # AI replaced the body — restore original and append notes
         original_body = run_git_stdout(
             ['log', '-1', '--format=%b', upstream_sha], workspace_path
         ).rstrip()
 
-        # Extract kiro notes from current message
-        kiro_start = None
+        # Extract notes from current message
+        note_start = None
         for i, line in enumerate(lines):
-            if line.strip().startswith(kiro_note_markers):
-                kiro_start = i
+            if line.strip().startswith(_AGENT_NOTE_MARKERS):
+                note_start = i
                 break
-        kiro_notes = '\n'.join(lines[kiro_start:]) if kiro_start is not None else ''
+        agent_notes = '\n'.join(lines[note_start:]) if note_start is not None else ''
 
-        # Reconstruct: original subject + body + kiro notes + summary
+        # Reconstruct: original subject + body + notes + summary
         new_msg = original_subject + '\n'
         if original_body:
             new_msg += '\n' + original_body + '\n'
-        if kiro_notes:
-            new_msg += '\n' + kiro_notes + '\n'
+        if agent_notes:
+            new_msg += '\n' + agent_notes + '\n'
         new_msg += '\n' + summary + '\n'
-    elif has_kiro_notes:
-        # Original message preserved with kiro notes — just append summary
+    elif has_agent_notes:
+        # Original message preserved with notes — just append summary
         new_msg = '\n'.join(lines).strip() + f'\n\n{summary}\n'
     else:
-        # No kiro notes — strip trailing CVE block and append summary
+        # No notes — strip trailing CVE block and append summary
         last_cve_idx = None
         for i in range(len(lines) - 1, -1, -1):
             if lines[i].startswith('CVE:'):

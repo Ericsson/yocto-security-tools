@@ -110,12 +110,12 @@ class TestAmendCommit:
 
     @patch("subprocess.run")
     @patch("cve_agent.review.run_git_stdout",
-           return_value="Fix CVE\n\nBackport-Resolution: adapted")
+           return_value="Fix CVE\n\nConflicts Resolved:\n\na.c (1 conflict):\n- adapted")
     def test_preserves_kiro_notes(self, mock_git, mock_run):
         amend_commit_with_summary(Path("/ws"), "def456", "summary")
         mock_run.assert_called_once()
         msg = mock_run.call_args[0][0][-1]
-        assert "Backport-Resolution" in msg
+        assert "Conflicts Resolved:" in msg
         # Summary is now always appended alongside kiro notes
         assert "summary" in msg
 
