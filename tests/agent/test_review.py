@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cve_agent import AgentConfig
+from cve_agent.interdiff import InterdiffArtifacts
 from cve_agent.review import (
     _display_changes,
     _save_review_diff,
@@ -141,7 +142,7 @@ class TestSaveReviewDiff:
             result = _save_review_diff(Path("/ws"), "abc123456789")
         assert result.exists()
 
-    @patch("cve_agent.review.generate_interdiff", return_value=None)
+    @patch("cve_agent.review.generate_interdiff_artifacts", return_value=None)
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
     @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
     def test_no_interdiff_section_when_unavailable(self, mock_files, mock_git,
@@ -153,13 +154,20 @@ class TestSaveReviewDiff:
         content = result.read_text()
         assert "INTERDIFF" not in content
 
-    @patch("cve_agent.review.generate_interdiff", return_value="-old\n+new\n")
+    @patch("cve_agent.review.generate_interdiff_artifacts")
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
     @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
     def test_interdiff_section_appended_when_available(self, mock_files, mock_git,
                                                         mock_interdiff, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
+        interdiff_dir = agent_dir / "interdiff-abc123456789"
+        mock_interdiff.return_value = InterdiffArtifacts(
+            output="-old\n+new\n",
+            command=f"interdiff {interdiff_dir}/upstream.patch {interdiff_dir}/backport.patch",
+            old_patch_path=interdiff_dir / "upstream.patch",
+            new_patch_path=interdiff_dir / "backport.patch",
+        )
         with patch("cve_agent.review.get_agent_dir", return_value=agent_dir):
             result = _save_review_diff(Path("/ws"), "abc123456789")
         content = result.read_text()
@@ -168,6 +176,14 @@ class TestSaveReviewDiff:
         # Existing sections are preserved as before
         assert "UPSTREAM COMMIT" in content
         assert "BACKPORTED DIFF" in content
+        # Reproduction command and persisted patch paths are logged
+        assert "Reproduce outside this tool" in content
+        assert str(interdiff_dir / "upstream.patch") in content
+        assert str(interdiff_dir / "backport.patch") in content
+        assert "interdiff " in content
+        # The interdiff files dir passed matches the review diff's sha
+        _, kwargs = mock_interdiff.call_args
+        assert kwargs["keep_files_dir"] == agent_dir / "interdiff-abc123456789"
 
 
 class TestDisplayChanges:

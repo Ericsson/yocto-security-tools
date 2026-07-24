@@ -5,7 +5,12 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from cve_agent.interdiff import _ensure_trailing_newline, generate_interdiff
+from cve_agent.interdiff import (
+    InterdiffArtifacts,
+    _ensure_trailing_newline,
+    generate_interdiff,
+    generate_interdiff_artifacts,
+)
 
 UPSTREAM = "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n"
 BACKPORT = "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new2\n"
@@ -165,3 +170,113 @@ class TestGenerateInterdiff:
 
         for content in captured_contents:
             assert not content.endswith("\n\n")
+
+
+class TestGenerateInterdiffArtifacts:
+    @patch("cve_agent.interdiff.shutil.which", return_value=None)
+    @patch("cve_agent.interdiff.subprocess.run")
+    def test_binary_missing_returns_none(self, mock_run, mock_which):
+        assert generate_interdiff_artifacts(UPSTREAM, BACKPORT) is None
+        mock_run.assert_not_called()
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    @patch("cve_agent.interdiff.subprocess.run")
+    def test_success_returns_artifacts_with_command_and_paths(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=0, stdout="-old\n+new2\n", stderr="")
+        result = generate_interdiff_artifacts(UPSTREAM, BACKPORT)
+        assert isinstance(result, InterdiffArtifacts)
+        assert result.output == "-old\n+new2\n"
+        assert result.command.startswith("interdiff ")
+        assert str(result.old_patch_path) in result.command
+        assert str(result.new_patch_path) in result.command
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    @patch("cve_agent.interdiff.subprocess.run")
+    def test_nonzero_exit_returns_none(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+        assert generate_interdiff_artifacts(UPSTREAM, BACKPORT) is None
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    def test_temp_files_cleaned_up_when_no_keep_dir(self, mock_which):
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="delta\n", stderr="")
+
+        with patch("cve_agent.interdiff.subprocess.run", side_effect=fake_run):
+            result = generate_interdiff_artifacts(UPSTREAM, BACKPORT)
+
+        assert result is not None
+        assert not result.old_patch_path.exists()
+        assert not result.new_patch_path.exists()
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    def test_keep_files_dir_persists_both_patches(self, mock_which, tmp_path):
+        keep_dir = tmp_path / "interdiff-out"
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="delta\n", stderr="")
+
+        with patch("cve_agent.interdiff.subprocess.run", side_effect=fake_run):
+            result = generate_interdiff_artifacts(
+                UPSTREAM, BACKPORT, keep_files_dir=keep_dir
+            )
+
+        assert result is not None
+        assert result.old_patch_path == keep_dir / "upstream.patch"
+        assert result.new_patch_path == keep_dir / "backport.patch"
+        assert result.old_patch_path.exists()
+        assert result.new_patch_path.exists()
+        assert result.old_patch_path.read_text(encoding="utf-8") == UPSTREAM
+        assert result.new_patch_path.read_text(encoding="utf-8") == BACKPORT
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    def test_keep_files_dir_command_uses_persisted_paths(self, mock_which, tmp_path):
+        keep_dir = tmp_path / "interdiff-out"
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["argv"] = cmd
+            return MagicMock(returncode=0, stdout="delta\n", stderr="")
+
+        with patch("cve_agent.interdiff.subprocess.run", side_effect=fake_run):
+            result = generate_interdiff_artifacts(
+                UPSTREAM, BACKPORT, keep_files_dir=keep_dir
+            )
+
+        assert result is not None
+        assert result.command == " ".join(captured["argv"])
+        assert result.command == (
+            f"interdiff {keep_dir / 'upstream.patch'} {keep_dir / 'backport.patch'}"
+        )
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    def test_keep_files_dir_not_removed_on_nonzero_exit(self, mock_which, tmp_path):
+        """Even on failure, callers who asked to keep files should not lose
+        them silently — but since no concise delta is produced we still
+        return None; the persisted directory is left in place for
+        troubleshooting rather than being cleaned up."""
+        keep_dir = tmp_path / "interdiff-out"
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=1, stdout="", stderr="error")
+
+        with patch("cve_agent.interdiff.subprocess.run", side_effect=fake_run):
+            result = generate_interdiff_artifacts(
+                UPSTREAM, BACKPORT, keep_files_dir=keep_dir
+            )
+
+        assert result is None
+        assert (keep_dir / "upstream.patch").exists()
+        assert (keep_dir / "backport.patch").exists()
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    def test_generate_interdiff_wraps_artifacts_output(self, mock_which, tmp_path):
+        keep_dir = tmp_path / "interdiff-out"
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout="delta\n", stderr="")
+
+        with patch("cve_agent.interdiff.subprocess.run", side_effect=fake_run):
+            result = generate_interdiff(UPSTREAM, BACKPORT, keep_files_dir=keep_dir)
+
+        assert result == "delta\n"
+        assert (keep_dir / "upstream.patch").exists()
