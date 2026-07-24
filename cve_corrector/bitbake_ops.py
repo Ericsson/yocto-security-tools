@@ -131,6 +131,27 @@ def deduce_meta_layer_from_recipe(recipe: str) -> Optional[Path]:
     return None
 
 
+def get_layerseries_corename() -> Optional[str]:
+    """Get the release corename from ``LAYERSERIES_CORENAMES``.
+
+    Used as the ``git format-patch --subject-prefix`` when exporting a patch
+    for mailing-list submission, e.g. ``scarthgap][PATCH``, so reviewers can
+    immediately tell which stable branch the patch targets (see the Yocto
+    Project submit-changes guide). ``LAYERSERIES_CORENAMES`` may list more
+    than one corename (space-separated) for compatibility; the last one is
+    the current release name.
+
+    Returns:
+        The current release corename (e.g. ``"scarthgap"``), or None if it
+        cannot be determined (missing BBPATH, bitbake-getvar failure, etc).
+    """
+    result = run_cmd_capture(['bitbake-getvar', 'LAYERSERIES_CORENAMES', '--value'])
+    if result.returncode != 0:
+        return None
+    corenames = result.stdout.strip().split()
+    return corenames[-1] if corenames else None
+
+
 def get_recipe_src_uri_git(recipe: str) -> Optional[str]:
     """Extract git repository URL from recipe's SRC_URI.
 
