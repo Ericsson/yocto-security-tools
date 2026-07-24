@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for cve_agent interactive mode and session behavior."""
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +46,29 @@ class TestInteractiveFlag:
             bbappend=False, skip_cve_applicability=False, interactive=True)
         cfg = _config_from_args(args, 'CVE-1')
         assert cfg.interactive is True
+
+    def test_cli_default_is_non_interactive(self, monkeypatch):
+        """No -i/--interactive flag -> non-interactive, safe for CI."""
+        from cve_agent.__main__ import _parse_args
+        monkeypatch.setattr(sys, 'argv', [
+            'cve-agent', '--cve-id', 'CVE-2024-1234',
+            '--cve-info', '/tmp/x.json'])
+        args = _parse_args()
+        assert args.interactive is False
+
+    def test_cli_short_flag_matches_long_flag(self, monkeypatch):
+        """-i is a backward-compatible alias for --interactive."""
+        from cve_agent.__main__ import _parse_args
+        monkeypatch.setattr(sys, 'argv', [
+            'cve-agent', '--cve-id', 'CVE-2024-1234',
+            '--cve-info', '/tmp/x.json', '-i'])
+        short_args = _parse_args()
+        monkeypatch.setattr(sys, 'argv', [
+            'cve-agent', '--cve-id', 'CVE-2024-1234',
+            '--cve-info', '/tmp/x.json', '--interactive'])
+        long_args = _parse_args()
+        assert short_args.interactive is True
+        assert long_args.interactive is True
 
 
 class TestInteractiveAgentSelection:
