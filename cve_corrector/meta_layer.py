@@ -9,19 +9,30 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
-from .bitbake_ops import get_build_path
+from .bitbake_ops import get_build_path, get_layerseries_corename
 from .git_ops import get_git_user_info
 from .recipe_ops import _append_src_uri_entries
 from .utils import logger, run_cmd, run_cmd_capture
 
 
 def _export_commit_patch(meta_layer: Path) -> None:
-    """Export the latest commit as a patch file under BBPATH/patches/."""
+    """Export the latest commit as a patch file under BBPATH/patches/.
+
+    The patch subject is prefixed with the release corename (from
+    ``LAYERSERIES_CORENAMES``), e.g. ``[scarthgap][PATCH]``, following the
+    Yocto Project convention for submitting fixes to a stable branch (see
+    "Submitting Changes to Stable Release Branches" in the Yocto Project
+    contributor guide). This lets mailing-list reviewers immediately see
+    which release the patch targets. If the corename can't be determined,
+    the patch is exported without a subject prefix.
+    """
     patches_dir = get_build_path() / 'patches'
     patches_dir.mkdir(parents=True, exist_ok=True)
-    result = run_cmd_capture(
-        ['git', 'format-patch', '-1', 'HEAD', '-o', str(patches_dir)],
-        cwd=meta_layer)
+    cmd = ['git', 'format-patch', '-1', 'HEAD', '-o', str(patches_dir)]
+    corename = get_layerseries_corename()
+    if corename:
+        cmd += ['--subject-prefix', f'{corename}][PATCH']
+    result = run_cmd_capture(cmd, cwd=meta_layer)
     if result.returncode == 0 and result.stdout.strip():
         logger.info("Exported patch: %s", result.stdout.strip())
     else:
