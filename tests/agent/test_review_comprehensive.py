@@ -13,31 +13,11 @@ from cve_agent.review import (
 class TestAmendSkipsKiroNotes:
     @patch('subprocess.run')
     @patch('cve_agent.review.run_git_stdout',
-           return_value='Fix CVE\n\nBackport-Resolution: adapted')
-    def test_skips_backport_resolution(self, mock_git, mock_run):
+           return_value='Fix CVE\n\nConflicts Resolved:\n\na.c (1 conflict):\n- adapted')
+    def test_skips_conflicts_resolved(self, mock_git, mock_run):
         amend_commit_with_summary(Path('/ws'), 'def456', 'summary')
         msg = mock_run.call_args[0][0][-1]
-        assert 'Backport-Resolution' in msg
-        # Summary is now appended alongside kiro notes
-        assert 'summary' in msg
-
-    @patch('subprocess.run')
-    @patch('cve_agent.review.run_git_stdout',
-           return_value='Fix CVE\n\nBackport changes: adapted code')
-    def test_skips_backport_changes(self, mock_git, mock_run):
-        amend_commit_with_summary(Path('/ws'), 'def456', 'summary')
-        msg = mock_run.call_args[0][0][-1]
-        assert 'Backport changes' in msg
-        # Summary is now appended alongside kiro notes
-        assert 'summary' in msg
-
-    @patch('subprocess.run')
-    @patch('cve_agent.review.run_git_stdout',
-           return_value='Fix CVE\n\nConflict resolution notes: adapted')
-    def test_skips_conflict_resolution_notes(self, mock_git, mock_run):
-        amend_commit_with_summary(Path('/ws'), 'def456', 'summary')
-        msg = mock_run.call_args[0][0][-1]
-        assert 'Conflict resolution notes' in msg
+        assert 'Conflicts Resolved:' in msg
         # Summary is now appended alongside kiro notes
         assert 'summary' in msg
 

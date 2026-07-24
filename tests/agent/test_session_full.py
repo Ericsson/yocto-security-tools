@@ -109,9 +109,9 @@ class TestSplitDiffByFile:
 
 class TestGetBackportNote:
     @patch("cve_agent.session.run_git_stdout",
-           return_value="Fix CVE\n\nBackport-Resolution: adapted code")
+           return_value="Fix CVE\n\nConflicts Resolved:\n\na.c (1 conflict):\n- adapted code")
     def test_finds_note(self, _):
-        assert "Backport-Resolution" in _get_backport_note(Path("/ws"))
+        assert "adapted code" in _get_backport_note(Path("/ws"))
 
     @patch("cve_agent.session.run_git_stdout", return_value="Fix CVE\n\nSigned-off-by: x")
     def test_no_note(self, _):

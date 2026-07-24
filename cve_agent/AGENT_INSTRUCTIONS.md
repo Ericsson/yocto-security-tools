@@ -175,6 +175,14 @@ file contains the original upstream commit subject and body. You MUST keep it
 intact and only **append** your backport notes after it. Never replace or rewrite
 the original message.
 
+**If this is a retry** (e.g. a build or ptest failure triggered another
+session after conflicts were already resolved), run `git log -1 --format=%B`
+first. If it already contains a `Conflicts Resolved:` block from a previous
+attempt, **update that existing block in place** — amend it to reflect the
+current state of the resolution — rather than appending a second block. The
+final commit message must contain exactly one `Conflicts Resolved:` block
+and one `Assisted-by:` trailer.
+
 Only append notes if you adapted the patch. Use EXACTLY this markdown format — no
 alternative headers like "Conflict resolution notes:" or "Backport changes:".
 
@@ -182,9 +190,6 @@ Append the following block after the original commit message (separated by a
 blank line):
 
 ```
-Backport Resolution: <One or two sentences explaining what the upstream commit does — the functional
-change, not the conflict details.>
-
 Conflicts Resolved:
 
 <file> (<N> conflict[s]):
@@ -197,10 +202,12 @@ Conflicts Resolved:
 Rules:
 - **Never delete or rewrite the original subject line or body** from `.git/MERGE_MSG`
 - Append your notes after the existing message, separated by a blank line
-- Start with a summary of the upstream fix's purpose (what it changes, why)
-- List ONLY files that had conflicts or required adaptation — skip clean files
-- For each file, state the conflict count and describe each adaptation
-- Mention specific function names, types, APIs, and why the stable branch differs
+- `Conflicts Resolved` owns all technical detail: list ONLY files that had
+  conflicts or required adaptation (skip clean files); for each, state the
+  conflict count and describe the adaptation with specific function names,
+  types, APIs, and why the stable branch differs
+- **No duplication**: each fact (what changed, in which function, why) must
+  appear exactly once
 - Omitted files: `<file>: omitted (not in branch)`
 - Do NOT add a "Changes from upstream" section (the agent generates that)
 - If you adapted the patch (not a verbatim cherry-pick), add a trailer line

@@ -215,13 +215,24 @@ def _split_diff_by_file(diff: str) -> dict[str, str]:
 
 
 def _get_backport_note(workspace_path: Path) -> str:
-    """Extract the first backport-related line from the HEAD commit message."""
+    """Extract a representative backport-rationale line from HEAD's message.
+
+    ``Conflicts Resolved:`` is just a bare section header with no content
+    of its own, so this returns the first ``- <detail>`` bullet under it —
+    the closest thing to a one-line rationale in the current format.
+    """
     commit_msg = run_git_stdout(['log', '-1', '--format=%B'], cwd=workspace_path)
-    for line in commit_msg.splitlines():
-        if ('Backport-Resolution' in line
-                or 'Backport Resolution' in line
-                or 'Conflicts Resolved' in line
-                or 'backport' in line.lower()):
+    lines = commit_msg.splitlines()
+    in_conflicts_block = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('Conflicts Resolved:'):
+            in_conflicts_block = True
+            continue
+        if in_conflicts_block and stripped.startswith('- '):
+            return stripped
+    for line in lines:
+        if 'backport' in line.lower():
             return line.strip()
     return ''
 
