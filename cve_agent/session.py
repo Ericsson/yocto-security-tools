@@ -119,6 +119,14 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # to handle cases where upstream SHA paths differ from workspace layout
     allowed = _expand_path_variants(allowed, workspace_path)
 
+    # The allowed set is the hard scope boundary for the whole session. It
+    # intentionally permits the agent to bring in an in-scope prerequisite
+    # (Strategy A in AGENT_INSTRUCTIONS.md): a `git cherry-pick` of a
+    # prerequisite commit whose files are all within `allowed` passes the
+    # pre-commit hook and survives revert_unauthorized_changes as its own
+    # commit. A prerequisite reaching files OUTSIDE `allowed` is rejected by
+    # the hook (and stripped post-session), which is the mechanical signal
+    # for the agent to fall back to human review rather than widen its scope.
     install_scope_hook(workspace_path, allowed)
     print(f"\n=== Allowed files for this session ({len(allowed)}) ===")
     for f in sorted(allowed):

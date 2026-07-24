@@ -21,6 +21,53 @@ def _cfg(**kwargs):
     defaults.update(kwargs)
     return AgentConfig(**defaults)
 
+class TestReadEscalation:
+    """_read_escalation recognizes the needs_human conclusion (Strategy E),
+    distinct from the not_applicable conclusion."""
+
+    def _write(self, tmp_path, payload):
+        import json as _json
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        (agent_dir / "conclusion.json").write_text(_json.dumps(payload))
+        return agent_dir
+
+    def test_needs_human_returns_reason(self, tmp_path):
+        from cve_agent.orchestrator import _read_escalation
+        agent_dir = self._write(
+            tmp_path, {"needs_human": True, "reason": "prereq touches out-of-scope files"})
+        with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
+            assert _read_escalation(tmp_path) == "prereq touches out-of-scope files"
+
+    def test_needs_human_without_reason_has_default(self, tmp_path):
+        from cve_agent.orchestrator import _read_escalation
+        agent_dir = self._write(tmp_path, {"needs_human": True})
+        with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
+            assert "human review" in _read_escalation(tmp_path)
+
+    def test_not_applicable_is_not_escalation(self, tmp_path):
+        """A not_applicable conclusion must NOT read as an escalation."""
+        from cve_agent.orchestrator import _read_escalation
+        agent_dir = self._write(
+            tmp_path, {"not_applicable": True, "reason": "code absent"})
+        with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
+            assert _read_escalation(tmp_path) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        from cve_agent.orchestrator import _read_escalation
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
+            assert _read_escalation(tmp_path) is None
+
+    def test_get_agent_dir_failure_returns_none(self, tmp_path):
+        """A read helper must never crash the loop if agent_dir can't resolve."""
+        from cve_agent.orchestrator import _read_escalation
+        with patch("cve_agent.orchestrator.get_agent_dir",
+                   side_effect=OSError("permission denied")):
+            assert _read_escalation(tmp_path) is None
+
+
 
 class TestProcessSingleCve:
     @patch("cve_agent.__main__._log_result")
