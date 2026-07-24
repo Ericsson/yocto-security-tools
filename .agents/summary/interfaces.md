@@ -103,7 +103,8 @@ Required:
 
 Options:
   --trust                 Auto-approve AI changes (no human review)
-  --interactive           Use interactive AI agent (human-in-the-loop)
+  -i, --interactive       Use interactive AI agent (human-in-the-loop);
+                          omit for non-interactive/CI use (default)
   --backend NAME          AI backend to use (default: kiro)
   --model NAME            AI model (default: claude-sonnet-5)
   --max-retries N         Per-step retry limit (default: 3)

@@ -229,8 +229,9 @@ def _parse_args() -> argparse.Namespace:
                         help='Timeout per session in seconds (default: %(default)s)')
     ai_group.add_argument('--trust', action='store_true',
                         help='Skip human review (NOT recommended)')
-    ai_group.add_argument('--interactive', action='store_true',
-                        help='Enable interactive mode')
+    ai_group.add_argument('-i', '--interactive', action='store_true',
+                        help='Enable interactive mode (human-in-the-loop). '
+                             'Omit for non-interactive/CI use (default).')
 
     # --- Build control ---
     build_group = parser.add_argument_group('build control')
