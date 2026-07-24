@@ -72,13 +72,29 @@ class TestBuildHeader:
         result = _build_header("CVE-1", "busybox", 0, ws, {})
         assert "tmp-glibc" in result
 
+    @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc"])
+    @patch("cve_agent.context.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.context.run_git_stdout", return_value="")
+    def test_working_dir_does_not_instruct_cd(self, mock_git, mock_sha, mock_all, tmp_path):
+        """The header must not render a runnable `cd <path>` — the shell
+        already runs in the workspace, and a `cd ... && cmd` wrapper is
+        rejected by the command allow-list. Regression guard for the
+        `cd /ws && git status` rejection."""
+        result = _build_header("CVE-1", "busybox", EXIT_CONFLICT, tmp_path, {})
+        assert f"cd {tmp_path}" not in result
+        assert "bare" in result.lower()
+
 
 class TestBuildPhaseInstructions:
     def test_file_exists(self, tmp_path):
+        """Returns a short pointer, not the full file content (already
+        delivered via the session's system prompt)."""
         instructions = tmp_path / "AGENT_INSTRUCTIONS.md"
         instructions.write_text("# Do stuff")
         with patch("cve_agent.context.resolve_agent_instructions", return_value=instructions):
-            assert "Do stuff" in _build_phase_instructions()
+            result = _build_phase_instructions()
+            assert "Do stuff" not in result
+            assert "AGENT_INSTRUCTIONS.md" in result
 
     def test_file_missing(self, tmp_path):
         with patch("cve_agent.context.resolve_agent_instructions",

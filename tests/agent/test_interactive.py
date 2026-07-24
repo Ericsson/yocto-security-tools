@@ -73,13 +73,62 @@ class TestInteractiveAgentSelection:
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
         cmd = mock_run.call_args_list[0][0][0]
         assert '--no-interactive' in cmd
-        assert '--trust-tools=fs_read,fs_write,execute_bash' in cmd
+        assert '--trust-tools' not in cmd
+        assert '--trust-all-tools' not in cmd
+
+
+class TestNonInteractivePromptIncludesInstructions:
+    """CI (--no-interactive) runs inline AGENT_INSTRUCTIONS.md into the query
+    text itself, since kiro-cli has no --append-system-prompt equivalent and
+    there's no human to notice a silently-unresolved file:// agent prompt."""
+
+    @patch('subprocess.run')
+    def test_non_interactive_prompt_prepends_instructions(self, mock_run, tmp_path):
+        instructions_file = tmp_path / 'AGENT_INSTRUCTIONS.md'
+        instructions_file.write_text('# CVE Backport Agent Instructions\n'
+                                     'Use fs_read for everything.',
+                                     encoding='utf-8')
+        with patch('cve_agent.resolve_agent_instructions',
+                   return_value=instructions_file):
+            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
+                            interactive=False)
+        cmd = mock_run.call_args_list[0][0][0]
+        query = cmd[-1]
+        assert 'Use fs_read for everything.' in query
+        assert 'Read /ctx.md' in query
+
+    @patch('subprocess.run')
+    def test_interactive_prompt_does_not_duplicate_instructions(
+            self, mock_run, tmp_path):
+        """Interactive already gets instructions via the agent config's
+        file:// prompt; inlining them again would be redundant noise."""
+        instructions_file = tmp_path / 'AGENT_INSTRUCTIONS.md'
+        instructions_file.write_text('# CVE Backport Agent Instructions',
+                                     encoding='utf-8')
+        with patch('cve_agent.resolve_agent_instructions',
+                   return_value=instructions_file):
+            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
+                            interactive=True)
+        cmd = mock_run.call_args_list[0][0][0]
+        query = cmd[-1]
+        assert query == 'Read /ctx.md'
+
+    @patch('subprocess.run')
+    def test_missing_instructions_file_falls_back_to_plain_prompt(
+            self, mock_run, tmp_path):
+        missing = tmp_path / 'does-not-exist.md'
+        with patch('cve_agent.resolve_agent_instructions', return_value=missing):
+            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
+                            interactive=False)
+        cmd = mock_run.call_args_list[0][0][0]
+        assert cmd[-1] == 'Read /ctx.md'
 
     @patch('subprocess.run')
     def test_interactive_omits_trust_tools(self, mock_run):
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=True)
         cmd = mock_run.call_args_list[0][0][0]
-        assert '--trust-tools=fs_read,fs_write,execute_bash' not in cmd
+        assert '--trust-tools' not in ' '.join(cmd)
+        assert '--trust-all-tools' not in cmd
 
 
 class TestSessionErrorHandling:
@@ -94,3 +143,51 @@ class TestSessionErrorHandling:
     @patch('subprocess.run', side_effect=[FileNotFoundError, MagicMock(returncode=0, stdout='')])
     def test_kiro_not_found_returns_false(self, _):
         assert _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300) is False
+
+
+class TestTranscriptCapture:
+    """Interactive sessions are wrapped with `script` to capture a
+    stdin+stdout transcript, without disrupting the live TTY kiro-cli needs
+    for its prompts."""
+
+    def test_wrap_with_script_captures_stdin_and_stdout(self):
+        cmd = ['kiro-cli', 'chat', '--agent', 'yocto-cve-backport-interactive',
+               '--model', 'm', 'do the thing']
+        wrapped = _kiro._wrap_with_script(cmd, Path('/tmp/session.log'))
+        assert wrapped[0] == 'script'
+        assert '-B' in wrapped
+        assert str(Path('/tmp/session.log')) in wrapped
+        assert '-c' in wrapped
+        # The original command is preserved (shell-quoted) after -c.
+        inner = wrapped[wrapped.index('-c') + 1]
+        assert 'kiro-cli' in inner
+        assert 'yocto-cve-backport-interactive' in inner
+
+    def test_wrap_with_script_returns_none_without_script_binary(self):
+        cmd = ['kiro-cli', 'chat', 'x']
+        with patch('shutil.which', return_value=None):
+            assert _kiro._wrap_with_script(cmd, Path('/tmp/session.log')) is None
+
+    def test_transcript_path_none_on_uncreatable_dir(self):
+        # /ws doesn't exist and isn't creatable in the test sandbox, so this
+        # must fail gracefully rather than raising.
+        assert _kiro._transcript_path(Path('/ws')) is None
+
+    @patch('subprocess.run')
+    def test_interactive_session_wraps_with_script_when_dir_creatable(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout='')
+        with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
+            _spawn_kiro_cli(Path('/ctx.md'), tmp_path, 'model', 300, interactive=True)
+        cmd = mock_run.call_args_list[0][0][0]
+        assert cmd[0] == 'script'
+        inner = cmd[cmd.index('-c') + 1]
+        assert 'yocto-cve-backport-interactive' in inner
+
+    @patch('subprocess.run')
+    def test_non_interactive_session_never_wrapped(self, mock_run, tmp_path):
+        """Non-interactive runs are unaffected by transcript capture."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='')
+        with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
+            _spawn_kiro_cli(Path('/ctx.md'), tmp_path, 'model', 300, interactive=False)
+        cmd = mock_run.call_args_list[0][0][0]
+        assert cmd[0] == 'kiro-cli'

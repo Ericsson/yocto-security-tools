@@ -9,11 +9,15 @@ from cve_agent.context import _build_phase_instructions, _gather_interdiff, buil
 
 
 def test_build_phase_instructions_file_exists(tmp_path):
+    """When the instructions file exists, a short pointer is returned —
+    not the full file content, which already reaches the model via the
+    system prompt (see cve_agent.kiro_backend / cve_agent.claude_backend)."""
     instructions = tmp_path / "AGENT_INSTRUCTIONS.md"
     instructions.write_text("# Instructions\nDo the thing.")
     with mock_patch("cve_agent.context.resolve_agent_instructions", return_value=instructions):
         result = _build_phase_instructions()
-    assert "Do the thing" in result
+    assert "Do the thing" not in result
+    assert "AGENT_INSTRUCTIONS.md" in result
 
 
 def test_build_phase_instructions_missing(tmp_path):

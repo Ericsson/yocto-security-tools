@@ -37,6 +37,20 @@ class AIBackend:
     def setup(self, **kwargs) -> None:
         """Perform any one-time setup."""
 
+    def tool_preamble(self) -> str:
+        """Backend-specific tool-name guidance to prepend to AGENT_INSTRUCTIONS.md.
+
+        AGENT_INSTRUCTIONS.md is shared verbatim across backends and
+        intentionally avoids naming concrete tools (different backends
+        expose different tool names for file I/O and shell execution).
+        Override this to supply that mapping — e.g. "use `fs_read` for file
+        inspection" for kiro-cli, "use `Read`/`Bash` for file inspection"
+        for Claude Code. Returns "" by default (no preamble), which is fine
+        for backends whose runtime already documents its own tool names to
+        the model independently of these instructions.
+        """
+        return ""
+
 
 _BACKENDS: dict[str, AIBackend] = {}
 
