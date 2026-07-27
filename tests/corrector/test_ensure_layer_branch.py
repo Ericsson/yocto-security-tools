@@ -51,7 +51,9 @@ def test_ensure_layer_branch_detached_head(tmp_path):
 
 @patch("cve_corrector.workflow.setup_devtool_workspace")
 @patch("cve_corrector.workflow.check_cve_patch_in_src_uri", return_value=None)
-def test_initialize_fails_fast_on_detached_meta_layer(mock_src_uri, mock_setup, tmp_path):
+@patch("cve_corrector.workflow.check_cve_status", return_value=None)
+def test_initialize_fails_fast_on_detached_meta_layer(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
     """The detached-HEAD guard runs before the expensive workspace setup."""
     _init_repo(tmp_path)
     subprocess.run(['git', 'checkout', '--detach'], cwd=tmp_path, check=True,
@@ -67,7 +69,9 @@ def test_initialize_fails_fast_on_detached_meta_layer(mock_src_uri, mock_setup, 
 @patch("cve_corrector.workflow.setup_devtool_workspace",
        side_effect=RuntimeError("stop after pre-flight"))
 @patch("cve_corrector.workflow.check_cve_patch_in_src_uri", return_value=None)
-def test_initialize_passes_preflight_when_on_branch(mock_src_uri, mock_setup, tmp_path):
+@patch("cve_corrector.workflow.check_cve_status", return_value=None)
+def test_initialize_passes_preflight_when_on_branch(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
     """When the meta-layer is on a branch, the pre-flight passes and setup runs."""
     _init_repo(tmp_path)  # left on default branch
     cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
@@ -81,7 +85,9 @@ def test_initialize_passes_preflight_when_on_branch(mock_src_uri, mock_setup, tm
 @patch("cve_corrector.workflow.setup_devtool_workspace")
 @patch("cve_corrector.workflow.check_cve_patch_in_src_uri",
        return_value="CVE-2026-0001.patch")
-def test_initialize_fails_fast_when_patch_already_in_src_uri(mock_src_uri, mock_setup, tmp_path):
+@patch("cve_corrector.workflow.check_cve_status", return_value=None)
+def test_initialize_fails_fast_when_patch_already_in_src_uri(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
     """AlreadyAppliedError is raised before touching the meta-layer or devtool."""
     from cve_corrector.state import AlreadyAppliedError
     cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
@@ -90,3 +96,52 @@ def test_initialize_fails_fast_when_patch_already_in_src_uri(mock_src_uri, mock_
         initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
     mock_setup.assert_not_called()
     mock_src_uri.assert_called_once_with("bzip2", "CVE-2026-0001")
+
+
+@patch("cve_corrector.workflow.setup_devtool_workspace")
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri")
+@patch("cve_corrector.workflow.check_cve_status",
+       return_value=("Ignored", "not-applicable-platform: Windows only"))
+def test_initialize_fails_fast_when_cve_status_ignored(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
+    """IgnoredByStatusError is raised before the SRC_URI check or devtool setup."""
+    from cve_corrector.state import IgnoredByStatusError
+    cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
+                                  "hash_details": []}}
+    with pytest.raises(IgnoredByStatusError):
+        initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
+    mock_setup.assert_not_called()
+    mock_src_uri.assert_not_called()
+    mock_status.assert_called_once_with("bzip2", "CVE-2026-0001")
+
+
+@patch("cve_corrector.workflow.setup_devtool_workspace")
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri")
+@patch("cve_corrector.workflow.check_cve_status",
+       return_value=("Patched", "fixed-version: fixed externally"))
+def test_initialize_fails_fast_when_cve_status_patched(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
+    """A Patched CVE_STATUS also short-circuits before devtool setup."""
+    from cve_corrector.state import IgnoredByStatusError
+    cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
+                                  "hash_details": []}}
+    with pytest.raises(IgnoredByStatusError):
+        initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
+    mock_setup.assert_not_called()
+    mock_src_uri.assert_not_called()
+
+
+@patch("cve_corrector.workflow.setup_devtool_workspace",
+       side_effect=RuntimeError("stop after pre-flight"))
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri", return_value=None)
+@patch("cve_corrector.workflow.check_cve_status",
+       return_value=("Unpatched", "vulnerable-investigating: under review"))
+def test_initialize_continues_when_cve_status_unpatched(
+        mock_status, mock_src_uri, mock_setup, tmp_path):
+    """An Unpatched CVE_STATUS does not block the workflow."""
+    _init_repo(tmp_path)
+    cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
+                                  "hash_details": []}}
+    with pytest.raises(RuntimeError, match="stop after pre-flight"):
+        initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
+    mock_setup.assert_called_once()

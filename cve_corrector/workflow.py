@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .bitbake_ops import check_cve_patch_in_src_uri, get_state_dir
+from .bitbake_ops import check_cve_patch_in_src_uri, check_cve_status, get_state_dir
 from .blame import check_vulnerability_origin
 from .cherry_pick import (
     apply_series,
@@ -39,6 +39,7 @@ from .state import (
     BuildPreexistingError,
     ConflictError,
     GitError,
+    IgnoredByStatusError,
     MetadataError,
     NotApplicableError,
     PtestError,
@@ -525,6 +526,21 @@ def initialize_cve_workflow(
         raise MetadataError("Metadata error")
 
     logger.info("Processing %s for recipe: %s", cve_id, recipe)
+
+    # Pre-flight: fail fast if the recipe already carries a CVE_STATUS entry
+    # for this CVE marking it as Ignored (e.g. not-applicable-platform,
+    # cpe-incorrect) or already Patched (e.g. fixed-version). This reflects
+    # a human decision recorded in the recipe and must take priority over
+    # attempting to backport a fix. Runs before the SRC_URI check since it
+    # is the more authoritative signal.
+    cve_status = check_cve_status(recipe, cve_id)
+    if cve_status:
+        status_state, raw_value = cve_status
+        if status_state in ('Ignored', 'Patched'):
+            logger.info("CVE %s: CVE_STATUS marks recipe as %s — %s",
+                        cve_id, status_state, raw_value)
+            raise IgnoredByStatusError(
+                f"CVE_STATUS marks {cve_id} as {status_state}: {raw_value}")
 
     # Pre-flight: fail fast if the CVE patch is already listed in the
     # recipe's SRC_URI (e.g. CVE-2024-1234.patch). This is cheaper than

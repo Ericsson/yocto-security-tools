@@ -210,6 +210,58 @@ def check_cve_patch_in_src_uri(recipe: str, cve_id: str) -> Optional[str]:
     return None
 
 
+# Maps CVE_STATUS reason keywords to their final CVE_CHECK_STATUSMAP state.
+# Mirrors the default mapping in oe-core's meta/conf/cve-check-map.conf.
+# Reasons not listed here are treated as "Unpatched" (e.g. "unpatched",
+# "vulnerable-investigating") and do not block backporting.
+_CVE_STATUS_IGNORED_REASONS = frozenset({
+    'ignored', 'cpe-incorrect', 'disputed', 'not-applicable-config',
+    'not-applicable-platform', 'upstream-wontfix',
+})
+_CVE_STATUS_PATCHED_REASONS = frozenset({
+    'patched', 'backported-patch', 'cpe-stable-backport', 'fixed-version',
+})
+
+
+def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
+    """Check the recipe's existing CVE_STATUS flag for this CVE.
+
+    Runs ``bitbake-getvar CVE_STATUS -f <cve_id> -r <recipe> --value`` and,
+    if set, maps the "reason: description" value to the final CVE state
+    (``Patched``, ``Unpatched``, or ``Ignored``) using the same reason
+    keywords as oe-core's ``cve-check-map.conf``.
+
+    Args:
+        recipe: Recipe name to query.
+        cve_id: CVE identifier to look for (e.g. ``"CVE-2024-1234"``).
+
+    Returns:
+        A ``(state, raw_value)`` tuple where ``state`` is one of
+        ``"Patched"``, ``"Unpatched"``, or ``"Ignored"``, and ``raw_value``
+        is the full ``CVE_STATUS`` value as set in the recipe. Returns
+        None if CVE_STATUS is not set for this CVE or could not be
+        determined.
+    """
+    result = run_cmd_capture([
+        'bitbake-getvar', 'CVE_STATUS', '-f', cve_id, '-r', recipe,
+        '--value', '--ignore-undefined'])
+    if result.returncode != 0:
+        return None
+
+    raw_value = result.stdout.strip()
+    if not raw_value:
+        return None
+
+    reason = raw_value.split(':', 1)[0].strip().lower()
+    if reason in _CVE_STATUS_IGNORED_REASONS:
+        state = 'Ignored'
+    elif reason in _CVE_STATUS_PATCHED_REASONS:
+        state = 'Patched'
+    else:
+        state = 'Unpatched'
+    return state, raw_value
+
+
 def get_upstream_check_uri(recipe: str) -> Optional[str]:
     """Get UPSTREAM_CHECK_URI from recipe if it points to a git repository.
 

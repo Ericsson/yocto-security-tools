@@ -1,7 +1,12 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """CVE Corrector - Automated CVE patching tool for Yocto recipes."""
-from .bitbake_ops import deduce_meta_layer_from_recipe, find_mirror_repo, resolve_meta_layer
+from .bitbake_ops import (
+    check_cve_status,
+    deduce_meta_layer_from_recipe,
+    find_mirror_repo,
+    resolve_meta_layer,
+)
 from .state import (
                     EXIT_ALREADY_APPLIED,
                     EXIT_BUILD_ERROR,
@@ -10,6 +15,7 @@ from .state import (
                     EXIT_CONFLICT,
                     EXIT_DEVTOOL_ERROR,
                     EXIT_GIT_ERROR,
+                    EXIT_IGNORED_BY_STATUS,
                     EXIT_METADATA_ERROR,
                     EXIT_PATCH_ERROR,
                     EXIT_PTEST_ERROR,
@@ -33,9 +39,10 @@ __all__ = [
     'EXIT_SUCCESS', 'EXIT_CONFLICT', 'EXIT_CHECKOUT_ERROR', 'EXIT_PTEST_ERROR',
     'EXIT_BUILD_ERROR', 'EXIT_PATCH_ERROR', 'EXIT_METADATA_ERROR', 'EXIT_GIT_ERROR',
     'EXIT_DEVTOOL_ERROR', 'EXIT_BUILD_PREEXISTING', 'EXIT_ALREADY_APPLIED',
+    'EXIT_IGNORED_BY_STATUS',
     'load_cve_metadata', 'save_workflow_state', 'save_progress',
     'initialize_cve_workflow', 'finish_cve_workflow',
     'continue_from_conflict', 'WorkflowConfig', 'find_mirror_repo',
     'deduce_meta_layer_from_recipe', 'resolve_meta_layer',
-    'filter_by_skip_sources',
+    'filter_by_skip_sources', 'check_cve_status',
 ]

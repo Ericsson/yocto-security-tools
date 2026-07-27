@@ -25,6 +25,7 @@ Exit codes (canonical definitions in cve_corrector/state.py):
 - 10: Pre-existing build failure (recipe already broken before patching)
 - 11: CVE fix already present in source tree
 - 12: Vulnerable code not present in recipe version (not applicable)
+- 16: Recipe's CVE_STATUS marks this CVE as Ignored or already Patched
 """
 import argparse
 import os
@@ -36,6 +37,7 @@ from typing import Optional
 
 from . import (
     EXIT_ALREADY_APPLIED,
+    EXIT_IGNORED_BY_STATUS,
     EXIT_METADATA_ERROR,
     WorkflowConfig,
     continue_from_conflict,
@@ -46,7 +48,12 @@ from . import (
     load_cve_metadata,
     resolve_meta_layer,
 )
-from .bitbake_ops import check_cve_patch_in_src_uri, cleanup_workspace, get_build_path
+from .bitbake_ops import (
+    check_cve_patch_in_src_uri,
+    check_cve_status,
+    cleanup_workspace,
+    get_build_path,
+)
 from .state import WorkflowError
 from .utils import logger, setup_logging
 
@@ -195,6 +202,18 @@ def main():
 
     if args.clean:
         cleanup_workspace(str(get_build_path()))
+
+    # Fail fast if the recipe's CVE_STATUS already marks this CVE as
+    # Ignored or Patched (a human decision recorded in the recipe) — skip
+    # meta-layer deduction and the rest of the workflow entirely.
+    if not args.mark_not_applicable and not args.dry_run:
+        cve_status = check_cve_status(recipe_name, args.cve_id)
+        if cve_status:
+            status_state, raw_value = cve_status
+            if status_state in ('Ignored', 'Patched'):
+                print(f"CVE {args.cve_id}: CVE_STATUS marks recipe as "
+                      f"{status_state} — {raw_value}")
+                sys.exit(EXIT_IGNORED_BY_STATUS)
 
     # Fail fast if the CVE patch is already listed in the recipe's SRC_URI
     # (e.g. CVE-2024-1234.patch) — skip meta-layer deduction and the rest of

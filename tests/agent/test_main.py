@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cve_agent import (
+    EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
     AgentConfig,
     CveResult,
@@ -468,3 +469,17 @@ class TestProcessSingleCveNotApplicable:
         result = process_single_cve(_cfg(), kb)
         assert result.status == ResultStatus.SKIPPED
         assert "not present" in result.resolution_summary
+
+
+class TestProcessSingleCveIgnoredByStatus:
+    @patch("cve_agent.__main__._log_result")
+    @patch("cve_agent.orchestrator.run_corrector",
+           return_value=(EXIT_IGNORED_BY_STATUS,
+                        "CVE_STATUS marks recipe as Ignored: cpe-incorrect"))
+    @patch("cve_agent.orchestrator.load_cve_metadata",
+           return_value={"CVE-2025-0001": {"name": "foo"}})
+    def test_ignored_by_status_returns_skipped(self, *_):
+        kb = MagicMock()
+        result = process_single_cve(_cfg(), kb)
+        assert result.status == ResultStatus.SKIPPED
+        assert "CVE_STATUS" in result.resolution_summary

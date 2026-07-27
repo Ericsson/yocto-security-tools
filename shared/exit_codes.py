@@ -19,6 +19,7 @@ EXIT_DEVTOOL_ERROR = 9      # Devtool operation error
 EXIT_BUILD_PREEXISTING = 10 # Pre-patch build already failing
 EXIT_ALREADY_APPLIED = 11   # CVE fix already present in source tree
 EXIT_NOT_APPLICABLE = 12    # Vulnerable code not present in recipe version
+EXIT_IGNORED_BY_STATUS = 16 # Recipe's CVE_STATUS marks this CVE as ignored/not-affected
 
 # Agent exit codes (13-15)
 EXIT_TRUST_DECLINED = 13    # User declined trust mode

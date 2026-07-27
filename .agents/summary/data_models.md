@@ -166,6 +166,7 @@ classDiagram
 | 13 | `EXIT_TRUST_DECLINED` | Agent | User declined trust mode |
 | 14 | `EXIT_AGENT_ERROR` | Agent | Internal agent error |
 | 15 | `EXIT_AI_TIMEOUT` | Agent | AI session timed out |
+| 16 | `EXIT_IGNORED_BY_STATUS` | Unrecoverable | Recipe's CVE_STATUS marks CVE as Ignored/Patched |
 
 ## Exception Hierarchy
 

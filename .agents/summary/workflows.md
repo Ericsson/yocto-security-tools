@@ -59,8 +59,11 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
     [*] --> LoadMetadata
-    LoadMetadata --> SetupWorkspace : metadata valid
+    LoadMetadata --> CheckCveStatus : metadata valid
     LoadMetadata --> EXIT_METADATA_ERROR : invalid
+
+    CheckCveStatus --> SetupWorkspace : Unpatched / not set
+    CheckCveStatus --> EXIT_IGNORED_BY_STATUS : Ignored or Patched
 
     SetupWorkspace --> CheckApplicability
     CheckApplicability --> CherryPick : applicable
