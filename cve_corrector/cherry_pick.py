@@ -31,36 +31,82 @@ def handle_empty_cherry_pick(state: WorkflowState) -> None:
                      reason, skip_confirm=state.skip_confirm)
 
 
+def collect_cve_commits(state: WorkflowState) -> list[str]:
+    """List the CVE commits to transfer to the devtool branch, oldest first.
+
+    The ``original-version`` tag is created on the CVE branch after the devtool
+    prep commits have been cherry-picked, so ``original-version..<cve_id>``
+    holds exactly the CVE commits. Commits whose change is already present on
+    the devtool branch (matched by patch-id, e.g. a squash-merged PR that is
+    also part of the recipe's patch set) are filtered out via ``git cherry``.
+
+    Args:
+        state: Workflow state pointing at the devtool workspace.
+
+    Returns:
+        Commit hashes in application order (oldest first).
+    """
+    cherry = run_cmd_capture(
+        ['git', 'cherry', 'devtool', state.cve_id, 'original-version'],
+        cwd=state.workspace_path)
+    if cherry.returncode == 0 and cherry.stdout.strip():
+        commits = [line.split(maxsplit=1)[1].strip()
+                   for line in cherry.stdout.splitlines()
+                   if line.startswith('+ ')]
+        skipped = len([ln for ln in cherry.stdout.splitlines() if ln.startswith('- ')])
+        if skipped:
+            logger.info("Skipping %s commit(s) already present on devtool", skipped)
+        return commits
+
+    # git cherry unavailable (e.g. missing refs) — fall back to the raw range.
+    rev_list = run_cmd_capture(
+        ['git', 'rev-list', '--reverse', f'original-version..{state.cve_id}'],
+        cwd=state.workspace_path)
+    if rev_list.returncode != 0:
+        return []
+    return rev_list.stdout.split()
+
+
+def _git_apply_patch(workspace_path: Path, patch: Path, cve_id: str,
+                     strip_level: int) -> bool:
+    """Apply a single patch with git-apply, committing it on success."""
+    variants = [
+        ['git', 'apply', f'-p{strip_level}', str(patch)],
+        ['git', 'apply', f'-p{strip_level}', '-C0', str(patch)],
+        ['git', 'apply', f'-p{strip_level}', '--3way', str(patch)],
+    ]
+    for apply_args in variants:
+        if run_cmd_capture(apply_args, cwd=workspace_path).returncode != 0:
+            continue
+        run_cmd(['git', 'add', '-A'], cwd=workspace_path)
+        run_cmd_capture(
+            ['git', 'commit', '-m', f'Apply {cve_id} patch ({patch.name})'],
+            cwd=workspace_path)
+        logger.info("Applied %s via %s", patch.name, ' '.join(apply_args[1:-1]))
+        return True
+    return False
+
+
 def cherry_pick_to_devtool(state: WorkflowState) -> None:
     """Cherry-pick CVE commits onto devtool branch via format-patch + git am."""
     logger.info("Cherry-picking commits to devtool branch")
     subdir = get_repo_subdir(state.workspace_path)
 
     with tempfile.TemporaryDirectory() as patch_dir:
-        # Only format CVE-specific commits, not devtool prep commits.
-        # Count commits between original-version and the CVE branch tip,
-        # then subtract the devtool prep commits to find the CVE-only ones.
-        all_commits = run_cmd_capture(
-            ['git', 'rev-list', '--count', f'original-version..{state.cve_id}'],
-            cwd=state.workspace_path)
-        devtool_commits = run_cmd_capture(
-            ['git', 'rev-list', '--count', 'original-version..devtool'],
-            cwd=state.workspace_path)
-        total = int(all_commits.stdout.strip()) if all_commits.returncode == 0 else 0
-        devtool_count = int(devtool_commits.stdout.strip()) if devtool_commits.returncode == 0 else 0
-        cve_count = max(1, total - devtool_count)
-
-        fmt_result = run_cmd_capture(
-            ['git', 'format-patch', '-o', patch_dir, f'-{cve_count}', state.cve_id],
-            cwd=state.workspace_path)
-        if fmt_result.returncode != 0:
-            # Fall back to full range
+        cve_commits = collect_cve_commits(state)
+        if not cve_commits:
+            logger.info("No CVE commits to transfer — fix already in tree")
+            handle_empty_cherry_pick(state)
+            raise AlreadyAppliedError("no CVE commits to transfer to devtool")
+        logger.info("Transferring %s CVE commit(s) to devtool", len(cve_commits))
+        for number, commit in enumerate(cve_commits, 1):
             fmt_result = run_cmd_capture(
                 ['git', 'format-patch', '-o', patch_dir,
-                 f'original-version..{state.cve_id}'],
+                 '--start-number', str(number), '-1', commit],
                 cwd=state.workspace_path)
             if fmt_result.returncode != 0:
-                raise PatchError(f"format-patch failed: {fmt_result.stderr}")
+                raise PatchError(
+                    f"format-patch failed for {commit[:12]}: {fmt_result.stderr}")
         patches = sorted(Path(patch_dir).glob('*.patch'))
         if not patches:
             logger.info("format-patch produced no patches — fix already in tree")
@@ -114,47 +160,30 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
         if am_result and am_result.returncode != 0:
             # Fallback: try cherry-picking CVE commits directly onto devtool
             logger.warning("git am failed at all strip levels, trying direct cherry-pick")
-            cve_commits = run_cmd_capture(
-                ['git', 'rev-list', '--reverse', f'-{cve_count}', state.cve_id],
-                cwd=state.workspace_path)
-            if cve_commits.returncode == 0 and cve_commits.stdout.strip():
-                all_picked = True
-                for commit in cve_commits.stdout.strip().splitlines():
-                    ret = run_cmd_capture(
-                        ['git', 'cherry-pick', commit],
-                        cwd=state.workspace_path)
-                    if ret.returncode != 0:
-                        run_cmd(['git', 'cherry-pick', '--abort'],
-                                cwd=state.workspace_path)
-                        all_picked = False
-                        break
-                if all_picked:
-                    logger.info("Applied CVE commits via direct cherry-pick on devtool")
-                    return
-
-            # Last resort: git apply with fuzz
-            logger.warning("Cherry-pick fallback failed, trying git apply")
-            applied = False
-            for p in patches:
-                # Try plain apply (no 3-way, doesn't need blob history)
-                for apply_args in [
-                    ['git', 'apply', str(p)],
-                    ['git', 'apply', '-C0', str(p)],
-                    ['git', 'apply', '--3way', str(p)],
-                ]:
-                    apply_result = run_cmd_capture(apply_args, cwd=state.workspace_path)
-                    if apply_result.returncode == 0:
-                        run_cmd(['git', 'add', '-A'], cwd=state.workspace_path)
-                        run_cmd_capture(
-                            ['git', 'commit', '-m', f'Apply {state.cve_id} patch'],
+            all_picked = True
+            for commit in cve_commits:
+                ret = run_cmd_capture(['git', 'cherry-pick', commit],
+                                      cwd=state.workspace_path)
+                if ret.returncode != 0:
+                    run_cmd(['git', 'cherry-pick', '--abort'],
                             cwd=state.workspace_path)
-                        logger.info("Applied patch via %s on devtool", ' '.join(apply_args[1:3]))
-                        applied = True
-                        break
-                if applied:
+                    all_picked = False
                     break
-            if applied:
+            if all_picked:
+                logger.info("Applied CVE commits via direct cherry-pick on devtool")
                 return
+
+            # Last resort: git apply, all patches in order (a partially applied
+            # series is worse than no patch at all, so roll back on failure).
+            logger.warning("Cherry-pick fallback failed, trying git apply")
+            pre_apply = run_cmd_capture(['git', 'rev-parse', 'HEAD'],
+                                        cwd=state.workspace_path).stdout.strip()
+            if all(_git_apply_patch(state.workspace_path, p, state.cve_id, strip_level)
+                   for p in patches):
+                logger.info("Applied %s patch(es) via git apply on devtool", len(patches))
+                return
+            if pre_apply:
+                run_cmd(['git', 'reset', '--hard', pre_apply], cwd=state.workspace_path)
 
             logger.error("git am failed at all strip levels: %s", am_result.stderr)
             save_progress(state, 'cherry_pick_to_devtool')
