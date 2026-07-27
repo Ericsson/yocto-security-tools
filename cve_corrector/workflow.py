@@ -52,6 +52,73 @@ from .utils import logger, run_cmd, run_cmd_capture
 from .workspace import prepare_cve_branch, setup_devtool_workspace, setup_upstream_remote
 
 
+def _sources_of(detail: dict) -> list[str]:
+    """Return the normalized source list for a hash_details entry.
+
+    The ``source`` field may be a single name or a comma-joined string
+    (e.g. ``"debian, osv"``) when the same commit was reported by several
+    feeds. Returns lowercased, stripped source names.
+    """
+    return [s.strip().lower()
+            for s in (detail.get('source') or '').split(',')
+            if s.strip()]
+
+
+def filter_by_skip_sources(cve_info: dict, skip_sources: list[str]) -> dict:
+    """Drop fix commits uniquely attributed to skipped sources.
+
+    Lenient (AND) semantics: a commit is removed only when *every* source
+    that reported it is in ``skip_sources``. A commit corroborated by at
+    least one non-skipped source is kept — so ``--skip-source osv`` will not
+    discard a hash that Debian also vouched for.
+
+    Filtering is driven by ``hash_details`` (the only field carrying source
+    attribution); the flat ``hashes`` list is rebuilt from the survivors.
+    A commit is dropped from ``hashes`` only when it appears in
+    ``hash_details`` and all of its sources are skipped — hashes with no
+    ``hash_details`` entry are left untouched (we cannot attribute them).
+
+    Series are not filtered: series entries carry only ``pull_url`` and no
+    reliable source field, so their provenance cannot be determined here.
+
+    Args:
+        cve_info: Per-CVE metadata dict (not mutated).
+        skip_sources: Source names to skip (case-insensitive).
+
+    Returns:
+        A new cve_info dict with filtered ``hashes``/``hash_details``.
+    """
+    if not skip_sources:
+        return cve_info
+
+    skip = {s.strip().lower() for s in skip_sources if s.strip()}
+    if not skip:
+        return cve_info
+
+    hash_details = cve_info.get('hash_details', []) or []
+
+    kept_details = []
+    dropped_hashes = set()
+    for detail in hash_details:
+        srcs = _sources_of(detail)
+        # Drop only when every attributed source is skipped (and at least
+        # one source is known — unattributed commits are always kept).
+        if srcs and all(s in skip for s in srcs):
+            if detail.get('hash'):
+                dropped_hashes.add(detail['hash'])
+            logger.info("Skipping commit %s (source: %s)",
+                        (detail.get('hash') or '?')[:12],
+                        detail.get('source') or 'unknown')
+            continue
+        kept_details.append(detail)
+
+    new_info = dict(cve_info)
+    new_info['hash_details'] = kept_details
+    new_info['hashes'] = [h for h in (cve_info.get('hashes', []) or [])
+                          if h not in dropped_hashes]
+    return new_info
+
+
 def _kill_bitbake_server() -> None:
     """Kill any running bitbake server and all child processes."""
     import os

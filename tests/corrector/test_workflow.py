@@ -8,6 +8,7 @@ import pytest
 from cve_corrector.ptest import compare_ptest_results
 from cve_corrector.recipe_ops import sort_cve_lines_in_recipe
 from cve_corrector.state import MetadataError, load_cve_metadata
+from cve_corrector.workflow import filter_by_skip_sources
 
 # --- compare_ptest_results ---
 
@@ -95,3 +96,88 @@ def test_load_cve_metadata_invalid_json(tmp_path):
     f.write_text("{invalid json")
     with pytest.raises(MetadataError):
         load_cve_metadata(f)
+
+
+# --- filter_by_skip_sources ---
+
+def test_skip_sources_empty_is_noop():
+    info = {'hashes': ['a'], 'hash_details': [{'hash': 'a', 'source': 'osv'}]}
+    assert filter_by_skip_sources(info, []) is info
+
+
+def test_skip_sources_drops_unique_source():
+    """A commit reported only by the skipped source is removed."""
+    info = {
+        'hashes': ['deb1', 'osv1'],
+        'hash_details': [
+            {'hash': 'deb1', 'url': 'u1', 'source': 'debian'},
+            {'hash': 'osv1', 'url': 'u2', 'source': 'osv'},
+        ],
+    }
+    out = filter_by_skip_sources(info, ['osv'])
+    assert out['hashes'] == ['deb1']
+    assert [d['hash'] for d in out['hash_details']] == ['deb1']
+
+
+def test_skip_sources_keeps_corroborated_commit():
+    """A commit also reported by a non-skipped source is kept (lenient AND)."""
+    info = {
+        'hashes': ['shared'],
+        'hash_details': [{'hash': 'shared', 'url': 'u', 'source': 'debian, osv'}],
+    }
+    out = filter_by_skip_sources(info, ['osv'])
+    assert out['hashes'] == ['shared']
+    assert len(out['hash_details']) == 1
+
+
+def test_skip_sources_case_insensitive():
+    info = {
+        'hashes': ['osv1'],
+        'hash_details': [{'hash': 'osv1', 'source': 'OSV'}],
+    }
+    out = filter_by_skip_sources(info, ['osv'])
+    assert out['hashes'] == []
+
+
+def test_skip_sources_repeatable_multiple():
+    info = {
+        'hashes': ['deb1', 'osv1', 'ubu1'],
+        'hash_details': [
+            {'hash': 'deb1', 'source': 'debian'},
+            {'hash': 'osv1', 'source': 'osv'},
+            {'hash': 'ubu1', 'source': 'ubuntu'},
+        ],
+    }
+    out = filter_by_skip_sources(info, ['osv', 'ubuntu'])
+    assert out['hashes'] == ['deb1']
+
+
+def test_skip_sources_unattributed_hash_kept():
+    """A hash with no matching hash_details entry cannot be attributed, so kept."""
+    info = {
+        'hashes': ['bare', 'osv1'],
+        'hash_details': [{'hash': 'osv1', 'source': 'osv'}],
+    }
+    out = filter_by_skip_sources(info, ['osv'])
+    assert out['hashes'] == ['bare']
+
+
+def test_skip_sources_does_not_mutate_input():
+    info = {
+        'hashes': ['osv1'],
+        'hash_details': [{'hash': 'osv1', 'source': 'osv'}],
+    }
+    filter_by_skip_sources(info, ['osv'])
+    assert info['hashes'] == ['osv1']
+    assert len(info['hash_details']) == 1
+
+
+def test_skip_sources_series_untouched():
+    """Series carry no source attribution and must be left as-is."""
+    info = {
+        'hashes': ['osv1'],
+        'hash_details': [{'hash': 'osv1', 'source': 'osv'}],
+        'series': [{'pull_url': 'https://x/pull/1', 'commits': ['c1']}],
+    }
+    out = filter_by_skip_sources(info, ['osv'])
+    assert out['series'] == info['series']
