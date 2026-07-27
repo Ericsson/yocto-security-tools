@@ -115,3 +115,24 @@ class TestMainCli:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 6  # EXIT_METADATA_ERROR
+    def test_already_applied_skips_meta_layer_deduction(self, tmp_path, monkeypatch):
+        """The SRC_URI already-applied check must run before — and skip —
+        the (expensive) meta-layer deduction step."""
+        cve_info = tmp_path / 'cve.json'
+        cve_info.write_text(json.dumps({
+            'CVE-2025-0001': {'name': 'foo', 'hashes': ['abc123'],
+                              'hash_details': [{'hash': 'abc123'}]}
+        }))
+        monkeypatch.setattr('sys.argv', [
+            'cve-corrector', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', str(cve_info)])
+        monkeypatch.setenv('BBPATH', '/tmp')
+        with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.check_cve_patch_in_src_uri',
+                   return_value='CVE-2025-0001.patch') as mock_check, \
+             patch('cve_corrector.__main__.deduce_meta_layer_from_recipe') as mock_deduce:
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 11  # EXIT_ALREADY_APPLIED
+        mock_check.assert_called_once_with('foo', 'CVE-2025-0001')
+        mock_deduce.assert_not_called()
