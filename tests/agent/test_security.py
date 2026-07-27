@@ -156,3 +156,46 @@ class TestConclusionSpecialChars:
             cmd = mock_popen.call_args[0][0]
             # The dangerous string is a separate list element, not shell-interpolated
             assert '"; rm -rf / #' in cmd
+
+
+class TestSkipSourceForwarding:
+    def test_skip_sources_forwarded_to_corrector(self):
+        """--skip-source values are forwarded as repeated corrector flags."""
+        from cve_agent import AgentConfig
+        from cve_agent.corrector import run_corrector
+        config = AgentConfig(cve_id='CVE-2025-0001',
+                             cve_info_path=Path('/tmp/c.json'),
+                             skip_sources=['osv', 'ubuntu'])
+        with patch('subprocess.Popen') as mock_popen:
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.wait.return_value = None
+            proc.returncode = 0
+            proc.__enter__ = lambda s: s
+            proc.__exit__ = MagicMock(return_value=False)
+            mock_popen.return_value = proc
+            run_corrector(config)
+            cmd = mock_popen.call_args[0][0]
+            assert cmd.count('--skip-source') == 2
+            osv_idx = cmd.index('osv')
+            ubuntu_idx = cmd.index('ubuntu')
+            assert cmd[osv_idx - 1] == '--skip-source'
+            assert cmd[ubuntu_idx - 1] == '--skip-source'
+
+    def test_no_skip_sources_omits_flag(self):
+        """Empty skip_sources adds no --skip-source flag."""
+        from cve_agent import AgentConfig
+        from cve_agent.corrector import run_corrector
+        config = AgentConfig(cve_id='CVE-2025-0001',
+                             cve_info_path=Path('/tmp/c.json'))
+        with patch('subprocess.Popen') as mock_popen:
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.wait.return_value = None
+            proc.returncode = 0
+            proc.__enter__ = lambda s: s
+            proc.__exit__ = MagicMock(return_value=False)
+            mock_popen.return_value = proc
+            run_corrector(config)
+            cmd = mock_popen.call_args[0][0]
+            assert '--skip-source' not in cmd

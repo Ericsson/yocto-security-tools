@@ -6,7 +6,7 @@ Wraps cve_corrector and spawns AI sessions to resolve conflicts, build errors,
 and test failures during CVE backporting.
 """
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -107,6 +107,7 @@ class AgentConfig:
     fix_url: Optional[str] = None
     recipe: Optional[str] = None
     backend: str = "kiro"
+    skip_sources: list[str] = field(default_factory=list)
 
 
 @dataclass

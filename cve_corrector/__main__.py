@@ -88,6 +88,10 @@ def main():
                         help='URL of fix commit or pull request')
     input_group.add_argument('--recipe',
                         help='Recipe name (required with --fix-url without --cve-info)')
+    input_group.add_argument('--skip-source', action='append', default=[],
+                        metavar='SOURCE', dest='skip_sources',
+                        help='Ignore fix commits from this source (repeatable). '
+                             'Commits also reported by a non-skipped source are kept.')
 
     # --- Workflow mode ---
     mode_group = parser.add_argument_group('workflow mode')
@@ -180,6 +184,10 @@ def main():
         print("Recipe name not found", file=sys.stderr)
         sys.exit(EXIT_METADATA_ERROR)
     cve_info['name'] = recipe_name
+    if args.skip_sources:
+        from . import filter_by_skip_sources
+        cve_info = filter_by_skip_sources(cve_info, args.skip_sources)
+        cve_data[args.cve_id] = cve_info
     if not cve_info.get('hashes') and not cve_info.get('series'):
         print(f"CVE {args.cve_id} missing fix commits or series", file=sys.stderr)
         sys.exit(EXIT_METADATA_ERROR)

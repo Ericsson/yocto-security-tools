@@ -210,6 +210,10 @@ def _parse_args() -> argparse.Namespace:
                         help='URL of fix commit or pull request')
     input_group.add_argument('--recipe',
                         help='Recipe name (required with --fix-url without --cve-info)')
+    input_group.add_argument('--skip-source', action='append', default=[],
+                        metavar='SOURCE', dest='skip_sources',
+                        help='Ignore fix commits from this source (repeatable). '
+                             'Commits also reported by a non-skipped source are kept.')
 
     # --- AI session ---
     ai_group = parser.add_argument_group('AI session')
@@ -283,6 +287,7 @@ def _config_from_args(args: argparse.Namespace,
         fix_url=args.fix_url,
         recipe=args.recipe,
         backend=args.backend,
+        skip_sources=args.skip_sources,
     )
 
 

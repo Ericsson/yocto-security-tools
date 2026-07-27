@@ -51,6 +51,26 @@ class TestParseArgs:
         args = _parse_args()
         assert args.skip_ptest is True
 
+    def test_skip_source_single(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json',
+            '--skip-source', 'osv'])
+        args = _parse_args()
+        assert args.skip_sources == ['osv']
+
+    def test_skip_source_repeatable(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json',
+            '--skip-source', 'osv', '--skip-source', 'ubuntu'])
+        args = _parse_args()
+        assert args.skip_sources == ['osv', 'ubuntu']
+
+    def test_skip_source_default_empty(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json'])
+        args = _parse_args()
+        assert args.skip_sources == []
+
 
 class TestConfigFromArgs:
     def test_creates_config(self, monkeypatch):
@@ -61,6 +81,15 @@ class TestConfigFromArgs:
         config = _config_from_args(args, 'CVE-2025-0001')
         assert config.cve_id == 'CVE-2025-0001'
         assert config.max_retries == 5
+
+    def test_skip_sources_passthrough(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', '/tmp/cve.json',
+            '--skip-source', 'osv', '--skip-source', 'ubuntu'])
+        args = _parse_args()
+        config = _config_from_args(args, 'CVE-2025-0001')
+        assert config.skip_sources == ['osv', 'ubuntu']
 
 
 class TestReadCveList:

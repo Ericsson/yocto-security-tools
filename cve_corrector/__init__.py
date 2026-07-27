@@ -23,6 +23,7 @@ from .state import (
 from .workflow import (
                     WorkflowConfig,
                     continue_from_conflict,
+                    filter_by_skip_sources,
                     finish_cve_workflow,
                     initialize_cve_workflow,
 )
@@ -36,4 +37,5 @@ __all__ = [
     'initialize_cve_workflow', 'finish_cve_workflow',
     'continue_from_conflict', 'WorkflowConfig', 'find_mirror_repo',
     'deduce_meta_layer_from_recipe', 'resolve_meta_layer',
+    'filter_by_skip_sources',
 ]

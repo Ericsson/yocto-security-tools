@@ -60,6 +60,8 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
             cmd.append('--bbappend')
         if config.skip_cve_applicability:
             cmd.append('--skip-cve-applicability')
+        for source in config.skip_sources:
+            cmd += ['--skip-source', source]
 
     output_lines = []
     with subprocess.Popen(
