@@ -173,6 +173,43 @@ def get_recipe_src_uri_git(recipe: str) -> Optional[str]:
     return None
 
 
+def check_cve_patch_in_src_uri(recipe: str, cve_id: str) -> Optional[str]:
+    """Check whether a CVE patch file is already listed in the recipe's SRC_URI.
+
+    Runs ``bitbake-getvar SRC_URI -r <recipe>`` and looks for a
+    ``file://<CVE_ID>.patch`` entry (case-insensitive), which is the
+    Yocto/OE convention for CVE fix patches (e.g. ``CVE-2024-1234.patch``).
+
+    Args:
+        recipe: Recipe name to query.
+        cve_id: CVE identifier to look for (e.g. ``"CVE-2024-1234"``).
+
+    Returns:
+        The matching patch filename (e.g. ``"CVE-2024-1234.patch"``) if
+        found in SRC_URI, or None if not found or SRC_URI could not be
+        determined.
+    """
+    result = run_cmd_capture(['bitbake-getvar', 'SRC_URI', '-r', recipe])
+    if result.returncode != 0:
+        return None
+
+    src_uri = ''
+    for line in result.stdout.splitlines():
+        if line.startswith('SRC_URI='):
+            src_uri = line.split('=', 1)[1].strip('"')
+            break
+
+    pattern = re.compile(rf'{re.escape(cve_id)}\.patch', re.IGNORECASE)
+    for entry in src_uri.split():
+        if not entry.startswith('file://'):
+            continue
+        filename = entry[len('file://'):].split(';')[0]
+        filename = Path(filename).name
+        if pattern.fullmatch(filename):
+            return filename
+    return None
+
+
 def get_upstream_check_uri(recipe: str) -> Optional[str]:
     """Get UPSTREAM_CHECK_URI from recipe if it points to a git repository.
 

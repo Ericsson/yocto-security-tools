@@ -50,7 +50,8 @@ def test_ensure_layer_branch_detached_head(tmp_path):
 
 
 @patch("cve_corrector.workflow.setup_devtool_workspace")
-def test_initialize_fails_fast_on_detached_meta_layer(mock_setup, tmp_path):
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri", return_value=None)
+def test_initialize_fails_fast_on_detached_meta_layer(mock_src_uri, mock_setup, tmp_path):
     """The detached-HEAD guard runs before the expensive workspace setup."""
     _init_repo(tmp_path)
     subprocess.run(['git', 'checkout', '--detach'], cwd=tmp_path, check=True,
@@ -65,7 +66,8 @@ def test_initialize_fails_fast_on_detached_meta_layer(mock_setup, tmp_path):
 
 @patch("cve_corrector.workflow.setup_devtool_workspace",
        side_effect=RuntimeError("stop after pre-flight"))
-def test_initialize_passes_preflight_when_on_branch(mock_setup, tmp_path):
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri", return_value=None)
+def test_initialize_passes_preflight_when_on_branch(mock_src_uri, mock_setup, tmp_path):
     """When the meta-layer is on a branch, the pre-flight passes and setup runs."""
     _init_repo(tmp_path)  # left on default branch
     cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
@@ -74,3 +76,17 @@ def test_initialize_passes_preflight_when_on_branch(mock_setup, tmp_path):
     with pytest.raises(RuntimeError, match="stop after pre-flight"):
         initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
     mock_setup.assert_called_once()
+
+
+@patch("cve_corrector.workflow.setup_devtool_workspace")
+@patch("cve_corrector.workflow.check_cve_patch_in_src_uri",
+       return_value="CVE-2026-0001.patch")
+def test_initialize_fails_fast_when_patch_already_in_src_uri(mock_src_uri, mock_setup, tmp_path):
+    """AlreadyAppliedError is raised before touching the meta-layer or devtool."""
+    from cve_corrector.state import AlreadyAppliedError
+    cve_data = {"CVE-2026-0001": {"name": "bzip2", "hashes": ["abc123"],
+                                  "hash_details": []}}
+    with pytest.raises(AlreadyAppliedError):
+        initialize_cve_workflow(cve_data, "CVE-2026-0001", _config(tmp_path))
+    mock_setup.assert_not_called()
+    mock_src_uri.assert_called_once_with("bzip2", "CVE-2026-0001")

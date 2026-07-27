@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .bitbake_ops import get_state_dir
+from .bitbake_ops import check_cve_patch_in_src_uri, get_state_dir
 from .blame import check_vulnerability_origin
 from .cherry_pick import (
     apply_series,
@@ -525,6 +525,16 @@ def initialize_cve_workflow(
         raise MetadataError("Metadata error")
 
     logger.info("Processing %s for recipe: %s", cve_id, recipe)
+
+    # Pre-flight: fail fast if the CVE patch is already listed in the
+    # recipe's SRC_URI (e.g. CVE-2024-1234.patch). This is cheaper than
+    # setting up the devtool workspace and catches the common case of a
+    # CVE that was already backported by a previous run or another commit.
+    existing_patch = check_cve_patch_in_src_uri(recipe, cve_id)
+    if existing_patch:
+        logger.info("CVE %s: already patched in recipe SRC_URI — %s",
+                    cve_id, existing_patch)
+        raise AlreadyAppliedError("CVE already applied")
 
     # Pre-flight: fail fast if the meta-layer is on a detached HEAD, before the
     # expensive devtool modify / ptest / build steps. devtool finish needs a

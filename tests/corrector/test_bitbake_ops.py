@@ -1,8 +1,9 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for cve_corrector.bitbake_ops — file-based operations."""
+from unittest.mock import MagicMock, patch
 
-from cve_corrector.bitbake_ops import find_mirror_repo
+from cve_corrector.bitbake_ops import check_cve_patch_in_src_uri, find_mirror_repo
 
 
 def test_find_mirror_repo_bare(tmp_path):
@@ -164,3 +165,53 @@ def test_find_recipe_file_prefers_bbappend(tmp_path):
     result = _find_recipe_file(tmp_path, "openssl")
     assert result is not None
     assert result.suffix == ".bbappend"
+
+
+class TestCheckCvePatchInSrcUri:
+    """Tests for check_cve_patch_in_src_uri — pre-flight already-applied check."""
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_finds_matching_patch(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='SRC_URI="file://CVE-2024-1234.patch file://defconfig"\n')
+        result = check_cve_patch_in_src_uri("busybox", "CVE-2024-1234")
+        assert result == "CVE-2024-1234.patch"
+        mock_run.assert_called_once_with(
+            ['bitbake-getvar', 'SRC_URI', '-r', 'busybox'])
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_case_insensitive_match(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='SRC_URI="file://cve-2024-1234.patch"\n')
+        result = check_cve_patch_in_src_uri("busybox", "CVE-2024-1234")
+        assert result == "cve-2024-1234.patch"
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_ignores_subdir_prefix_and_params(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='SRC_URI="file://patches/CVE-2024-1234.patch;striplevel=1"\n')
+        result = check_cve_patch_in_src_uri("busybox", "CVE-2024-1234")
+        assert result == "CVE-2024-1234.patch"
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_no_match_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='SRC_URI="file://other-fix.patch file://defconfig"\n')
+        assert check_cve_patch_in_src_uri("busybox", "CVE-2024-1234") is None
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_does_not_match_different_cve(self, mock_run):
+        """A patch for a different CVE must not be treated as a match."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='SRC_URI="file://CVE-2024-99999.patch"\n')
+        assert check_cve_patch_in_src_uri("busybox", "CVE-2024-1234") is None
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_bitbake_getvar_failure_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert check_cve_patch_in_src_uri("busybox", "CVE-2024-1234") is None
