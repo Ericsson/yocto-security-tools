@@ -128,6 +128,8 @@ class TestMainCli:
             '--cve-info', str(cve_info)])
         monkeypatch.setenv('BBPATH', '/tmp')
         with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.check_cve_status',
+                   return_value=None), \
              patch('cve_corrector.__main__.check_cve_patch_in_src_uri',
                    return_value='CVE-2025-0001.patch') as mock_check, \
              patch('cve_corrector.__main__.deduce_meta_layer_from_recipe') as mock_deduce:
@@ -135,4 +137,49 @@ class TestMainCli:
                 main()
         assert exc_info.value.code == 11  # EXIT_ALREADY_APPLIED
         mock_check.assert_called_once_with('foo', 'CVE-2025-0001')
+        mock_deduce.assert_not_called()
+
+    def test_cve_status_ignored_skips_meta_layer_deduction(self, tmp_path, monkeypatch):
+        """The CVE_STATUS ignored check must run before — and skip — both
+        the SRC_URI check and the (expensive) meta-layer deduction step."""
+        cve_info = tmp_path / 'cve.json'
+        cve_info.write_text(json.dumps({
+            'CVE-2025-0001': {'name': 'foo', 'hashes': ['abc123'],
+                              'hash_details': [{'hash': 'abc123'}]}
+        }))
+        monkeypatch.setattr('sys.argv', [
+            'cve-corrector', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', str(cve_info)])
+        monkeypatch.setenv('BBPATH', '/tmp')
+        with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.check_cve_status',
+                   return_value=('Ignored', 'cpe-incorrect: wrong component')
+                   ) as mock_status, \
+             patch('cve_corrector.__main__.check_cve_patch_in_src_uri') as mock_check, \
+             patch('cve_corrector.__main__.deduce_meta_layer_from_recipe') as mock_deduce:
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 16  # EXIT_IGNORED_BY_STATUS
+        mock_status.assert_called_once_with('foo', 'CVE-2025-0001')
+        mock_check.assert_not_called()
+        mock_deduce.assert_not_called()
+
+    def test_cve_status_patched_skips_meta_layer_deduction(self, tmp_path, monkeypatch):
+        """A Patched CVE_STATUS also short-circuits before meta-layer deduction."""
+        cve_info = tmp_path / 'cve.json'
+        cve_info.write_text(json.dumps({
+            'CVE-2025-0001': {'name': 'foo', 'hashes': ['abc123'],
+                              'hash_details': [{'hash': 'abc123'}]}
+        }))
+        monkeypatch.setattr('sys.argv', [
+            'cve-corrector', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', str(cve_info)])
+        monkeypatch.setenv('BBPATH', '/tmp')
+        with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.check_cve_status',
+                   return_value=('Patched', 'fixed-version: fixed externally')), \
+             patch('cve_corrector.__main__.deduce_meta_layer_from_recipe') as mock_deduce:
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == 16  # EXIT_IGNORED_BY_STATUS
         mock_deduce.assert_not_called()

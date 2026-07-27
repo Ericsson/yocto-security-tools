@@ -17,6 +17,7 @@ from shared.exit_codes import (  # noqa: F401
     EXIT_CONFLICT,
     EXIT_DEVTOOL_ERROR,
     EXIT_GIT_ERROR,
+    EXIT_IGNORED_BY_STATUS,
     EXIT_METADATA_ERROR,
     EXIT_NOT_APPLICABLE,
     EXIT_PATCH_ERROR,
@@ -88,6 +89,11 @@ class AlreadyAppliedError(WorkflowError):
 class NotApplicableError(WorkflowError):
     """Vulnerable code not present in recipe version."""
     exit_code = EXIT_NOT_APPLICABLE
+
+
+class IgnoredByStatusError(WorkflowError):
+    """Recipe's existing CVE_STATUS marks this CVE as ignored/not-affected."""
+    exit_code = EXIT_IGNORED_BY_STATUS
 
 
 @dataclass

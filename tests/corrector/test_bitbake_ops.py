@@ -3,7 +3,7 @@
 """Tests for cve_corrector.bitbake_ops — file-based operations."""
 from unittest.mock import MagicMock, patch
 
-from cve_corrector.bitbake_ops import check_cve_patch_in_src_uri, find_mirror_repo
+from cve_corrector.bitbake_ops import check_cve_patch_in_src_uri, check_cve_status, find_mirror_repo
 
 
 def test_find_mirror_repo_bare(tmp_path):
@@ -167,7 +167,65 @@ def test_find_recipe_file_prefers_bbappend(tmp_path):
     assert result.suffix == ".bbappend"
 
 
-class TestCheckCvePatchInSrcUri:
+class TestCheckCveStatus:
+    """Tests for check_cve_status — CVE_STATUS pre-flight check."""
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_ignored_reason_maps_to_ignored(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="not-applicable-platform: Windows only\n")
+        result = check_cve_status("wpa-supplicant", "CVE-2024-5290")
+        assert result == ("Ignored", "not-applicable-platform: Windows only")
+        mock_run.assert_called_once_with([
+            'bitbake-getvar', 'CVE_STATUS', '-f', 'CVE-2024-5290',
+            '-r', 'wpa-supplicant', '--value', '--ignore-undefined'])
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_cpe_incorrect_maps_to_ignored(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="cpe-incorrect: wrong component\n")
+        result = check_cve_status("foo", "CVE-2016-10642")
+        assert result == ("Ignored", "cpe-incorrect: wrong component")
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_fixed_version_maps_to_patched(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="fixed-version: fixed externally\n")
+        result = check_cve_status("curl", "CVE-2025-5025")
+        assert result == ("Patched", "fixed-version: fixed externally")
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_unpatched_reason_maps_to_unpatched(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="vulnerable-investigating: under review\n")
+        result = check_cve_status("foo", "CVE-2025-0001")
+        assert result == ("Unpatched", "vulnerable-investigating: under review")
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_no_status_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n")
+        assert check_cve_status("foo", "CVE-2025-0001") is None
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_command_failure_returns_none(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert check_cve_status("foo", "CVE-2025-0001") is None
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_reason_without_description_is_handled(self, mock_run):
+        """CVE_STATUS may be set without a ': description' suffix."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ignored\n")
+        result = check_cve_status("foo", "CVE-2025-0001")
+        assert result == ("Ignored", "ignored")
+
+    @patch("cve_corrector.bitbake_ops.run_cmd_capture")
+    def test_case_insensitive_reason_matching(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="Not-Applicable-Config: disabled feature\n")
+        result = check_cve_status("foo", "CVE-2025-0001")
+        assert result == ("Ignored", "Not-Applicable-Config: disabled feature")
+
     """Tests for check_cve_patch_in_src_uri — pre-flight already-applied check."""
 
     @patch("cve_corrector.bitbake_ops.run_cmd_capture")

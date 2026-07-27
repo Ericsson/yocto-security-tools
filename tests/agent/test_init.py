@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cve_agent import (
+    EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
     RECOVERABLE_EXITS,
     UNRECOVERABLE_EXITS,
@@ -53,6 +54,11 @@ def test_exit_code_sets():
 def test_exit_not_applicable_in_unrecoverable():
     assert EXIT_NOT_APPLICABLE in UNRECOVERABLE_EXITS
     assert EXIT_NOT_APPLICABLE not in RECOVERABLE_EXITS
+
+
+def test_exit_ignored_by_status_in_unrecoverable():
+    assert EXIT_IGNORED_BY_STATUS in UNRECOVERABLE_EXITS
+    assert EXIT_IGNORED_BY_STATUS not in RECOVERABLE_EXITS
 
 
 def test_resolve_agent_instructions_prefers_stable_copy(tmp_path):

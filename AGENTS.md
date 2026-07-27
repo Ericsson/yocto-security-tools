@@ -7,7 +7,7 @@
 
 ```
 ├── shared/                      # Leaf module — no upward deps
-│   ├── exit_codes.py            # Exit codes 0–15 (single source of truth)
+│   ├── exit_codes.py            # Exit codes 0–16 (single source of truth)
 │   ├── paths.py                 # XDG Base Directory paths (data_dir, cache_dir)
 │   ├── json_cache.py            # Gzip-compressed JSON cache (atomic writes)
 │   └── url_parser.py            # URL → commit hash/PR extraction
@@ -63,7 +63,7 @@ Each tool works independently. Chain via `--cve-info cve-metadata.json`.
 ## Recoverable vs Unrecoverable Exit Codes
 
 - **Recoverable** (agent retries with AI): 1 (conflict), 3 (ptest), 4 (build)
-- **Unrecoverable** (immediate fail): 2, 5–12
+- **Unrecoverable** (immediate fail): 2, 5–12, 16
 
 ## Environment Variables
 

@@ -11,6 +11,7 @@ from typing import Optional
 from . import (
     EXIT_ALREADY_APPLIED,
     EXIT_BUILD_PREEXISTING,
+    EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
     EXIT_PTEST_PREEXISTING,
     EXIT_SUCCESS,
@@ -393,6 +394,11 @@ def process_single_cve(config: AgentConfig,
             result = _make_result(
                 config.cve_id, ResultStatus.SKIPPED, 0, start_time,
                 "Vulnerable code not present in recipe version"
+            )
+        elif exit_code == EXIT_IGNORED_BY_STATUS:
+            result = _make_result(
+                config.cve_id, ResultStatus.SKIPPED, 0, start_time,
+                "Recipe's CVE_STATUS marks this CVE as ignored or already patched"
             )
         elif exit_code == EXIT_PTEST_PREEXISTING:
             result = _make_result(
