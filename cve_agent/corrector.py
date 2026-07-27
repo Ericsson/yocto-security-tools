@@ -120,6 +120,9 @@ def get_workspace_path(config: AgentConfig, cve_data: dict) -> Optional[Path]:
     build_path = Path(bbpath.split(':')[0])
     workspace = build_path / 'workspace' / 'sources' / recipe
     if not workspace.exists():
-        print(f"Workspace not found: {workspace}", file=sys.stderr)
+        # Not an error: callers use a missing workspace as the signal that
+        # the corrector never created one (e.g. the CVE fix was already
+        # present — see EXIT_ALREADY_APPLIED) or that it was already
+        # finalized (devtool finish removes it on EXIT_SUCCESS).
         return None
     return workspace
