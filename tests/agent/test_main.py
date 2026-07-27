@@ -95,11 +95,15 @@ class TestGetWorkspacePath:
             result = _get_workspace_path(cfg, {"CVE-2025-0001": {"name": "r"}})
         assert result is None
 
-    def test_workspace_not_exists(self, tmp_path):
+    def test_workspace_not_exists(self, tmp_path, capsys):
         cfg = _cfg()
         with patch.dict("os.environ", {"BBPATH": str(tmp_path)}):
             result = _get_workspace_path(cfg, {"CVE-2025-0001": {"name": "r"}})
         assert result is None
+        # A missing workspace is an expected signal (e.g. CVE already
+        # applied before a workspace was ever created), not an error —
+        # it must not print noise to stderr.
+        assert capsys.readouterr().err == ""
 
     def test_workspace_exists(self, tmp_path):
         ws = tmp_path / "workspace" / "sources" / "busybox"
