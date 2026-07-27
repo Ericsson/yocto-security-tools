@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import (
+    EXIT_ALREADY_APPLIED,
     EXIT_METADATA_ERROR,
     WorkflowConfig,
     continue_from_conflict,
@@ -45,7 +46,7 @@ from . import (
     load_cve_metadata,
     resolve_meta_layer,
 )
-from .bitbake_ops import cleanup_workspace, get_build_path
+from .bitbake_ops import check_cve_patch_in_src_uri, cleanup_workspace, get_build_path
 from .state import WorkflowError
 from .utils import logger, setup_logging
 
@@ -194,6 +195,17 @@ def main():
 
     if args.clean:
         cleanup_workspace(str(get_build_path()))
+
+    # Fail fast if the CVE patch is already listed in the recipe's SRC_URI
+    # (e.g. CVE-2024-1234.patch) — skip meta-layer deduction and the rest of
+    # the workflow entirely, since none of it is needed in that case.
+    if not args.mark_not_applicable and not args.dry_run:
+        existing_patch = check_cve_patch_in_src_uri(recipe_name, args.cve_id)
+        if existing_patch:
+            print(f"CVE {args.cve_id}: already patched in recipe SRC_URI — "
+                  f"{existing_patch}")
+            sys.exit(EXIT_ALREADY_APPLIED)
+
     meta_layer: Optional[Path]
     if args.meta_layer:
         meta_layer = resolve_meta_layer(args.meta_layer)
