@@ -46,7 +46,7 @@ jobs:
 
       - name: Build
         run: |
-          pip install build==1.2.2
+          pip install --require-hashes -r .github/workflows/requirements-build.txt
           python -m build
 
       - name: Publish to PyPI

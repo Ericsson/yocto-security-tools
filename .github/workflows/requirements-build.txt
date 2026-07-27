@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+# Pinned build dependencies for .github/workflows/publish.yml (OpenSSF Scorecard:
+# Pinned-Dependencies requires pip installs to be hash-verified). --require-hashes
+# mode needs every package in the resolution graph pinned, including transitives.
+#
+# Regenerate (targets the Python version pinned in publish.yml's setup-python step):
+#   pip install --dry-run --report report.json build==<version> --python-version <X.Y> --only-binary=:all:
+#   pip download --no-deps <pkg>==<version>              # wheel hash
+#   pip download --no-deps --no-binary :all: <pkg>==<version>  # sdist hash
+#   sha256sum <file>
+build==1.2.2 \
+    --hash=sha256:277ccc71619d98afdd841a0e96ac9fe1593b823af481d3b0cea748e8894e0613 \
+    --hash=sha256:119b2fb462adef986483438377a13b2f42064a2a3a4161f24a0cca698a07ac8c
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e \
+    --hash=sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661
+pyproject-hooks==1.2.0 \
+    --hash=sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913 \
+    --hash=sha256:1e859bd5c40fae9448642dd871adf459e5e2084186e8d2c2a79a824c970da1f8
+tomli==2.4.1 \
+    --hash=sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe \
+    --hash=sha256:7c7e1a961a0b2f2472c1ac5b69affa0ae1132c39adcb67aba98568702b9cc23f
