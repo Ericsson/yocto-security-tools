@@ -6,6 +6,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-07-27
+
+### Added
+
+- **cve-corrector**: Skip CVE if `CVE_STATUS` marks it Ignored or Patched.
+- **cve-corrector**: Fail fast when CVE patch is already present in `SRC_URI`.
+- **cve-corrector**: `--skip-source` flag to ignore fix commits by source.
+- **cve-corrector**: Tag exported patches with release corename.
+- **cve-agent**: `-i` short flag for `--interactive`.
+- **cve-agent**: Harden and generalize non-interactive backend invocation.
+- **cve-agent**: Optional interdiff review of upstream vs backport adaptation.
+- **cve-agent**: Record interdiff reproduction artifacts in review diff.
+- **cve-agent**: Escalate applicable-but-unsafe backports to human review.
+
+### Changed
+
+- **cve-agent**: Set `claude-sonnet-5` as the default model for the Claude backend.
+- **security**: Adopt Ericsson OSPO `SECURITY.md` template with explicit scope.
+- **ci**: Pin `publish.yml` build deps by hash for OpenSSF Scorecard compliance.
+
+### Fixed
+
+- **cve-corrector**: Derive devtool commit list from `git cherry`, not a count.
+- **cve-corrector**: Skip meta-layer deduction when CVE is already applied.
+- **cve-corrector**: Omit CVE tag on prerequisite patches.
+- **cve-agent**: Silence expected "workspace not found" message.
+- **cve-agent**: Dedupe repeated backport-note blocks and standardize format.
+- **shared**: Handle non-UTF-8 recipe files during meta-layer scans.
+
 ## [1.0.2] - 2026-07-20
 
 ### Added
@@ -56,5 +85,7 @@ Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
 - Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
+[1.0.3]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Ericsson/yocto-security-tools/releases/tag/v1.0.0
