@@ -61,6 +61,7 @@ Input (one required):
 
 Options:
   --output FILE           Output path (default: stdout)
+  --checkpoint-interval S Periodic save interval; 0 disables (default: 60)
   --cve-component-name N  Override component name deduction
   --check-oe-status       Check if already fixed in OE branches
   --no-debian / --no-osv / --no-cvelistv5 / --no-ubuntu
