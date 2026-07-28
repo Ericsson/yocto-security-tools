@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 '''Tests for Debian source patch extraction.'''
+import argparse
 import io
 import os
 import tarfile
@@ -8,6 +9,7 @@ import tempfile
 from unittest import TestCase, mock
 
 from cve_metadata_extractor.debian import (
+    DebianSource,
     _match_patches_to_cve,
     diff_debian_patches,
     extract_debian_source_patches,
@@ -412,3 +414,27 @@ class TestExtractDebianSourcePatches(TestCase):
         url, fname = find_debian_tar_url('curl', '7.88.1-10+deb12u10')
         self.assertIsNone(url)
         self.assertIsNone(fname)
+
+
+class TestDebianSourceEnrichKnownHashes(TestCase):
+    '''Hashes embedded in tracker notes feed patch matching.'''
+
+    @mock.patch('cve_metadata_extractor.debian.extract_debian_source_patches')
+    def test_note_hashes_reach_known_hashes(self, mock_extract):
+        '''Regression: HASH_RE must stay unanchored for note scanning.'''
+        source = DebianSource()
+        source._extended = {  # pylint: disable=protected-access
+            'CVE-2024-1234': {
+                'fixes': {'bookworm': {'pkg': 'testpkg', 'version': '1.0-1'}},
+                'notes': ['Fixed by commit abc1234def and def5678abc upstream'],
+            },
+        }
+        args = argparse.Namespace(
+            download_patches=True, cache='/tmp/cache',
+            debian_release='bookworm')
+        mock_extract.return_value = []
+
+        source.enrich('CVE-2024-1234', {}, {'hashes': []}, args)
+
+        known_hashes = mock_extract.call_args[1]['known_hashes']
+        self.assertEqual(known_hashes, {'abc1234def', 'def5678abc'})

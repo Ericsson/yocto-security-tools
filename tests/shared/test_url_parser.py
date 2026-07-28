@@ -6,12 +6,28 @@ from unittest.mock import Mock, patch
 import pytest
 
 from shared.url_parser import (
+    HASH_RE,
     deduce_repo_url,
     extract_commit_hash,
     fetch_github_pr_commits,
     fetch_gitlab_issue_commits,
     parse_fix_url,
 )
+
+
+class TestHashRe:
+    """HASH_RE is shared; it must stay usable for both scanning and matching."""
+
+    def test_findall_extracts_embedded_hashes(self):
+        # cve_metadata_extractor.debian scans free-text tracker notes with
+        # findall(), so the pattern must not be anchored.
+        note = "Fixed upstream in commit abc1234def and later def5678abc"
+        assert HASH_RE.findall(note) == ['abc1234def', 'def5678abc']
+
+    def test_fullmatch_rejects_surrounding_text(self):
+        assert HASH_RE.fullmatch('abc1234def') is not None
+        assert HASH_RE.fullmatch('emr_na-c04497075') is None
+        assert HASH_RE.fullmatch('abc1234 and more') is None
 
 
 class TestExtractCommitHash:
@@ -26,6 +42,156 @@ class TestExtractCommitHash:
     def test_short_hash(self):
         url = "https://github.com/owner/repo/commit/abc1234"
         assert extract_commit_hash(url) == "abc1234"
+
+    def test_cgit_commit_query(self):
+        url = ("https://git.busybox.net/busybox/commit/"
+               "?id=d417193cf37ca1005830d7e16f5fa7e1d8a44209")
+        assert extract_commit_hash(url) == "d417193cf37ca1005830d7e16f5fa7e1d8a44209"
+
+    def test_gitweb_commit_query(self):
+        url = ("https://git.samba.org/?p=rsync.git;a=commit;"
+               "h=0902b52f6687b1f7952422080d50b93108742e53")
+        assert extract_commit_hash(url) == "0902b52f6687b1f7952422080d50b93108742e53"
+
+    def test_fossil_info_url(self):
+        url = "https://sqlite.org/src/info/498e3f1cf57f164f"
+        assert extract_commit_hash(url) == "498e3f1cf57f164f"
+
+    def test_kernel_stable_shortlink(self):
+        # The most common commit reference shape in the CVE feeds by far.
+        url = ("https://git.kernel.org/stable/c/"
+               "512a01da7134bac8f8b373506011e8aaa3283854")
+        assert extract_commit_hash(url) == (
+            "512a01da7134bac8f8b373506011e8aaa3283854")
+
+    def test_gitiles_commit_url(self):
+        url = ("https://android.googlesource.com/platform/frameworks/base/+/"
+               "db86972777c84a386d8a6d2d34879923bdbccdf6")
+        assert extract_commit_hash(url) == (
+            "db86972777c84a386d8a6d2d34879923bdbccdf6")
+
+    def test_github_pull_request_commit_url(self):
+        url = ("https://github.com/FRRouting/frr/pull/19480/commits/"
+               "cda5ddac0940562d1dca7cbef34d0ce5b00f160b")
+        assert extract_commit_hash(url) == (
+            "cda5ddac0940562d1dca7cbef34d0ce5b00f160b")
+
+    def test_gitweb_hash_without_explicit_action(self):
+        # Old-style gitweb omits a=commit; h= still denotes the commit.
+        url = ("https://sourceware.org/git/gitweb.cgi?p=binutils-gdb.git;"
+               "h=d1458933830456e54223d9fc61f0d9b3a19256f5")
+        assert extract_commit_hash(url) == (
+            "d1458933830456e54223d9fc61f0d9b3a19256f5")
+
+    def test_gitweb_percent_encoded_separators(self):
+        url = ("https://git.ghostscript.com/?p=ghostpdl.git%3B"
+               "a=commitdiff%3Bh=3d4cfdc1a44")
+        assert extract_commit_hash(url) == "3d4cfdc1a44"
+
+    def test_gitweb_blob_hash_not_treated_as_commit(self):
+        url = ("https://sourceware.org/git/gitweb.cgi?p=glibc.git;a=blob;"
+               "h=d1458933830456e54223d9fc61f0d9b3a19256f5")
+        assert extract_commit_hash(url) is None
+
+    def test_hex_in_repo_name_not_mistaken_for_hash(self):
+        # Previously returned 'ec61850', taken from the repository name.
+        url = ("https://github.com/mz-automation/libiec61850/commit/"
+               "1f52be9ddeae00e69cd43e4cac3cb4f0c880c4f0")
+        assert extract_commit_hash(url) == (
+            "1f52be9ddeae00e69cd43e4cac3cb4f0c880c4f0")
+
+    def test_commitdiff_path(self):
+        url = ("https://git.example.org/repo/commitdiff/"
+               "3d4cfdc1a44ee1b4f0b3d3d1d0f6e0e91f28b1a0")
+        assert extract_commit_hash(url) == (
+            "3d4cfdc1a44ee1b4f0b3d3d1d0f6e0e91f28b1a0")
+
+    # The remaining shapes below were found by diffing this parser against the
+    # previous one over the 2024-2025 CVE List V5 reference URLs; each one is a
+    # real commit reference that a /commit/-only parser silently dropped.
+    def test_cgit_patch_query(self):
+        url = ("https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/"
+               "linux.git/patch/?id=944d5fe50f3f03daacfea16300e656a1691c4a23")
+        assert extract_commit_hash(url) == (
+            "944d5fe50f3f03daacfea16300e656a1691c4a23")
+
+    def test_cgit_diff_query(self):
+        url = ("https://cgit.ghostscript.com/cgi-bin/cgit.cgi/mupdf.git/diff/"
+               "?id=b5c898a30f068b5342e8263a2cd5b9f0be291aac")
+        assert extract_commit_hash(url) == (
+            "b5c898a30f068b5342e8263a2cd5b9f0be291aac")
+
+    def test_pagure_commit_url(self):
+        url = ("https://pagure.io/freeipa/c/"
+               "6b9400c135ed16b10057b350cc9ce42aa0e862d4")
+        assert extract_commit_hash(url) == (
+            "6b9400c135ed16b10057b350cc9ce42aa0e862d4")
+
+    def test_sourceforge_commit_url(self):
+        url = ("https://sourceforge.net/p/openipmi/code/ci/"
+               "4c129d0540f3578ecc078d8612bbf84b6cd24c87/")
+        assert extract_commit_hash(url) == (
+            "4c129d0540f3578ecc078d8612bbf84b6cd24c87")
+
+    def test_9front_commit_url(self):
+        url = ("https://git.9front.org/plan9front/plan9front/"
+               "07aa9bfeef55ca987d411115adcfbbd4390ecf34/commit.html")
+        assert extract_commit_hash(url) == (
+            "07aa9bfeef55ca987d411115adcfbbd4390ecf34")
+
+    def test_kernel_dance_shortlink(self):
+        url = "https://kernel.dance/b1db244ffd041a49ecc9618e8feb6b5c1afcdaa7"
+        assert extract_commit_hash(url) == (
+            "b1db244ffd041a49ecc9618e8feb6b5c1afcdaa7")
+
+    def test_patch_artifact_named_after_commit(self):
+        url = ("https://depot.galaxyproject.org/patch/GX-2024-0001/"
+               "022da344a02bafd604402ac8e253e0014f6e2e08.patch")
+        assert extract_commit_hash(url) == (
+            "022da344a02bafd604402ac8e253e0014f6e2e08")
+
+    def test_file_share_hex_account_id_ignored(self):
+        # /c/<hex>/<file> share links must not look like Pagure /c/<hash>.
+        url = ("https://1drv.ms/t/c/12406a392c92914b/"
+               "EQ5pK82-KmxKht6YgsEzaOsBzrC05Cael1vwpfM9ZxX97Q?e=qEgmtB")
+        assert extract_commit_hash(url) is None
+
+    def test_mercurial_revision_ignored(self):
+        # Not a Git object; the corrector could not cherry-pick it.
+        url = "https://hg.savannah.gnu.org/hgweb/unrtf/rev/a5d3b025a8b1"
+        assert extract_commit_hash(url) is None
+
+    def test_compare_range_ignored(self):
+        url = ("https://github.com/oxidecomputer/omicron/compare/"
+               "01bb875a1b2c3d4...ec069f0a1b2c3d4")
+        assert extract_commit_hash(url) is None
+
+    def test_tree_browse_url_ignored(self):
+        url = ("https://github.com/Homebrew/brew/tree/"
+               "237d1e783f7ee261beaba7d3f6bde22da7148b0a")
+        assert extract_commit_hash(url) is None
+
+    def test_gerrit_change_id_ignored(self):
+        # A Gerrit Change-Id is not a commit hash.
+        url = ("https://gerrit.wikimedia.org/r/q/"
+               "I7878f8f7bc067080f80427b90f8d85337f172711")
+        assert extract_commit_hash(url) is None
+
+    def test_advisory_uuid_ignored(self):
+        url = ("https://www.wordfence.com/threat-intel/vulnerabilities/id/"
+               "894b43ed-143d-4c0b-afd1-05fcd6fa5018?source=cve")
+        assert extract_commit_hash(url) is None
+
+    @pytest.mark.parametrize("url", [
+        ("https://support.hpe.com/hpsc/doc/public/display"
+         "?docLocale=en_US&docId=emr_na-c04497075"),
+        ("https://support.hpe.com/hpsc/doc/public/display"
+         "?docLocale=en_US&docId=emr_na-c04518183"),
+        ("https://inbox.sourceware.org/libc-announce/"
+         "b11f0003-6ec1-4bd6-b9de-9e38a4efeca3@redhat.com/T/"),
+    ])
+    def test_non_commit_hex_identifier_ignored(self, url):
+        assert extract_commit_hash(url) is None
 
     def test_ignored_bugzilla(self):
         url = "https://bugzilla.redhat.com/show_bug.cgi?id=1234567"
