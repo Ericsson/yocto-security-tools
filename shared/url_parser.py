@@ -8,8 +8,40 @@ used by both cve_metadata_extractor (with caching) and cve_corrector/cve_agent
 """
 import re
 from typing import Optional
+from urllib.parse import parse_qsl, urlparse
 
+# Unanchored on purpose: consumers such as cve_metadata_extractor.debian use
+# HASH_RE.findall() to pull hashes out of free-text notes. Checks that need a
+# whole-string match use HASH_RE.fullmatch().
 HASH_RE = re.compile(r'[0-9a-fA-F]{7,40}')
+_HASH_TOKEN_RE = r'([0-9a-fA-F]{7,40})(?![0-9a-fA-F])'
+# URL path shapes that identify a commit object.
+_COMMIT_PATH_RES = (
+    # GitHub/GitLab/cgit/gitweb: /commit/<hash>, /-/commit/<hash>,
+    # /commits/<hash> (commit within a PR), /commitdiff/<hash>
+    re.compile(rf'/(?:-/)?commit(?:s|diff)?/+{_HASH_TOKEN_RE}(?:[/.]|$)'),
+    # Fossil: /info/<hash>
+    re.compile(rf'/info/+{_HASH_TOKEN_RE}(?:[/.]|$)'),
+    # kernel.org /stable/c/<hash> shortlinks and Pagure /c/<hash>. Anchored at
+    # the end of the path: a bare /c/ segment is too common in unrelated URLs
+    # (file-sharing links embed a hex account id as /c/<id>/<file>).
+    re.compile(rf'/c/+{_HASH_TOKEN_RE}/?$'),
+    # SourceForge: /ci/<hash>
+    re.compile(rf'/ci/+{_HASH_TOKEN_RE}(?:[/.]|$)'),
+    # Gitiles (*.googlesource.com): /<repo>/+/<hash>
+    re.compile(rf'/\+/+{_HASH_TOKEN_RE}(?:[/.]|$)'),
+    # 9front: /<hash>/commit.html
+    re.compile(rf'/{_HASH_TOKEN_RE}/commit\.html$'),
+    # Patch artifacts named after the commit: /<hash>.patch, /<hash>.diff
+    re.compile(rf'/{_HASH_TOKEN_RE}\.(?:patch|diff)$'),
+)
+
+# Hosts that serve a bare /<hash> path as a commit redirect.
+_BARE_HASH_HOSTS = frozenset({'kernel.dance'})
+
+# Path segments that, combined with an id=/h= query parameter, denote a
+# commit view. cgit exposes the same commit as /commit/, /patch/ and /diff/.
+_COMMIT_VIEW_SEGMENTS = frozenset({'commit', 'commitdiff', 'patch', 'diff'})
 
 IGNORED_URL_PATTERNS = [
     'marc.info', 'NEWS.html#', '/blob/', 'bugzilla', 'viewtopic',
@@ -24,7 +56,20 @@ _PR_RE = re.compile(r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)')
 def extract_commit_hash(url: str) -> Optional[str]:
     """Extract a commit hash from a URL.
 
-    Skips URLs matching ignored patterns and pure-numeric matches.
+    Only extracts from URL structures that identify a commit:
+    ``/commit/<hash>`` and ``/-/commit/<hash>`` (GitHub, GitLab),
+    ``/commits/<hash>`` (commit within a pull request), ``/commitdiff/``,
+    cgit ``/commit|patch|diff/?id=<hash>``, gitweb
+    ``?p=<repo>;a=commit;h=<hash>``, kernel.org ``/stable/c/<hash>``
+    shortlinks, Pagure ``/c/<hash>``, SourceForge ``/ci/<hash>``,
+    Gitiles ``/+/<hash>``, Fossil ``/info/<hash>``, 9front
+    ``/<hash>/commit.html``, and patch artifacts named ``/<hash>.patch``.
+
+    This avoids treating arbitrary hexadecimal-looking document IDs,
+    advisory UUIDs, message IDs or Gerrit change IDs as Git commits.
+    Ranges (``/compare/<a>..<b>``), blob and tree views, and non-Git
+    revisions (Mercurial ``/rev/<id>``) are deliberately not extracted:
+    they do not name a single Git commit the corrector could cherry-pick.
 
     Args:
         url: URL string potentially containing a commit hash.
@@ -34,13 +79,45 @@ def extract_commit_hash(url: str) -> Optional[str]:
     """
     if any(p in url for p in IGNORED_URL_PATTERNS):
         return None
-    match = HASH_RE.search(url)
-    if match:
-        h = match.group(0)
-        if h.isdigit():
-            return None
-        return h
+
+    parsed = urlparse(url)
+    for path_re in _COMMIT_PATH_RES:
+        path_match = path_re.search(parsed.path)
+        if path_match:
+            return _non_numeric_hash(path_match.group(1))
+
+    bare_path = parsed.path.strip('/')
+    if ((parsed.hostname or '').lower() in _BARE_HASH_HOSTS
+            and HASH_RE.fullmatch(bare_path)):
+        return _non_numeric_hash(bare_path)
+
+    # Gitweb commonly separates query parameters with semicolons rather than
+    # ampersands, and some references percent-encode them; normalise every
+    # form before parsing.
+    raw_query = re.sub('%3B', ';', parsed.query, flags=re.IGNORECASE)
+    query = dict(parse_qsl(raw_query.replace(';', '&'),
+                           keep_blank_values=True))
+    path_parts = {part for part in parsed.path.split('/') if part}
+    action = query.get('a')
+    is_commit_view = (
+        bool(path_parts & _COMMIT_VIEW_SEGMENTS)
+        or action in {'commit', 'commitdiff'}
+        # Old-style gitweb links omit the action: ?p=<repo>;h=<hash>. An
+        # explicit non-commit action (a=blob, a=tree) means h= is a blob or
+        # tree object, not a commit, so it must not be accepted here.
+        or ('p' in query and action is None)
+    )
+    if is_commit_view:
+        for key in ('id', 'h', 'hash', 'commit'):
+            candidate = query.get(key, '')
+            if HASH_RE.fullmatch(candidate):
+                return _non_numeric_hash(candidate)
     return None
+
+
+def _non_numeric_hash(candidate: str) -> Optional[str]:
+    """Return a hexadecimal hash candidate unless it is purely numeric."""
+    return None if candidate.isdigit() else candidate
 
 
 def fetch_github_pr_commits(pr_url: str,

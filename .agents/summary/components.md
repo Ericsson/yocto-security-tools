@@ -58,7 +58,7 @@ graph TB
 | `exit_codes.py` | Single source of truth for all exit codes (0–15) |
 | `paths.py` | XDG-compliant `data_dir()` and `cache_dir()` with env overrides |
 | `json_cache.py` | Gzip-compressed JSON cache with atomic writes (`cache_load`, `cache_dump`) |
-| `url_parser.py` | Parse GitHub/GitLab commit URLs, extract hashes, fetch PR commit lists |
+| `url_parser.py` | Structure-aware commit-URL parsing (GitHub/GitLab, cgit, gitweb, Gitiles, kernel.org shortlinks, Pagure, SourceForge, Fossil), extract hashes, fetch PR commit lists. `HASH_RE` is shared and intentionally unanchored — `cve_metadata_extractor/debian.py` scans free-text notes with `findall()` |
 | `__init__.py` | `GIT_ENV_ALLOWLIST` and `build_git_env()` for safe subprocess environments |
 
 ## cve_metadata_extractor/
