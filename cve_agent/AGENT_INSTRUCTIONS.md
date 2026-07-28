@@ -25,12 +25,37 @@ of tool names:
   example `git status` is accepted, but `cd /path && git status` is rejected
   because the `cd ... &&` wrapper is not on the list.
 
-Bash commands you CAN run: `git status`, `git status --porcelain`, `git
-diff[ *]`, `git log *`, `git show *`, `git add *`, `git cherry-pick <sha>`
-(start a fresh cherry-pick, e.g. `git cherry-pick -x <sha>` for a
-prerequisite), `git cherry-pick --continue|--abort`, `git am
---continue|--abort`, `git rev-parse *`, `git merge-base *`, `devtool build
-*`, `cat *`, `head *`, `tail *`.
+Bash commands you CAN run:
+
+- Inspect: `git status`, `git status --porcelain`, `git diff[ *]`, `git log *`,
+  `git show *`, `git rev-parse *`, `git merge-base *`, `git ls-files[ *]`
+  (`git ls-files -u` lists the unmerged stage entries of a conflict directly),
+  `git submodule status[ *]` (diagnoses a gitlink recorded upstream that does
+  not exist in a tarball-sourced workspace), `cat *`, `head *`, `tail *`.
+- Stage / unstage: `git add *`, `git rm [--cached] <path>`,
+  `git restore --staged <path>`.
+- Take one side of a conflict wholesale: `git checkout --ours <path>`,
+  `git checkout --theirs <path>`.
+- Cherry-pick: `git cherry-pick <sha>` (start a fresh cherry-pick, e.g. `git
+  cherry-pick -x <sha>` for a prerequisite), `git cherry-pick
+  --continue|--no-edit --continue|--abort|--skip`, `git am --continue|--abort`.
+- Commit: `git commit -m "<msg>"`, `git commit -F <file>`, `git commit --amend
+  --no-edit`, `git commit --amend -m "<msg>"`, `git commit --amend -F <file>`.
+- Build: `devtool build *`.
+
+Notes on the allow-list's exact shapes:
+
+- Pathspec commands (`git rm`, `git restore --staged`, `git checkout
+  --ours/--theirs`) take **one** path per invocation and the path must not
+  start with `-`. Run them once per file instead of passing several.
+- `-m` messages must be double-quoted and contain no `"`, `$`, or backtick.
+  For a multi-paragraph message, write it to a file and use `git commit -F
+  <file>`.
+- `git reset` is NOT available in any form. Use `git restore --staged <path>`
+  to unstage — it is index-only and leaves the working tree untouched.
+- Also unavailable: `git stash`, `git submodule update`, `git checkout <path>`
+  (without `--ours`/`--theirs`), and anything with `--no-verify`, `--force`, or
+  `--hard`.
 
 The context file path given to you at session start (e.g. `context.md`
 under the agent dir) is always valid — read it directly rather than
@@ -144,13 +169,38 @@ After writing the conclusion file, **stop — do not make any other changes.**
 ### 2. Resolve Conflicts (exit code 1)
 ```bash
 git status && git diff                      # examine conflicts
+git ls-files -u                             # unmerged stages (1=base, 2=ours, 3=theirs)
 git show <upstream_sha>                     # upstream fix intent
 git log --oneline -20 -- <file>             # file history for context
 ```
-Resolve conflicts, then:
+
+Resolve each conflicted file. Three shapes come up, in increasing order of
+effort — prefer the cheapest one that is correct:
+
+1. **Take one side wholesale.** If the resolution is "keep upstream verbatim"
+   or "drop the upstream hunk entirely", do it with git rather than an editor:
+   ```bash
+   git checkout --theirs <file>   # keep the upstream (cherry-picked) side
+   git checkout --ours <file>     # keep the stable-branch side
+   ```
+2. **Partial resolution.** Neither side is right on its own — edit the file
+   with your editing tool, removing all conflict markers.
+3. **Drop a path from the cherry-pick.** If upstream deletes a file, mark it
+   with `git rm <file>`. If a conflicted path exists only in the upstream
+   history and not in this workspace (a submodule/gitlink recorded upstream
+   against a tarball-sourced recipe is the common case — confirm with `git
+   submodule status`), unstage it instead of trying to materialise it:
+   ```bash
+   git restore --staged <path>    # index-only; the working tree is untouched
+   ```
+
+Then stage the resolutions:
 ```bash
 git add <resolved_files>                    # ONLY allowed files
 ```
+
+If the cherry-pick as a whole turns out not to apply to this version, `git
+cherry-pick --skip` drops it (`--abort` stops the sequence entirely).
 
 If you adapted the patch (not a verbatim cherry-pick), append your backport
 notes to `.git/MERGE_MSG` — **read the file first**, keep the original content,

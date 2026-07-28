@@ -6,6 +6,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **cve-agent**: Allow the git commands the documented backport workflow needs:
+  `git restore --staged <path>` (index-only unstage), `git checkout
+  --ours/--theirs <path>`, `git rm [--cached] <path>`, `git commit -m/-F` and
+  `git commit --amend --no-edit/-m/-F`, `git cherry-pick --skip`, plus the
+  read-only diagnostics `git ls-files` and `git submodule status`.
+
+### Changed
+
+- **cve-agent**: Narrow the `fs_write` deny rule `**/tests/**` to this
+  project's own test directories, so a recipe's regression tests (e.g. jq's
+  `tests/jq.test`) can be edited when they are in the session's Allowed Files
+  list. `git reset`, `git stash`, `git submodule update`, `git checkout
+  <path>`, and any `--no-verify`/`--force`/`--hard` form remain rejected.
+
 ## [1.0.3] - 2026-07-27
 
 ### Added

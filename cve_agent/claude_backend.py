@@ -47,13 +47,34 @@ _MODEL_ALIASES = {
 
 # Tool allow-list — mirrors execute_bash.allowedCommands plus fs_read/fs_write
 # from cve_agent/agents/yocto-cve-backport.json.
+#
+# Claude Code Bash rules are literal *prefix* matches, so they cannot express
+# the kiro manifest's regex restrictions on a command's tail — e.g.
+# ``Bash(git commit -m:*)`` also permits a trailing ``--no-verify``, which the
+# kiro regex rejects. That granularity gap already existed for
+# ``Bash(git cherry-pick:*)`` and is why the pre-commit hook is not the only
+# guard: :func:`cve_agent.git.revert_unauthorized_changes` re-checks the final
+# commit after the session and strips out-of-scope files even when the hook
+# was bypassed. ``git reset`` is deliberately absent here (and from the kiro
+# manifest): no prefix rule can allow the index-only ``git reset -- <path>``
+# while rejecting ``git reset --hard``, so the agent uses
+# ``git restore --staged <path>`` instead.
 _ALLOWED_TOOLS = (
     "Read", "Edit", "Write", "MultiEdit",
     "Bash(git status:*)",
     "Bash(git diff:*)",
     "Bash(git log:*)",
     "Bash(git show:*)",
+    "Bash(git ls-files:*)",
+    "Bash(git submodule status:*)",
     "Bash(git add:*)",
+    "Bash(git rm:*)",
+    "Bash(git restore --staged:*)",
+    "Bash(git checkout --ours:*)",
+    "Bash(git checkout --theirs:*)",
+    "Bash(git commit -m:*)",
+    "Bash(git commit -F:*)",
+    "Bash(git commit --amend:*)",
     "Bash(git cherry-pick:*)",
     "Bash(git am:*)",
     "Bash(git rev-parse:*)",
@@ -77,13 +98,23 @@ _DENIED_READ_WRITE = (
     "~/.netrc",
 )
 
-# Project source and tests: deny writes only (mirrors fs_write.deniedPaths).
+# This project's own source and tests: deny writes only (mirrors
+# fs_write.deniedPaths). The test patterns name this repo's per-component
+# test directories rather than a blanket ``**/tests/**``: a recipe workspace
+# routinely ships its own ``tests/`` directory (e.g. jq's ``tests/jq.test``),
+# and backported CVE fixes regularly carry regression tests there — a blanket
+# rule would deny writes to files the session's Allowed Files list explicitly
+# permits.
 _DENIED_WRITE = (
     "**/cve_agent/**/*.py",
     "**/cve_corrector/**/*.py",
     "**/cve_metadata_extractor/**/*.py",
     "**/shared/**/*.py",
-    "**/tests/**",
+    "**/tests/agent/**",
+    "**/tests/corrector/**",
+    "**/tests/extractor/**",
+    "**/tests/shared/**",
+    "**/tests/integration/**",
 )
 
 # Auth/config env vars the `claude` CLI needs but build_git_env() filters out.
