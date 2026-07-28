@@ -8,8 +8,12 @@ Run with: python3 -m cve_metadata_extractor [options]
 import argparse
 import json
 import logging
+import math
 import os
+import secrets
+import stat
 import sys
+import time
 
 # Import source modules so they register themselves in SOURCE_REGISTRY.
 from . import cve_sources as _cve_sources
@@ -29,6 +33,19 @@ def _get_version() -> str:
         return version('yocto-security-tools')
     except PackageNotFoundError:
         return 'dev'
+
+
+def _non_negative_float(value):
+    '''Parse a non-negative floating-point CLI value.'''
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f'invalid floating-point value: {value}') from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(
+            'value must be a finite non-negative number')
+    return parsed
 
 
 def parse_arguments(cfg):
@@ -67,6 +84,10 @@ def parse_arguments(cfg):
                        help='Download .patch files and extract Debian source patches')
     output_group.add_argument('--reprocess-missing-series', action='store_true',
                        help='Re-fetch PR/issue data for CVEs that lack series in existing output')
+    output_group.add_argument('--checkpoint-interval',
+                       type=_non_negative_float, default=60.0,
+                       help='Seconds between periodic result checkpoints; '
+                            '0 disables periodic saves (default: %(default)s)')
 
     # --- OE integration ---
     oe_group = parser.add_argument_group('OpenEmbedded integration')
@@ -312,6 +333,47 @@ def _merge_results(existing, new):
     return merged
 
 
+def _save_results(results, output):
+    '''Atomically save extraction results.
+
+    The temporary file is created next to the destination so ``os.replace``
+    remains atomic. A failed or interrupted write therefore leaves the
+    previous valid output untouched.
+    '''
+    output_path = os.path.abspath(output)
+    temp_output = None
+    temp_fd = None
+    try:
+        for _ in range(10):
+            token = secrets.token_hex(8)
+            temp_output = os.path.join(
+                os.path.dirname(output_path),
+                f'.{os.path.basename(output_path)}.{token}.tmp')
+            try:
+                temp_fd = os.open(
+                    temp_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+                break
+            except FileExistsError:
+                continue
+        if temp_fd is None:
+            raise FileExistsError("Could not create unique temporary output")
+        assert temp_output is not None
+        if os.path.exists(output_path):
+            mode = stat.S_IMODE(os.stat(output_path).st_mode)
+            os.fchmod(temp_fd, mode)
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+            temp_fd = None
+            json.dump(results, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_output, output_path)
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        if temp_output and os.path.exists(temp_output):
+            os.unlink(temp_output)
+
+
 def main():
     '''Main function.'''
     cfg = load_config()
@@ -377,42 +439,53 @@ def main():
     results = dict(existing_results)
     skipped = 0
     reprocessed = 0
-    for idx, cve in enumerate(known_affected, 1):
-        cve_id = cve['id']
-        if cve_id in existing_results:
-            if args.reprocess_missing_series and not existing_results[cve_id].get('series'):
-                # Invalidate cached PR/issue URLs so they get re-fetched
-                for ref in existing_results[cve_id].get('references', []):
-                    PR_CACHE.pop(ref['url'], None)
-                reprocessed += 1
-            else:
-                _accumulate_stats(existing_results[cve_id], stats)
-                skipped += 1
-                continue
-        result = process_cve(
-            cve, idx, len(known_affected), args,
-            active_sources, stats, oe_token)
-        if result:
+    last_checkpoint = time.monotonic()
+    try:
+        for idx, cve in enumerate(known_affected, 1):
+            cve_id = cve['id']
             if cve_id in existing_results:
-                result = _merge_results(existing_results[cve_id], result)
-                # Count stats for inactive sources preserved from existing data
-                active_names = {s.name for s in active_sources}
-                inactive = (
-                    set(_iter_sources(existing_results[cve_id].get('hash_details', [])))
-                    | set(_iter_sources(existing_results[cve_id].get('patch_details', [])))
-                ) - active_names
-                _accumulate_stats(existing_results[cve_id], stats,
-                                  only_sources=inactive)
-            results[cve_id] = result
+                if (args.reprocess_missing_series
+                        and not existing_results[cve_id].get('series')):
+                    # Invalidate cached PR/issue URLs so they get re-fetched
+                    for ref in existing_results[cve_id].get('references', []):
+                        PR_CACHE.pop(ref['url'], None)
+                    reprocessed += 1
+                else:
+                    _accumulate_stats(existing_results[cve_id], stats)
+                    skipped += 1
+                    continue
+            result = process_cve(
+                cve, idx, len(known_affected), args,
+                active_sources, stats, oe_token)
+            if result:
+                if cve_id in existing_results:
+                    result = _merge_results(existing_results[cve_id], result)
+                    # Count stats for inactive sources preserved from existing data
+                    active_names = {s.name for s in active_sources}
+                    inactive = (
+                        set(_iter_sources(
+                            existing_results[cve_id].get('hash_details', [])))
+                        | set(_iter_sources(
+                            existing_results[cve_id].get('patch_details', [])))
+                    ) - active_names
+                    _accumulate_stats(existing_results[cve_id], stats,
+                                      only_sources=inactive)
+                results[cve_id] = result
+                if args.checkpoint_interval > 0:
+                    now = time.monotonic()
+                    if now - last_checkpoint >= args.checkpoint_interval:
+                        _save_results(results, args.output)
+                        last_checkpoint = time.monotonic()
+        print(f"\nSaving results to {args.output}...")
+    finally:
+        # Preserve completed work on Ctrl-C or a source failure without
+        # repeatedly rewriting a potentially large image result.
+        _save_results(results, args.output)
 
     if skipped:
         print(f"\nSkipped {skipped} already-processed CVEs")
     if reprocessed:
         print(f"Reprocessed {reprocessed} CVEs missing series data")
-
-    print(f"\nSaving results to {args.output}...")
-    with open(args.output, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2)
 
     _print_summary(results, stats, args)
 

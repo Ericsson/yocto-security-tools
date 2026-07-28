@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for cve_metadata_extractor CLI, processing, and cve_sources."""
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +65,29 @@ class TestParseArguments:
             with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
                 args = parse_arguments(cfg)
         assert args.check_oe is True
+
+    def test_checkpoint_interval(self):
+        from cve_metadata_extractor.__main__ import parse_arguments
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        with patch('sys.argv', [
+                'prog', '--cve-id', 'CVE-1',
+                '--checkpoint-interval', '0']):
+            with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
+                args = parse_arguments(cfg)
+        assert args.checkpoint_interval == 0
+
+    @pytest.mark.parametrize('value', ['-1', 'nan', 'inf'])
+    def test_checkpoint_interval_rejects_invalid_value(self, value):
+        from cve_metadata_extractor.__main__ import parse_arguments
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        with patch('sys.argv', [
+                'prog', '--cve-id', 'CVE-1',
+                '--checkpoint-interval', value]):
+            with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
+                with pytest.raises(SystemExit):
+                    parse_arguments(cfg)
 
 
 class TestCfgKeyForFlag:
@@ -144,6 +168,174 @@ class TestMain:
         main()
         data = json.loads(out_file.read_text())
         assert 'CVE-2025-0001' in data
+
+    @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
+    @patch('cve_metadata_extractor.__main__.load_pr_cache')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
+    @patch('cve_metadata_extractor.__main__.process_cve')
+    def test_checkpoints_completed_cves_on_interrupt(
+            self, mock_process, mock_load, mock_pr, tmp_path, monkeypatch):
+        mock_load.return_value = [
+            {'id': 'CVE-2025-0001', 'name': 'foo'},
+            {'id': 'CVE-2025-0002', 'name': 'bar'},
+        ]
+        first_result = {
+            'name': 'foo', 'hashes': ['abc123'], 'hash_details': [],
+            'patches': [], 'patch_details': [], 'references': [],
+            'version': '1.0', 'cvss3_score': None,
+        }
+        mock_process.side_effect = [first_result, KeyboardInterrupt]
+        out_file = tmp_path / 'out.json'
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-id', 'CVE-2025-0001', 'CVE-2025-0002',
+            '--output', str(out_file)])
+
+        from cve_metadata_extractor.__main__ import main
+        with pytest.raises(KeyboardInterrupt):
+            main()
+
+        assert json.loads(out_file.read_text()) == {
+            'CVE-2025-0001': first_result,
+        }
+
+    @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
+    @patch('cve_metadata_extractor.__main__.load_pr_cache')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
+    @patch('cve_metadata_extractor.__main__.process_cve')
+    @patch('cve_metadata_extractor.__main__._save_results')
+    def test_periodic_checkpoint_after_interval(
+            self, mock_save, mock_process, mock_load, mock_pr,
+            tmp_path, monkeypatch):
+        mock_load.return_value = [
+            {'id': 'CVE-2025-0001', 'name': 'foo'},
+            {'id': 'CVE-2025-0002', 'name': 'bar'},
+        ]
+        mock_process.side_effect = [
+            {'name': 'foo', 'hashes': [], 'hash_details': [],
+             'patches': [], 'patch_details': [], 'references': []},
+            {'name': 'bar', 'hashes': [], 'hash_details': [],
+             'patches': [], 'patch_details': [], 'references': []},
+        ]
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-id', 'CVE-2025-0001', 'CVE-2025-0002',
+            '--output', str(tmp_path / 'out.json'),
+            '--checkpoint-interval', '60'])
+
+        from cve_metadata_extractor.__main__ import main
+        with patch('cve_metadata_extractor.__main__.time.monotonic',
+                   side_effect=[100, 159, 160, 161]):
+            main()
+
+        assert mock_save.call_count == 2
+        assert set(mock_save.call_args_list[0].args[0]) == {
+            'CVE-2025-0001', 'CVE-2025-0002',
+        }
+
+    @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
+    @patch('cve_metadata_extractor.__main__.load_pr_cache')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
+    @patch('cve_metadata_extractor.__main__.process_cve')
+    @patch('cve_metadata_extractor.__main__._save_results')
+    def test_periodic_checkpoint_throttled_before_interval(
+            self, mock_save, mock_process, mock_load, mock_pr,
+            tmp_path, monkeypatch):
+        mock_load.return_value = [{'id': 'CVE-2025-0001', 'name': 'foo'}]
+        mock_process.return_value = {
+            'name': 'foo', 'hashes': [], 'hash_details': [],
+            'patches': [], 'patch_details': [], 'references': [],
+        }
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-id', 'CVE-2025-0001',
+            '--output', str(tmp_path / 'out.json'),
+            '--checkpoint-interval', '60'])
+
+        from cve_metadata_extractor.__main__ import main
+        with patch('cve_metadata_extractor.__main__.time.monotonic',
+                   side_effect=[100, 159]):
+            main()
+
+        assert mock_save.call_count == 1
+
+    @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
+    @patch('cve_metadata_extractor.__main__.load_pr_cache')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
+    @patch('cve_metadata_extractor.__main__.process_cve')
+    @patch('cve_metadata_extractor.__main__._save_results')
+    def test_zero_interval_disables_periodic_but_saves_on_interrupt(
+            self, mock_save, mock_process, mock_load, mock_pr,
+            tmp_path, monkeypatch):
+        mock_load.return_value = [
+            {'id': 'CVE-2025-0001', 'name': 'foo'},
+            {'id': 'CVE-2025-0002', 'name': 'bar'},
+        ]
+        first_result = {
+            'name': 'foo', 'hashes': [], 'hash_details': [],
+            'patches': [], 'patch_details': [], 'references': [],
+        }
+        mock_process.side_effect = [first_result, KeyboardInterrupt]
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-id', 'CVE-2025-0001', 'CVE-2025-0002',
+            '--output', str(tmp_path / 'out.json'),
+            '--checkpoint-interval', '0'])
+
+        from cve_metadata_extractor.__main__ import main
+        with pytest.raises(KeyboardInterrupt):
+            main()
+
+        mock_save.assert_called_once()
+        assert mock_save.call_args.args[0] == {
+            'CVE-2025-0001': first_result,
+        }
+
+
+class TestSaveResults:
+    def test_new_output_respects_umask(self, tmp_path):
+        from cve_metadata_extractor.__main__ import _save_results
+        out_file = tmp_path / 'out.json'
+
+        old_umask = os.umask(0o022)
+        try:
+            _save_results({'CVE-NEW': {'hashes': []}}, str(out_file))
+        finally:
+            os.umask(old_umask)
+
+        assert out_file.stat().st_mode & 0o777 == 0o644
+
+    def test_existing_output_preserves_mode(self, tmp_path):
+        from cve_metadata_extractor.__main__ import _save_results
+        out_file = tmp_path / 'out.json'
+        out_file.write_text('{}')
+        out_file.chmod(0o640)
+
+        _save_results({'CVE-NEW': {'hashes': []}}, str(out_file))
+
+        assert out_file.stat().st_mode & 0o777 == 0o640
+
+    def test_failed_write_preserves_existing_output(self, tmp_path):
+        from cve_metadata_extractor.__main__ import _save_results
+        out_file = tmp_path / 'out.json'
+        original = {'CVE-OLD': {'hashes': []}}
+        out_file.write_text(json.dumps(original))
+
+        with pytest.raises(TypeError):
+            _save_results({'not-json': {object()}}, str(out_file))
+
+        assert json.loads(out_file.read_text()) == original
+        assert not list(tmp_path.glob('*.tmp'))
+
+    def test_interrupted_write_preserves_existing_output(self, tmp_path):
+        from cve_metadata_extractor.__main__ import _save_results
+        out_file = tmp_path / 'out.json'
+        original = {'CVE-OLD': {'hashes': []}}
+        out_file.write_text(json.dumps(original))
+
+        with patch('cve_metadata_extractor.__main__.json.dump',
+                   side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                _save_results({'CVE-NEW': {'hashes': []}}, str(out_file))
+
+        assert json.loads(out_file.read_text()) == original
+        assert not list(tmp_path.glob('*.tmp'))
 
 
 class TestProcessCve:
