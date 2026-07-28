@@ -133,7 +133,7 @@ def install_scope_hook(workspace_path: Path, allowed: set[str]) -> None:
         'while IFS= read -r f; do\n'
         '  if ! grep -qxF "$f" "$ALLOWED_FILE"; then\n'
         '    echo "BLOCKED by CVE agent: $f is not in the upstream commit" >&2\n'
-        '    echo "Unstage it with: git reset HEAD -- $f" >&2\n'
+        '    echo "Unstage it with: git restore --staged $f" >&2\n'
         '    exit 1\n'
         '  fi\n'
         'done < <(git diff --cached --name-only)\n',
