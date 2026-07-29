@@ -155,6 +155,26 @@ class TestNonInteractivePromptIncludesInstructions:
         assert '--trust-all-tools' not in cmd
 
 
+class TestInteractiveTimeout:
+    """Interactive sessions must never be killed by a subprocess timeout."""
+
+    @patch('subprocess.run')
+    def test_interactive_passes_timeout_none(self, mock_run):
+        """When interactive=True, timeout must be None (no time limit)."""
+        _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=True)
+        # First subprocess.run call is the kiro-cli session itself
+        _, kwargs = mock_run.call_args_list[0]
+        assert kwargs.get('timeout') is None
+
+    @patch('subprocess.run')
+    def test_non_interactive_passes_configured_timeout(self, mock_run):
+        """When interactive=False, the configured timeout is forwarded."""
+        _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 600, interactive=False)
+        # First subprocess.run call is the kiro-cli session itself
+        _, kwargs = mock_run.call_args_list[0]
+        assert kwargs.get('timeout') == 600
+
+
 class TestSessionErrorHandling:
     @patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 300))
     def test_timeout_returns_true(self, _):
