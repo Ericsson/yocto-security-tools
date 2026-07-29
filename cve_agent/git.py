@@ -13,6 +13,7 @@ from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import (
+    force_checkout_branch,
     run_capture,  # noqa: F401
     run_git_display,  # noqa: F401
     run_git_stdout,  # noqa: F401
@@ -193,10 +194,10 @@ def revert_unauthorized_changes(workspace_path: Path,
                 break
         if cve_branch:
             print(f"\n⚠ Agent switched to devtool branch — forcing back to {cve_branch}")
-            subprocess.run(
-                ['git', 'checkout', cve_branch],
-                cwd=workspace_path, env=build_git_env(), check=False
-            )
+            if not force_checkout_branch(workspace_path, cve_branch):
+                print(f"⚠ Failed to check out {cve_branch} — "
+                      "skipping unauthorized-change revert")
+                return
         else:
             return
     committed = set(run_git_stdout(
