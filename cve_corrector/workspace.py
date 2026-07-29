@@ -242,6 +242,31 @@ def _fetch_remote(workspace_path: Path, remote_name: str, url: str) -> bool:
                    cwd=workspace_path) == 0
 
 
+def _init_submodules(workspace_path: Path) -> None:
+    """Initialize git submodules if the repo defines any.
+
+    When a recipe is built from a tarball, devtool extracts the archive into
+    a git repo without initializing submodules.  After checking out the
+    upstream tag (which has a .gitmodules file), submodule directories remain
+    empty.  Later, copy_missing_files_from_devtool() copies those files as
+    untracked content, leaving the working tree dirty and causing cherry-pick
+    to fail.
+
+    Running ``git submodule update --init --recursive`` populates submodule
+    directories as tracked content, preventing the dirty-tree problem.
+    """
+    gitmodules = workspace_path / '.gitmodules'
+    if not gitmodules.exists():
+        return
+    logger.info("Initializing submodules")
+    ret = run_cmd(
+        ['git', 'submodule', 'update', '--init', '--recursive'],
+        cwd=workspace_path,
+    )
+    if ret != 0:
+        logger.warning("Submodule initialization failed — continuing without submodules")
+
+
 def prepare_cve_branch(workspace_path: Path, version: Optional[str],
                        cve_id: str, subproject: Optional[str] = None) -> tuple[bool, list[str]]:
     """Checkout recipe version and prepare branch for CVE fix.
@@ -261,6 +286,12 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
             logger.warning("Version checkout failed, will try format-patch fallback...")
             run_cmd(['git', 'checkout', '-b', cve_id], cwd=workspace_path)
             checkout_ok = False
+
+    # Initialize submodules before cherry-picking devtool commits or copying
+    # missing files.  Without this, repos with submodules (e.g. jq with
+    # modules/) leave submodule directories empty, and copy_missing_files
+    # fills them with untracked files that block later cherry-picks.
+    _init_submodules(workspace_path)
 
     logger.info("Cherry-picking devtool commits")
     base_branch = None
