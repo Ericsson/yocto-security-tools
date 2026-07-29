@@ -209,12 +209,31 @@ def deduce_repo_from_patches(patches: list[str]) -> Optional[str]:
     return None
 
 
+def _get_submodule_paths(workspace_path: Path) -> set[str]:
+    """Return registered submodule paths from .gitmodules, if any."""
+    gitmodules = workspace_path / '.gitmodules'
+    if not gitmodules.exists():
+        return set()
+    paths: set[str] = set()
+    for line in gitmodules.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith('path'):
+            # e.g. "path = modules/oniguruma"
+            _, _, value = stripped.partition('=')
+            if value.strip():
+                paths.add(value.strip())
+    return paths
+
+
 def copy_missing_files_from_devtool(workspace_path: Path) -> None:
     """Copy files present in devtool but missing from the CVE branch.
 
     Release tarballs contain generated autotools files (configure, Makefile.in,
     m4/*.m4, etc.) that don't exist in the upstream git repo. This copies them
     from the devtool branch without tracking them, so builds succeed.
+
+    Files under registered submodule paths are skipped — those are tracked
+    by git submodule and must not be overwritten with regular file copies.
     """
     devtool_files = run_cmd_capture(
         ['git', 'ls-tree', '-r', '--name-only', 'devtool'], cwd=workspace_path)
@@ -226,8 +245,11 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
         return
 
     cve_set = set(cve_files.stdout.strip().splitlines())
+    submodule_paths = _get_submodule_paths(workspace_path)
     missing = [f for f in devtool_files.stdout.strip().splitlines()
-               if f not in cve_set]
+               if f not in cve_set
+               and not any(f == sm or f.startswith(sm + '/')
+                           for sm in submodule_paths)]
     if not missing:
         return
 
