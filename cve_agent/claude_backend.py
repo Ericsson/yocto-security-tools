@@ -217,6 +217,9 @@ class ClaudeBackend(AIBackend):
         pre_head = self._current_head(workspace_path)
         start = time.monotonic()
         interrupted = None
+        # Interactive sessions have a human at the terminal — never kill them
+        # with a timeout.  Non-interactive (CI) runs use the configured limit.
+        effective_timeout: int | None = None if interactive else timeout
         try:
             proc = subprocess.Popen(cmd, cwd=workspace_path, env=env,
                                     start_new_session=True)
@@ -227,7 +230,7 @@ class ClaudeBackend(AIBackend):
 
         if proc is not None:
             try:
-                proc.wait(timeout=timeout)
+                proc.wait(timeout=effective_timeout)
             except subprocess.TimeoutExpired:
                 interrupted = "timed out"
                 self._kill_process_group(proc)

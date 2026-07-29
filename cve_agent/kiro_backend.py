@@ -58,9 +58,12 @@ class KiroBackend(AIBackend):
 
         start = time.monotonic()
         timed_out = False
+        # Interactive sessions have a human at the terminal — never kill them
+        # with a timeout.  Non-interactive (CI) runs use the configured limit.
+        effective_timeout: Optional[int] = None if interactive else timeout
         try:
             subprocess.run(run_cmd, cwd=workspace_path, env=env,
-                         check=False, timeout=timeout)
+                         check=False, timeout=effective_timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
         except FileNotFoundError:

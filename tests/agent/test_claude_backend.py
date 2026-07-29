@@ -276,6 +276,47 @@ def test_run_session_interactive_omits_print(tmp_path, monkeypatch):
     assert claude_cmd[claude_cmd.index("--permission-mode") + 1] == "default"
 
 
+def test_run_session_interactive_disables_timeout(tmp_path, monkeypatch):
+    """Interactive sessions pass timeout=None to Popen.wait, never killing
+    a human-attended session on a timer."""
+    workspace = _make_workspace(tmp_path)
+    wait_timeout_values = []
+
+    class _TrackingPopen(_FakePopen):
+        def wait(self, timeout=None):
+            wait_timeout_values.append(timeout)
+            return 0
+
+    def _tracking_ctor(cmd, **kwargs):
+        return _TrackingPopen(cmd, **kwargs)
+
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.Popen", _tracking_ctor)
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.run", _git_stub())
+
+    ClaudeBackend().run_session("prompt", workspace, set(), "sonnet", 600, True)
+    assert wait_timeout_values[0] is None
+
+
+def test_run_session_noninteractive_uses_configured_timeout(tmp_path, monkeypatch):
+    """Non-interactive sessions forward the configured timeout to Popen.wait."""
+    workspace = _make_workspace(tmp_path)
+    wait_timeout_values = []
+
+    class _TrackingPopen(_FakePopen):
+        def wait(self, timeout=None):
+            wait_timeout_values.append(timeout)
+            return 0
+
+    def _tracking_ctor(cmd, **kwargs):
+        return _TrackingPopen(cmd, **kwargs)
+
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.Popen", _tracking_ctor)
+    monkeypatch.setattr("cve_agent.claude_backend.subprocess.run", _git_stub())
+
+    ClaudeBackend().run_session("prompt", workspace, set(), "sonnet", 600, False)
+    assert wait_timeout_values[0] == 600
+
+
 def test_run_session_timeout_returns_unresolved(tmp_path, monkeypatch):
     """claude times out AND the workspace genuinely still has conflicts."""
     workspace = _make_workspace(tmp_path)
