@@ -28,6 +28,14 @@ of tool names:
   what the allow-list says. To capture output to a file, pipe into `tee`
   instead: `<cmd> 2>&1 | tee <agent_dir>/<name>.log`. Merging stderr with
   `2>&1` is fine; only the `>`/`>>` file-write form is refused.
+- **Never write files outside the agent dir or the Yocto build dir** — the
+  only two locations you have any reason to write to are `<agent_dir>`
+  (given in the context header, for logs like `build.log`) and paths under
+  the Yocto build dir (also given in the context header, e.g. its `tmp/`
+  or `tmp-glibc/` task-log tree). Do not `tee` to `/tmp`, your home
+  directory, or any other path outside those two locations — even if a
+  command superficially matches the allow-list's shape, writing outside
+  these locations is never an intended use and must not be attempted.
 - Chaining with `;` or `|` is accepted **only when every command in the
   chain is individually on the allow-list** — each part is checked
   separately. `devtool build jq 2>&1 | tee <agent_dir>/build.log` works
