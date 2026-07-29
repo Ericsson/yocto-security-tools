@@ -104,11 +104,29 @@ class TestContextPtestResults:
         ws = tmp_path / 'build' / 'workspace' / 'sources' / 'busybox'
         ws.mkdir(parents=True)
         log = tmp_path / 'ptest.log'
-        log.write_text('PASS: test1\nFAILED: test2\nFAILED: test3')
+        log.write_text('PASS: test1\nFAIL: test2\nFAIL: test3')
         with patch('cve_agent.context._find_ptest_log', return_value=log):
             result = _read_ptest_results(ws)
-        assert 'FAILED: test2' in result
-        assert 'FAILED: test3' in result
+        assert 'FAIL: test2' in result
+        assert 'FAIL: test3' in result
+
+    @patch('cve_agent.context._find_state_file', return_value=None)
+    def test_ptest_log_aborted_lines(self, _, tmp_path):
+        """A ptest killed by timeout emits no PASS/FAIL line for itself —
+        it must still surface in the AI context instead of being silently
+        dropped."""
+        ws = tmp_path / 'build' / 'workspace' / 'sources' / 'jq'
+        ws.mkdir(parents=True)
+        log = tmp_path / 'ptest.log'
+        log.write_text(
+            'PASS: optionaltest\n'
+            'ERROR: Exited from signal Killed (9)\n'
+            'TIMEOUT: /usr/lib/jq/ptest\n'
+        )
+        with patch('cve_agent.context._find_ptest_log', return_value=log):
+            result = _read_ptest_results(ws)
+        assert 'Aborted/killed test cases' in result
+        assert 'TIMEOUT: /usr/lib/jq/ptest' in result
 
 
 class TestContextYoctoTmpDir:

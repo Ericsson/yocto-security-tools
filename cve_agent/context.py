@@ -8,6 +8,7 @@ and writes a structured context.md file for Claude to consume.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -322,10 +323,18 @@ def _read_ptest_results(workspace_path: Path) -> str:
     ptest_log = _find_ptest_log(build_dir, recipe)
     if ptest_log:
         content = ptest_log.read_text(encoding=TEXT_ENCODING, errors=TEXT_ERRORS)
-        failing = [line for line in content.splitlines() if 'FAILED:' in line]
+        failing = [line for line in content.splitlines()
+                   if re.match(r'\s*FAIL:', line)]
+        aborted = [line for line in content.splitlines()
+                   if line.startswith('TIMEOUT:') or
+                   line.startswith('ERROR: Exited from signal')]
         if failing:
             lines.append("**Failing test cases**:\n```\n" +
                          '\n'.join(failing) + "\n```\n")
+        if aborted:
+            lines.append("**Aborted/killed test cases** (no PASS/FAIL result "
+                         "reported — likely hung or timed out):\n```\n" +
+                         '\n'.join(aborted) + "\n```\n")
 
     if len(lines) == 1:
         lines.append("(No ptest result data found in state file or logs)\n")

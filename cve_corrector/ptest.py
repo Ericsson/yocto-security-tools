@@ -110,22 +110,114 @@ def run_ptest(recipe: str, build_timeout: int = 7200,
             f'work/*/core-image-minimal/*/testimage/ptest_log/{recipe}'))
     if ptest_logs:
         content = sorted(ptest_logs)[-1].read_text()
-        passed = content.count('PASSED:')
-        failed = content.count('FAILED:')
-        skipped = content.count('SKIPPED:')
-        failing = [line.split('FAILED:')[1].strip()
-                   for line in content.splitlines() if 'FAILED:' in line]
-        summary = f"PASSED: {passed}, FAILED: {failed}, SKIPPED: {skipped}"
-        if failing:
-            summary += '\nFailing cases:\n' + '\n'.join(f'  {c}' for c in failing)
-        return summary
+        return summarize_ptest_log(content)
     return None
 
 
+# Per the ptest-runner result-line convention (test-manual/ptest.rst):
+# "result: testname" where result is PASS, FAIL, or SKIP. Anchored to the
+# start of the line (optional leading whitespace) so that unrelated text
+# elsewhere on the line — e.g. the aggregate "STOP: ptest-runner" /
+# "TOTAL: 1 FAIL: 2" summary lines ptest-runner prints at the end of a
+# run — is never mistaken for an individual test result.
+_RESULT_LINE_RE = re.compile(r'^\s*(PASS|FAIL|SKIP):\s*(.+)$')
+
+# A test run that never reaches a PASS/FAIL/SKIP result line because the
+# runner killed it (e.g. it hung and hit the per-test timeout) instead
+# reports a "TIMEOUT: <path>" marker line naming the ptest that was
+# killed. ptest-runner also prints "ERROR: Exited from signal Killed (9)"
+# immediately before it, but that is context/detail about *why* the test
+# was killed, not a second aborted test — counting both would double the
+# aborted tally for a single kill.
+_ABORTED_MARKER = 'TIMEOUT:'
+
+
+def summarize_ptest_log(content: str) -> str:
+    """Summarize a ptest log's PASS/FAIL/SKIP result lines.
+
+    Individual ptest result lines follow the Automake-style convention
+    documented for ptest-runner: ``result: testname`` where ``result`` is
+    one of ``PASS``, ``FAIL``, or ``SKIP``.
+
+    A test that is killed (e.g. by the per-test timeout) never emits a
+    PASS/FAIL/SKIP result line at all — it is reported via a ``TIMEOUT:
+    <path>`` marker line instead (ptest-runner also logs an "ERROR: Exited
+    from signal Killed (9)" line right before it, but that is
+    context/detail about the kill, not a second test). Such tests are
+    counted separately as "aborted" so they are not silently treated as
+    passing (zero failures) just because no FAIL: line was emitted for
+    them.
+
+    The overall run is only considered complete if it reaches
+    ``STOP: ptest-runner`` — a run that never finishes (e.g. the QEMU
+    instance crashed or the whole testimage task was itself killed before
+    ptest-runner could print its final summary) has a truncated, unreliable
+    PASS/FAIL/SKIP count and must not be reported as if it were a normal
+    clean result.
+
+    Args:
+        content: Raw ptest log content.
+
+    Returns:
+        Human-readable summary string, e.g.
+        ``"PASSED: 10, FAILED: 1, SKIPPED: 0, ABORTED: 1"``. Prefixed with
+        a warning if the run never reached ``STOP: ptest-runner``.
+    """
+    passed = 0
+    failed = 0
+    skipped = 0
+    failing: list[str] = []
+
+    for line in content.splitlines():
+        match = _RESULT_LINE_RE.match(line)
+        if not match:
+            continue
+        result, name = match.group(1), match.group(2).strip()
+        if result == 'PASS':
+            passed += 1
+        elif result == 'FAIL':
+            failed += 1
+            failing.append(name)
+        elif result == 'SKIP':
+            skipped += 1
+
+    aborted = sum(1 for line in content.splitlines() if line.startswith(_ABORTED_MARKER))
+    finished = any(line.startswith('STOP: ptest-runner') for line in content.splitlines())
+
+    summary = f"PASSED: {passed}, FAILED: {failed}, SKIPPED: {skipped}, ABORTED: {aborted}"
+    if not finished:
+        summary = (
+            "WARNING: ptest-runner did not reach STOP: ptest-runner — the "
+            "run was cut short and this summary is incomplete/unreliable.\n"
+            + summary
+        )
+    if failing:
+        summary += '\nFailing cases:\n' + '\n'.join(f'  {c}' for c in failing)
+    return summary
+
+
 def compare_ptest_results(before: str, after: str) -> bool:
-    """Compare ptest results, return True if failures did not increase."""
-    before_match = re.search(r'PASSED: (\d+), FAILED: (\d+)', before)
-    after_match = re.search(r'PASSED: (\d+), FAILED: (\d+)', after)
+    """Compare ptest results, return True if failures did not increase.
+
+    Both failed tests (``FAILED:``) and aborted/killed tests (``ABORTED:``,
+    e.g. a test that hit the per-test timeout and was never able to report
+    a result) are treated as regressions if their count increases — a test
+    that used to complete and now hangs is a regression even though it
+    never emits a FAIL: line.
+
+    If the *after* run never reached ``STOP: ptest-runner`` (flagged by the
+    ``WARNING:`` prefix ``summarize_ptest_log`` adds), its PASS/FAIL counts
+    are unreliable/incomplete and must not be trusted to declare "no
+    regression" — this is treated as a regression so it gets investigated
+    rather than silently accepted.
+    """
+    if after.startswith('WARNING:'):
+        return False
+
+    before_match = re.search(r'PASSED: (\d+), FAILED: (\d+)(?:, SKIPPED: \d+, ABORTED: (\d+))?', before)
+    after_match = re.search(r'PASSED: (\d+), FAILED: (\d+)(?:, SKIPPED: \d+, ABORTED: (\d+))?', after)
     if before_match and after_match:
-        return int(after_match.group(2)) <= int(before_match.group(2))
+        before_bad = int(before_match.group(2)) + int(before_match.group(3) or 0)
+        after_bad = int(after_match.group(2)) + int(after_match.group(3) or 0)
+        return after_bad <= before_bad
     return True
