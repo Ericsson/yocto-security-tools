@@ -14,16 +14,25 @@ of tool names:
   `find`, or `cat` for this; it is already fully trusted and works for
   every path you need.
 - Your bash-equivalent runner is restricted to a fixed allow-list (git
-  plumbing, `devtool build`, and log tailing). Commands not on that list
+  plumbing, `devtool build`, log tailing, and `tee`/`echo` for build-log
+  capture). Commands not on that list
   are rejected outright with no prompt — there is no fallback, so don't
   try variations or guess at alternate commands. If a task seems to
   require something outside the allow-list below, stop and flag it
   rather than probing for a workaround.
-- Run each command **bare and exactly as listed** — the allow-list matches
-  whole commands. Your shell already runs inside the workspace, so do NOT
-  prefix `cd <path>` and do NOT chain commands with `&&`, `;`, or `|`. For
-  example `git status` is accepted, but `cd /path && git status` is rejected
-  because the `cd ... &&` wrapper is not on the list.
+- Run each command **bare and exactly as listed**. Your shell already runs
+  inside the workspace, so do NOT prefix `cd <path>`: `git status` is
+  accepted, but `cd /path && git status` is rejected because `cd` is not on
+  the list.
+- **File redirection (`>`, `>>`) is rejected unconditionally**, no matter
+  what the allow-list says. To capture output to a file, pipe into `tee`
+  instead: `<cmd> 2>&1 | tee <agent_dir>/<name>.log`. Merging stderr with
+  `2>&1` is fine; only the `>`/`>>` file-write form is refused.
+- Chaining with `;` or `|` is accepted **only when every command in the
+  chain is individually on the allow-list** — each part is checked
+  separately. `devtool build jq 2>&1 | tee <agent_dir>/build.log` works
+  because both `devtool build *` and `tee` are allowed; `git status | grep x`
+  does not, because `grep` is not.
 
 Bash commands you CAN run:
 
@@ -31,7 +40,8 @@ Bash commands you CAN run:
   `git show *`, `git rev-parse *`, `git merge-base *`, `git ls-files[ *]`
   (`git ls-files -u` lists the unmerged stage entries of a conflict directly),
   `git submodule status[ *]` (diagnoses a gitlink recorded upstream that does
-  not exist in a tarball-sourced workspace), `cat *`, `head *`, `tail *`.
+  not exist in a tarball-sourced workspace), `cat *`, `head *`, `tail *`,
+  `wc *`.
 - Stage / unstage: `git add *`, `git rm [--cached] <path>`,
   `git restore --staged <path>`.
 - Take one side of a conflict wholesale: `git checkout --ours <path>`,
@@ -42,6 +52,9 @@ Bash commands you CAN run:
 - Commit: `git commit -m "<msg>"`, `git commit -F <file>`, `git commit --amend
   --no-edit`, `git commit --amend -m "<msg>"`, `git commit --amend -F <file>`.
 - Build: `devtool build *`.
+- Capture build output: `tee <agent_dir>/<name>.log` (only paths under a
+  `cve_agent/` directory ending in `.log`), and
+  `echo "Exit code: ${PIPESTATUS[0]}"` / `echo "Exit code: $?"` verbatim.
 
 Notes on the allow-list's exact shapes:
 
@@ -226,10 +239,21 @@ Run the build as a **single command on ONE line** — do NOT split it across
 lines and do NOT wrap it in a `BUILD_LOG=` variable. A multi-line submission
 matches no allowed command and is rejected outright:
 ```bash
-devtool build <recipe> > <agent_dir>/build.log 2>&1; echo "Exit code: $?"
+devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
 ```
 Substitute `<recipe>` and `<agent_dir>` with the values from the context
 header (keep it all on one physical line).
+
+Do **not** rewrite this as `devtool build <recipe> > <agent_dir>/build.log
+2>&1` — `>` redirection is refused by the command guard (see "Available
+Tools"). The `| tee` form is the only way to get a build log.
+
+Read the exit code from the `echo "Exit code: ..."` line, **not** from the
+tool's own reported exit status: in a pipeline the tool reports `tee`'s
+status, which is `0` even when the build failed. `${PIPESTATUS[0]}` is
+`devtool`'s real status — a non-zero value there means the build FAILED,
+regardless of what the tool result says.
+
 On failure: `tail -50 <agent_dir>/build.log`, fix, `git commit --amend
 --no-edit`, retry.
 If `devtool build` logs are insufficient, check Yocto task logs at:
