@@ -80,9 +80,12 @@ _ALLOWED_TOOLS = (
     "Bash(git rev-parse:*)",
     "Bash(git merge-base:*)",
     "Bash(devtool build:*)",
+    "Bash(tee:*)",
+    "Bash(echo:*)",
     "Bash(cat:*)",
     "Bash(head:*)",
     "Bash(tail:*)",
+    "Bash(wc:*)",
 )
 
 # Secrets / system paths: deny read AND write. Absolute paths use Claude Code's

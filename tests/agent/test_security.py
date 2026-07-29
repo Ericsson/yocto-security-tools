@@ -80,9 +80,56 @@ class TestValidateRecipeName:
         assert validate_recipe_name('/absolute/path') is False
 
 
+import re
+
 import pytest
 
 _KIRO_CONFIG = Path(__file__).resolve().parent.parent.parent / '.kiro' / 'agents' / 'yocto-cve-backport.json'
+_AGENT_INSTRUCTIONS = (Path(__file__).resolve().parent.parent.parent
+                       / 'cve_agent' / 'AGENT_INSTRUCTIONS.md')
+
+# A bare ``>`` / ``>>`` file redirect. ``2>&1`` (digit before, ``&`` after) is
+# not a file redirect and is accepted by kiro-cli.
+_FILE_REDIRECT_RE = re.compile(r'(?<![0-9])>>?(?!&)')
+
+
+def _has_file_redirect(command: str) -> bool:
+    return _FILE_REDIRECT_RE.search(command) is not None
+
+
+def _split_subcommands(command: str) -> list:
+    """Split a compound command the way kiro-cli's guard does."""
+    return [part.strip() for part in re.split(r'&&|\|\||[;|]', command)
+            if part.strip()]
+
+
+def _kiro_permits(command: str, allowed: list) -> bool:
+    """Whether kiro-cli's execute_bash guard would run ``command``.
+
+    Models the behaviour verified empirically against kiro-cli 2.9.0 (see
+    ``TestAgentConfig.test_build_verify_command_is_permitted``):
+
+    1. ``>`` / ``>>`` file redirection is refused unconditionally — no
+       ``allowedCommands`` pattern can re-enable it.
+    2. Compound commands are split on ``;``, ``|`` and ``&&``, and **each**
+       part must match an ``allowedCommands`` entry on its own.
+
+    This deliberately differs from a naive ``re.fullmatch`` against the whole
+    command string, which wrongly reported the old redirect-based build
+    command as permitted while kiro-cli rejected it in practice.
+    """
+    if _has_file_redirect(command):
+        return False
+    return all(any(re.fullmatch(pattern, part) for pattern in allowed)
+               for part in _split_subcommands(command))
+
+
+def _documented_build_command() -> str:
+    """Extract the build-verify command from AGENT_INSTRUCTIONS.md §5."""
+    text = _AGENT_INSTRUCTIONS.read_text(encoding='utf-8')
+    section = text.split('### 5. Build Verification', 1)[1]
+    block = section.split('```bash', 1)[1].split('```', 1)[0]
+    return block.strip()
 
 
 class TestAgentConfig:
@@ -125,26 +172,135 @@ class TestAgentConfig:
 
     @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
                         reason="kiro agent config not installed")
-    def test_build_verify_command_is_single_line(self):
-        """The build-verify command must be run as ONE line. The recommended
-        single-line form is allowed; a multi-line (build + echo on separate
-        lines) submission is rejected — regression guard for the
-        `devtool build ... \\n echo "Exit code: $?"` rejection."""
-        import re
-        config = json.loads(_KIRO_CONFIG.read_text())
-        allowed = config['toolsSettings']['execute_bash']['allowedCommands']
+    def test_build_verify_command_is_permitted(self):
+        """The documented build-verify command must actually run under
+        kiro-cli's execute_bash guard.
 
-        def permitted(cmd):
-            return any(re.fullmatch(pat, cmd) for pat in allowed)
+        Regression guard for a real, observed rejection. The instructions used
+        to document::
 
-        assert permitted("devtool build libarchive")
-        assert permitted(
-            'devtool build libarchive > /ws/cve_agent/libarchive/build.log '
-            '2>&1; echo "Exit code: $?"')
+            devtool build <recipe> > <agent_dir>/build.log 2>&1; echo "Exit code: $?"
+
+        which kiro-cli 2.9.0 refuses with "Command not in allowed list" for two
+        independent reasons, both confirmed by probing kiro-cli directly:
+
+        * ``>`` file redirection is rejected unconditionally — even an
+          allow-list entry written to match the redirect verbatim does not
+          help, so the log must be captured with ``| tee``.
+        * A compound command is split on ``;``/``|``/``&&`` and each part is
+          matched separately, so the trailing ``echo`` needs its own entry.
+
+        A whole-string ``re.fullmatch`` check passed for the redirect form,
+        which is precisely why this regression reached a live run.
+        """
+        allowed = json.loads(_KIRO_CONFIG.read_text())[
+            'toolsSettings']['execute_bash']['allowedCommands']
+
+        good = ('devtool build libarchive 2>&1 | tee '
+                '/ws/workspace/cve_agent/libarchive/build.log; '
+                'echo "Exit code: ${PIPESTATUS[0]}"')
+        assert _kiro_permits(good, allowed)
+
+        # The forms kiro-cli actually rejects must stay rejected.
+        assert not _kiro_permits(
+            'devtool build libarchive > /ws/workspace/cve_agent/libarchive/'
+            'build.log 2>&1; echo "Exit code: $?"', allowed)
         # A two-line submission matches nothing (the newline breaks it).
-        assert not permitted(
-            'devtool build libarchive > /ws/build.log 2>&1\n'
-            'echo "Exit code: $?"')
+        assert not _kiro_permits(
+            'devtool build libarchive 2>&1 | tee /ws/build.log\n'
+            'echo "Exit code: $?"', allowed)
+        # Bare build, and the plain-$? chain without a pipe, still work.
+        assert _kiro_permits("devtool build libarchive", allowed)
+        assert _kiro_permits(
+            'devtool build libarchive; echo "Exit code: $?"', allowed)
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_documented_build_command_matches_allowlist(self):
+        """AGENT_INSTRUCTIONS.md §5 and the allow-list must not drift apart.
+
+        The command the agent is told to run is extracted from the docs and
+        checked against the manifest, so editing either one alone fails here
+        instead of at the next live backport.
+        """
+        allowed = json.loads(_KIRO_CONFIG.read_text())[
+            'toolsSettings']['execute_bash']['allowedCommands']
+        documented = _documented_build_command()
+        concrete = (documented
+                    .replace('<recipe>', 'libarchive')
+                    .replace('<agent_dir>',
+                             '/ws/workspace/cve_agent/libarchive'))
+        assert '\n' not in concrete, (
+            "the documented build command must stay on one line")
+        assert not _has_file_redirect(concrete), (
+            f"documented build command uses > redirection, which kiro-cli "
+            f"rejects: {concrete!r}")
+        assert _kiro_permits(concrete, allowed), (
+            f"documented build command is not permitted by the allow-list: "
+            f"{concrete!r}")
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_tee_is_scoped_to_agent_log_files(self):
+        """``tee`` can write files, so it is restricted to ``.log`` files under
+        a ``cve_agent/`` directory — it must not become a way to overwrite
+        source files or bypass fs_write's deniedPaths."""
+        allowed = json.loads(_KIRO_CONFIG.read_text())[
+            'toolsSettings']['execute_bash']['allowedCommands']
+
+        assert _kiro_permits(
+            'tee /ws/workspace/cve_agent/jq/build.log', allowed)
+        for bad in (
+            'tee /ws/workspace/sources/jq/src/main.c',
+            'tee /home/user/.ssh/authorized_keys',
+            'tee /etc/passwd',
+        ):
+            assert not _kiro_permits(bad, allowed), (
+                f"tee must not be allowed to write {bad!r}")
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_readonly_inspection_commands_are_permitted(self):
+        """The read-only log/file inspection commands must be available, in
+        both bare and piped-into forms (``wc`` is typically reached by pipe).
+
+        These stay broad (``^wc .*$``) like ``cat``/``head``/``tail`` because
+        none of them can write a file — unlike ``tee``, which is deliberately
+        scoped in ``test_tee_is_scoped_to_agent_log_files``.
+        """
+        allowed = json.loads(_KIRO_CONFIG.read_text())[
+            'toolsSettings']['execute_bash']['allowedCommands']
+
+        assert _kiro_permits('wc -l /ws/workspace/cve_agent/jq/build.log',
+                             allowed)
+        assert _kiro_permits('cat /ws/workspace/cve_agent/jq/build.log',
+                             allowed)
+        assert _kiro_permits('tail -50 /ws/workspace/cve_agent/jq/build.log',
+                             allowed)
+        # Reached via a pipe, each part must still be individually allowed.
+        assert _kiro_permits(
+            'tail -50 /ws/workspace/cve_agent/jq/build.log | wc -l', allowed)
+        # wc must not smuggle in a redirect or an unlisted command.
+        assert not _kiro_permits('wc -l build.log > /tmp/count.txt', allowed)
+        assert not _kiro_permits('wc -l build.log | rm -rf /', allowed)
+
+    @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
+                        reason="kiro agent config not installed")
+    def test_echo_allowance_is_narrow(self):
+        """``echo`` exists only to surface the build exit code; it must not
+        become a general-purpose shell primitive."""
+        allowed = json.loads(_KIRO_CONFIG.read_text())[
+            'toolsSettings']['execute_bash']['allowedCommands']
+
+        assert _kiro_permits('echo "Exit code: $?"', allowed)
+        assert _kiro_permits('echo "Exit code: ${PIPESTATUS[0]}"', allowed)
+        for bad in (
+            'echo hello',
+            'echo "$(rm -rf /)"',
+            'echo',
+        ):
+            assert not _kiro_permits(bad, allowed), (
+                f"echo allow-list is too broad: it permits {bad!r}")
 
     @pytest.mark.skipif(not _KIRO_CONFIG.exists(),
                         reason="kiro agent config not installed")
