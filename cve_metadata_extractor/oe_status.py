@@ -16,6 +16,8 @@ from pathlib import Path
 
 import requests
 
+from shared import TEXT_ENCODING, TEXT_ERRORS
+
 from .config import load_config as _load_cfg
 
 # Group IDs for lists.openembedded.org
@@ -110,14 +112,16 @@ def do_get_repo(repo_dir, repo_url):
         print(f"  Fetching {name}...", end='', flush=True)
         subprocess.run(
             ["git", "-C", repo, "fetch", "--all"],
-            check=True, capture_output=True, text=True, timeout=300)
+            check=True, capture_output=True,
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS, timeout=300)
         print(" done")
     else:
         print(f"  Cloning {name} (first run, may take a few minutes)...",
               end='', flush=True)
         subprocess.run(
             ["git", "clone", "--bare", "--", repo_url, repo],
-            check=True, capture_output=True, text=True, timeout=600)
+            check=True, capture_output=True,
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS, timeout=600)
         print(" done")
     return repo
 
@@ -129,7 +133,8 @@ def get_cve_in_branch(repo, branch, cve):
         proc = subprocess.run(
             ["git", "-C", repo, "log", branch, "--grep", cve,
              '--pretty=format:"%cd %h %s by %an"', "--date=short"],
-            check=True, capture_output=True, text=True, timeout=100)
+            check=True, capture_output=True,
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS, timeout=100)
         if len(proc.stdout) > 0:
             logging.debug(proc.stdout)
             status = f"merged: {proc.stdout.strip()}"

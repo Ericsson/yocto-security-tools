@@ -8,12 +8,13 @@ and writes a structured context.md file for Claude to consume.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .knowledge import KnowledgeBase
+
+from shared import TEXT_ENCODING, TEXT_ERRORS
 
 from . import (
     EXIT_BUILD_ERROR,
@@ -23,7 +24,7 @@ from . import (
     get_build_dir,
     resolve_agent_instructions,
 )
-from .git import get_all_upstream_shas, get_upstream_sha, run_git_stdout
+from .git import get_all_upstream_shas, get_upstream_sha, run_capture, run_git_stdout
 from .interdiff import generate_interdiff
 
 
@@ -320,7 +321,7 @@ def _read_ptest_results(workspace_path: Path) -> str:
     build_dir = get_build_dir(workspace_path)
     ptest_log = _find_ptest_log(build_dir, recipe)
     if ptest_log:
-        content = ptest_log.read_text(encoding='utf-8')
+        content = ptest_log.read_text(encoding=TEXT_ENCODING, errors=TEXT_ERRORS)
         failing = [line for line in content.splitlines() if 'FAILED:' in line]
         if failing:
             lines.append("**Failing test cases**:\n```\n" +
@@ -444,9 +445,9 @@ def _get_conflicted_files(workspace_path: Path) -> list[str]:
     Returns:
         List of conflicted file paths relative to workspace.
     """
-    result = subprocess.run(
+    result = run_capture(
         ['git', 'diff', '--name-only', '--diff-filter=U'],
-        cwd=workspace_path, capture_output=True, text=True, check=False
+        cwd=workspace_path
     )
     if result.returncode != 0:
         return []

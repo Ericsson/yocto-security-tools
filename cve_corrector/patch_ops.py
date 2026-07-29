@@ -14,6 +14,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING
 
+from shared import TEXT_ENCODING, TEXT_ERRORS
+
 from .git_ops import get_git_user_info
 from .recipe_ops import _split_src_uri_line, sort_cve_lines_in_recipe, update_recipe_patch
 from .utils import logger, run_cmd_capture
@@ -157,7 +159,8 @@ def _compute_cve_tag_flags(state: WorkflowState, patches: list[str]) -> list[boo
     norm_fix = _normalize_subject(fix_subject)
     matched = []
     for patch_rel in patches:
-        text = (meta_layer / patch_rel).read_text(encoding="utf-8")
+        text = (meta_layer / patch_rel).read_text(
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS)
         matched.append(_normalize_subject(_extract_patch_subject(text)) == norm_fix)
 
     if not any(matched):
@@ -234,7 +237,8 @@ def update_patches_with_metadata(state: WorkflowState) -> None:
             # Upstream-Status link, if the agent recorded it via
             # `git cherry-pick -x`.
             prereq_sha = _cherry_picked_sha(
-                original_patch.read_text(encoding="utf-8"))
+                original_patch.read_text(
+                    encoding=TEXT_ENCODING, errors=TEXT_ERRORS))
             if prereq_sha and repo_base_url:
                 original_url = f"{repo_base_url}/commit/{prereq_sha}"
         kind = "" if include_cve else " (prerequisite, no CVE tag)"

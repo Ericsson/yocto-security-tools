@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from shared import TEXT_ENCODING, TEXT_ERRORS
+
 
 @dataclass(frozen=True)
 class InterdiffArtifacts:
@@ -135,7 +137,8 @@ def generate_interdiff_artifacts(
 
         argv = ['interdiff', str(old_path), str(new_path)]
         result = subprocess.run(
-            argv, capture_output=True, text=True, check=False
+            argv, capture_output=True,
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS, check=False
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None

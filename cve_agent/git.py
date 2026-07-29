@@ -13,6 +13,7 @@ from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import (
+    run_capture,  # noqa: F401
     run_git_display,  # noqa: F401
     run_git_stdout,  # noqa: F401
 )
@@ -212,9 +213,8 @@ def revert_unauthorized_changes(workspace_path: Path,
 
     # Preserve commit message, then soft-reset to original-version
     msg = run_git_stdout(['log', '-1', '--format=%B'], workspace_path)
-    saved_head_result = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'],
-        cwd=workspace_path, env=build_git_env(), capture_output=True, text=True, check=False
+    saved_head_result = run_capture(
+        ['git', 'rev-parse', 'HEAD'], cwd=workspace_path
     )
     saved_head = saved_head_result.stdout.strip() if saved_head_result.returncode == 0 else None
     result = subprocess.run(

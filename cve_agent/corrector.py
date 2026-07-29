@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from shared import TEXT_ENCODING, TEXT_ERRORS
+
 from . import CORRECTOR_CMD, AgentConfig
 
 
@@ -65,7 +67,8 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
 
     output_lines = []
     with subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding=TEXT_ENCODING, errors=TEXT_ERRORS
     ) as process:
         if process.stdout:
             for line in process.stdout:

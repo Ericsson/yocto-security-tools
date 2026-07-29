@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from shared import TEXT_ENCODING, TEXT_ERRORS
+
 from .utils import logger, run_cmd, run_cmd_capture
 
 
@@ -181,7 +183,7 @@ def _cherry_pick_monorepo(workspace_path: Path, commit_hash: str,
     patch = fmt.stdout.replace(f'a/{prefix}', 'a/').replace(f'b/{prefix}', 'b/')
     am = subprocess.run(
         ['git', 'am', '--whitespace=fix'], cwd=workspace_path,
-        input=patch, text=True, check=False,
+        input=patch, encoding=TEXT_ENCODING, errors=TEXT_ERRORS, check=False,
         capture_output=True)
     if am.returncode == 0:
         logger.info("Applied monorepo commit %s (stripped %s/)", commit_hash[:8], subproject)
@@ -190,7 +192,7 @@ def _cherry_pick_monorepo(workspace_path: Path, commit_hash: str,
     # Try with 3-way merge
     am = subprocess.run(
         ['git', 'am', '--3way', '--whitespace=fix'], cwd=workspace_path,
-        input=patch, text=True, check=False,
+        input=patch, encoding=TEXT_ENCODING, errors=TEXT_ERRORS, check=False,
         capture_output=True)
     if am.returncode == 0:
         logger.info("Applied monorepo commit %s via 3-way merge", commit_hash[:8])

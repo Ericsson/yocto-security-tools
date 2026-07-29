@@ -8,7 +8,7 @@ handles human approval / rejection / edit flow.
 import subprocess
 from pathlib import Path
 
-from shared import build_git_env
+from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 from . import AgentConfig, get_agent_dir
 from .git import get_changed_files, run_git_display, run_git_stdout
@@ -365,6 +365,6 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
     log_path = agent_dir / f'{workspace_path.name}-{cve_id}-ai-changes.log'
     if log_path.exists():
         print("\n--- AI Changes Audit Log ---")
-        print(log_path.read_text(encoding='utf-8'))
+        print(log_path.read_text(encoding=TEXT_ENCODING, errors=TEXT_ERRORS))
 
     print("=" * 60)
