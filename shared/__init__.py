@@ -3,6 +3,18 @@
 """Shared utilities for yocto-security-tools."""
 import os
 
+# Text policy for externally produced text (git output, patches, build and
+# ptest logs). Those routinely contain bytes that are not valid UTF-8, and
+# subprocess's text=True decodes with the *locale* encoding using
+# errors='strict', so one stray byte raises UnicodeDecodeError inside
+# subprocess.communicate() and aborts the run. Always pass both constants
+# together instead of text=True.
+#
+# Read-modify-write of our own structured files (JSON state, recipes) keeps
+# strict UTF-8: replacing bytes there would corrupt the file on write-back.
+TEXT_ENCODING = 'utf-8'
+TEXT_ERRORS = 'replace'
+
 # Canonical allowlist of environment variables passed to git subprocesses.
 # Import this in any module that builds a filtered git environment.
 GIT_ENV_ALLOWLIST: frozenset[str] = frozenset({

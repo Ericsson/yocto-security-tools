@@ -6,7 +6,6 @@ Spawns AI sessions with context files, wraps them with file-scope
 enforcement (pre-commit hook + post-session revert).
 """
 import difflib
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from .git import (
     install_scope_hook,
     remove_scope_hook,
     revert_unauthorized_changes,
+    run_capture,
     run_git_stdout,
 )
 
@@ -30,9 +30,8 @@ def check_resolution_state(workspace_path: Path) -> bool:
     """
     if not workspace_path.exists():
         return True
-    result = subprocess.run(
-        ['git', 'status', '--porcelain'],
-        cwd=workspace_path, capture_output=True, text=True, check=False
+    result = run_capture(
+        ['git', 'status', '--porcelain'], cwd=workspace_path
     )
     if result.returncode != 0:
         return False

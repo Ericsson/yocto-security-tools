@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from shared import build_git_env
+from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 
 def is_git_cmd(cmd: list[str]) -> bool:
@@ -29,11 +29,13 @@ def run_capture(cmd: list[str],
         cwd: Working directory for the command.
 
     Returns:
-        CompletedProcess with stdout/stderr as strings.
+        CompletedProcess with stdout/stderr as strings (undecodable bytes
+        replaced, see shared.TEXT_ERRORS).
     """
     env = build_git_env() if is_git_cmd(cmd) else None
     return subprocess.run(cmd, cwd=cwd, capture_output=True,
-                          text=True, check=False, env=env)
+                          encoding=TEXT_ENCODING, errors=TEXT_ERRORS,
+                          check=False, env=env)
 
 
 def run_git_stdout(args: list[str], cwd: Path) -> str:
@@ -50,7 +52,8 @@ def run_git_stdout(args: list[str], cwd: Path) -> str:
         return ""
     result = subprocess.run(
         ['git'] + args, cwd=cwd, env=build_git_env(),
-        capture_output=True, text=True, check=False
+        capture_output=True, encoding=TEXT_ENCODING, errors=TEXT_ERRORS,
+        check=False
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 

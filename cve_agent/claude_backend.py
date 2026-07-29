@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from shared import build_git_env
+from shared.git_runner import run_capture
 
 from .backend import AIBackend, SessionResult
 from .git import has_in_progress_operation
@@ -279,17 +280,15 @@ class ClaudeBackend(AIBackend):
             proc.wait(timeout=5)
 
     def _current_head(self, workspace_path: Path) -> str:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=workspace_path, capture_output=True, text=True, check=False)
+        result = run_capture(["git", "rev-parse", "HEAD"],
+                             cwd=workspace_path)
         return result.stdout.strip() if result.returncode == 0 else ""
 
     def _check_resolution(self, workspace_path: Path) -> bool:
         if has_in_progress_operation(workspace_path):
             return False
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=workspace_path, capture_output=True, text=True, check=False)
+        result = run_capture(["git", "status", "--porcelain"],
+                             cwd=workspace_path)
         if result.returncode != 0:
             return False
         for line in result.stdout.splitlines():
