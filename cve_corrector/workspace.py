@@ -4,6 +4,8 @@
 from pathlib import Path
 from typing import Optional
 
+from shared.git_runner import force_checkout_branch
+
 from .bitbake_ops import (
     cleanup_workspace,
     find_mirror_repo,
@@ -280,7 +282,9 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
         result = run_cmd_capture(['git', 'branch', '--list', cve_id], cwd=workspace_path)
         if result.stdout.strip():
             logger.debug("Branch %s already exists, checking out...", cve_id)
-            run_cmd(['git', 'checkout', cve_id], cwd=workspace_path)
+            if not force_checkout_branch(workspace_path, cve_id):
+                logger.error("Failed to check out existing branch %s", cve_id)
+                raise GitError("Git operation failed")
         elif not checkout_version(workspace_path, version, cve_id,
                                   subproject=subproject):
             logger.warning("Version checkout failed, will try format-patch fallback...")
