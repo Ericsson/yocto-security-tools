@@ -189,7 +189,7 @@ class TestReadPtestResults:
         ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
         ws.mkdir(parents=True)
         log = tmp_path / "ptest.log"
-        log.write_text("PASS: test1\nFAILED: test2\nFAILED: test3")
+        log.write_text("PASS: test1\nFAIL: test2\nFAIL: test3")
         with patch("cve_agent.context._find_ptest_log", return_value=log):
             result = _read_ptest_results(ws)
         assert "Failing test cases" in result
