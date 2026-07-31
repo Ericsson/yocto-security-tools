@@ -11,7 +11,7 @@ from shared.url_parser import (
     extract_commit_hash,
     fetch_github_pr_commits,
     fetch_gitlab_issue_commits,
-    parse_fix_url,
+    parse_fix_urls,
 )
 
 
@@ -234,10 +234,19 @@ class TestFetchGithubPrCommits:
         assert result == []
 
 
-class TestParseFixUrl:
+class TestParseFixUrls:
+    ACL_URLS = [
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=5906d2868ec8d3b08be556153696e6b1122eeeda",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=0071c6d1fea0a8a6270333baa85fb609be325c26",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c",
+    ]
+
     def test_commit_url(self):
         url = "https://github.com/openssh/openssh-portable/commit/76685c9b09a66"
-        result = parse_fix_url(url)
+        result = parse_fix_urls([url])
         assert result['hashes'] == ['76685c9b09a66']
         assert result['hash_details'] == [
             {'hash': '76685c9b09a66', 'url': url, 'source': 'cli'}]
@@ -247,7 +256,7 @@ class TestParseFixUrl:
     def test_pr_url(self, mock_fetch):
         mock_fetch.return_value = ['aaa', 'bbb', 'ccc']
         url = "https://github.com/owner/repo/pull/99"
-        result = parse_fix_url(url)
+        result = parse_fix_urls([url])
         assert result['hashes'] == ['aaa', 'bbb', 'ccc']
         assert result['series'] == [
             {'pull_url': url, 'commits': ['aaa', 'bbb', 'ccc']}]
@@ -257,11 +266,59 @@ class TestParseFixUrl:
     def test_pr_url_no_commits_raises(self, mock_fetch):
         mock_fetch.return_value = []
         with pytest.raises(ValueError, match="Could not extract commits"):
-            parse_fix_url("https://github.com/owner/repo/pull/99")
+            parse_fix_urls(["https://github.com/owner/repo/pull/99"])
 
     def test_invalid_url_raises(self):
         with pytest.raises(ValueError, match="Could not extract commit hash"):
-            parse_fix_url("https://example.com/no-hash-here")
+            parse_fix_urls(["https://example.com/no-hash-here"])
+
+    def test_empty_list_raises(self):
+        with pytest.raises(ValueError, match="No fix URLs provided"):
+            parse_fix_urls([])
+
+    def test_dependent_commit_chain_preserves_cli_order(self):
+        """Three dependent commit URLs become one ordered series (acl case)."""
+        result = parse_fix_urls(self.ACL_URLS)
+        expected = ['5906d2868ec8d3b08be556153696e6b1122eeeda',
+                    '0071c6d1fea0a8a6270333baa85fb609be325c26',
+                    '170dbd3beff9bd5bdab3f72db1a04bf282f6087c']
+        assert result['hashes'] == expected
+        assert result['series'] == [{'pull_url': '', 'commits': expected}]
+        assert [d['hash'] for d in result['hash_details']] == expected
+        assert all(d['source'] == 'cli' for d in result['hash_details'])
+        assert [d['url'] for d in result['hash_details']] == self.ACL_URLS
+
+    def test_reversed_order_is_not_sorted(self):
+        """Caller owns ordering — nothing is reordered."""
+        result = parse_fix_urls(list(reversed(self.ACL_URLS)))
+        assert result['hashes'] == [
+            '170dbd3beff9bd5bdab3f72db1a04bf282f6087c',
+            '0071c6d1fea0a8a6270333baa85fb609be325c26',
+            '5906d2868ec8d3b08be556153696e6b1122eeeda']
+
+    @patch('shared.url_parser.fetch_github_pr_commits')
+    def test_mixed_pr_and_commit_urls_merge_inline(self, mock_fetch):
+        mock_fetch.return_value = ['aaa1234', 'bbb1234']
+        pr_url = "https://github.com/owner/repo/pull/7"
+        commit_url = "https://github.com/owner/repo/commit/ccc1234"
+        result = parse_fix_urls([pr_url, commit_url])
+        assert result['hashes'] == ['aaa1234', 'bbb1234', 'ccc1234']
+        assert result['series'] == [
+            {'pull_url': pr_url,
+             'commits': ['aaa1234', 'bbb1234', 'ccc1234']}]
+
+    def test_duplicate_urls_collapse(self):
+        url = "https://github.com/owner/repo/commit/abc1234"
+        result = parse_fix_urls([url, url])
+        assert result['hashes'] == ['abc1234']
+        assert result['hash_details'] == [
+            {'hash': 'abc1234', 'url': url, 'source': 'cli'}]
+
+    def test_second_bad_url_raises_naming_it(self):
+        good = "https://github.com/owner/repo/commit/abc1234"
+        bad = "https://example.com/no-hash-here"
+        with pytest.raises(ValueError, match="no-hash-here"):
+            parse_fix_urls([good, bad])
 
 
 class TestFetchGitlabIssueCommits:

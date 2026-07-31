@@ -64,7 +64,9 @@ def print_manual_instructions(workspace_path: Path, recipe: str,
         workspace_path: Path to devtool workspace source directory
         recipe: Recipe name being patched
         hashes: List of upstream fix commit hashes
-        series: List of PR series dicts
+        series: List of series dicts — an ordered set of commits that must
+            all be applied, from a pull request or from repeated
+            ``--fix-url``
     """
     print("=" * 60)
     print("MANUAL MODE - Environment ready for manual patching")
@@ -77,7 +79,7 @@ def print_manual_instructions(workspace_path: Path, recipe: str,
         for h in hashes:
             print(f"  git cherry-pick {h[:12]}")
     if series:
-        print(f"\nPR series available ({len(series)} series)")
+        print(f"\nDependent commit series available ({len(series)} series)")
     print("\nUseful commands:")
     print(f"  devtool build {recipe}        # Test the build")
     print("  git log --oneline             # View commit history")

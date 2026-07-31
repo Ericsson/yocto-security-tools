@@ -334,43 +334,74 @@ def deduce_repo_url(url: str) -> Optional[str]:
     return None
 
 
-def parse_fix_url(url: str) -> dict:
-    """Parse a fix URL into hashes, hash_details, and series.
+def parse_fix_urls(urls: list[str]) -> dict:
+    """Parse one or more fix URLs into hashes, hash_details, and series.
 
-    Auto-detects commit URLs vs PR URLs.
+    Auto-detects commit URLs vs PR URLs. URLs are processed in the order
+    given and that order is preserved throughout the result: the caller
+    owns ordering, nothing is sorted here.
+
+    A single URL yields the historical single-fix shape (a commit URL
+    produces no ``series``; a PR URL produces its PR series). Two or more
+    URLs yield exactly one ``series`` entry holding every commit in caller
+    order — an ordered *dependent chain* meant to be applied as a whole,
+    with any PR commits expanded inline. Duplicate commits collapse to
+    their first occurrence.
+
+    This function is a pure parser: whether a chain *must* apply in full is
+    a caller policy (see ``WorkflowConfig.require_all_commits``), not
+    something encoded in the returned metadata.
 
     Args:
-        url: GitHub commit URL or PR URL.
+        urls: Commit and/or pull request URLs, in application order.
 
     Returns:
         Dict with keys: hashes, hash_details, series.
 
     Raises:
-        ValueError: If no hash or PR commits could be extracted.
+        ValueError: If ``urls`` is empty, or if any single URL yields no
+            commits (the offending URL is named in the message).
     """
-    clean_url = url.split('#')[0]
+    if not urls:
+        raise ValueError("No fix URLs provided")
 
-    # PR URL
-    if _PR_RE.match(clean_url):
-        commits = fetch_github_pr_commits(url)
-        if not commits:
-            raise ValueError(
-                f"Could not extract commits from PR: {url}")
-        return {
-            'hashes': commits,
-            'hash_details': [{'hash': h, 'url': clean_url, 'source': 'cli'}
-                             for h in commits],
-            'series': [{'pull_url': clean_url, 'commits': commits}],
-        }
+    commits: list[str] = []
+    origin_url: dict[str, str] = {}
+    pr_urls: list[str] = []
 
-    # Commit URL
-    commit_hash = extract_commit_hash(url)
-    if commit_hash:
-        return {
-            'hashes': [commit_hash],
-            'hash_details': [{'hash': commit_hash, 'url': url,
-                              'source': 'cli'}],
-            'series': [],
-        }
+    def _record(commit_hash: str, url: str) -> None:
+        """Append a commit, keeping the first occurrence's originating URL."""
+        if commit_hash not in origin_url:
+            origin_url[commit_hash] = url
+            commits.append(commit_hash)
 
-    raise ValueError(f"Could not extract commit hash from URL: {url}")
+    for url in urls:
+        clean_url = url.split('#')[0]
+
+        # PR URL — expand to its commits, inline and in PR order.
+        if _PR_RE.match(clean_url):
+            pr_commits = fetch_github_pr_commits(url)
+            if not pr_commits:
+                raise ValueError(f"Could not extract commits from PR: {url}")
+            pr_urls.append(clean_url)
+            for commit_hash in pr_commits:
+                _record(commit_hash, clean_url)
+            continue
+
+        # Commit URL
+        single_hash = extract_commit_hash(url)
+        if not single_hash:
+            raise ValueError(f"Could not extract commit hash from URL: {url}")
+        _record(single_hash, url)
+
+    # One series entry when the commits form an ordered chain: either the
+    # caller passed several URLs, or a PR already defines a chain.
+    series = ([{'pull_url': pr_urls[0] if pr_urls else '', 'commits': commits}]
+              if len(urls) > 1 or pr_urls else [])
+
+    return {
+        'hashes': commits,
+        'hash_details': [{'hash': h, 'url': origin_url[h], 'source': 'cli'}
+                         for h in commits],
+        'series': series,
+    }

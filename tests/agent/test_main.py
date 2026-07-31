@@ -424,6 +424,66 @@ class TestConfigFromArgs:
         assert cfg.trust_mode is True
 
 
+class TestRepeatableFixUrlCli:
+    """Argparse-level coverage for repeatable --fix-url in the agent CLI."""
+
+    ACL_URLS = [
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=5906d2868ec8d3b08be556153696e6b1122eeeda",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=0071c6d1fea0a8a6270333baa85fb609be325c26",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c",
+    ]
+
+    def test_multiple_fix_url_collected_in_order(self, monkeypatch):
+        from cve_agent.__main__ import _parse_args
+        argv = ['cve-agent', '--cve-id', 'CVE-2025-0001', '--recipe', 'acl']
+        for url in self.ACL_URLS:
+            argv += ['--fix-url', url]
+        monkeypatch.setattr('sys.argv', argv)
+        args = _parse_args()
+        assert args.fix_urls == self.ACL_URLS
+
+    def test_no_fix_url_defaults_to_empty_list(self, monkeypatch):
+        from cve_agent.__main__ import _parse_args
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', '/tmp/c.json'])
+        args = _parse_args()
+        assert args.fix_urls == []
+
+    def test_missing_cve_info_and_fix_url_is_agent_error(self, monkeypatch):
+        from cve_agent import EXIT_AGENT_ERROR
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', ['cve-agent', '--cve-id', 'CVE-2025-0001'])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == EXIT_AGENT_ERROR
+
+    def test_fix_url_without_recipe_or_cve_info_is_agent_error(self, monkeypatch):
+        from cve_agent import EXIT_AGENT_ERROR
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--fix-url', self.ACL_URLS[0], '--fix-url', self.ACL_URLS[1]])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == EXIT_AGENT_ERROR
+
+    def test_fix_urls_passed_through_as_list(self):
+        """Repeatable --fix-url values reach AgentConfig.fix_urls unchanged."""
+        urls = ["https://github.com/o/r/commit/aaa1111",
+                "https://github.com/o/r/commit/bbb2222"]
+        args = MagicMock(
+            cve_id="CVE-1", cve_info=None, trust=False,
+            max_retries=3, mirror_dir=None, meta_layer=None,
+            skip_ptest=False, clean=False, model="m", session_timeout=600,
+            fix_urls=urls, recipe="foo", skip_sources=[])
+        cfg = _config_from_args(args, "CVE-1")
+        assert cfg.fix_urls == urls
+
+
 class TestSigintHandler:
     def test_empty_results(self):
         handler = _sigint_handler([])

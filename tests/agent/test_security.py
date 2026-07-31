@@ -408,5 +408,70 @@ class TestSkipSourceForwarding:
             proc.__exit__ = MagicMock(return_value=False)
             mock_popen.return_value = proc
             run_corrector(config)
+
+
+class TestRepeatableFixUrlForwarding:
+    """--fix-url is repeatable end-to-end: AgentConfig.fix_urls -> corrector CLI."""
+
+    def test_fix_urls_forwarded_in_order(self):
+        from cve_agent import AgentConfig
+        from cve_agent.corrector import run_corrector
+        urls = [
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=5906d2868ec8d3b08be556153696e6b1122eeeda",
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=0071c6d1fea0a8a6270333baa85fb609be325c26",
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c",
+        ]
+        config = AgentConfig(cve_id='CVE-2025-0001', recipe='acl', fix_urls=urls)
+        with patch('subprocess.Popen') as mock_popen:
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.wait.return_value = None
+            proc.returncode = 0
+            proc.__enter__ = lambda s: s
+            proc.__exit__ = MagicMock(return_value=False)
+            mock_popen.return_value = proc
+            run_corrector(config)
+            cmd = mock_popen.call_args[0][0]
+            assert cmd.count('--fix-url') == 3
+            # Order preserved: each --fix-url is immediately followed by its URL,
+            # in the same order as config.fix_urls.
+            got = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == '--fix-url']
+            assert got == urls
+
+    def test_single_fix_url_unchanged(self):
+        from cve_agent import AgentConfig
+        from cve_agent.corrector import run_corrector
+        config = AgentConfig(cve_id='CVE-2025-0001', recipe='acl',
+                             fix_urls=['https://github.com/o/r/commit/abc123'])
+        with patch('subprocess.Popen') as mock_popen:
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.wait.return_value = None
+            proc.returncode = 0
+            proc.__enter__ = lambda s: s
+            proc.__exit__ = MagicMock(return_value=False)
+            mock_popen.return_value = proc
+            run_corrector(config)
+            cmd = mock_popen.call_args[0][0]
+            assert cmd.count('--fix-url') == 1
+
+    def test_no_fix_urls_omits_flag(self):
+        from cve_agent import AgentConfig
+        from cve_agent.corrector import run_corrector
+        config = AgentConfig(cve_id='CVE-2025-0001', cve_info_path=Path('/tmp/c.json'))
+        with patch('subprocess.Popen') as mock_popen:
+            proc = MagicMock()
+            proc.stdout = iter([])
+            proc.wait.return_value = None
+            proc.returncode = 0
+            proc.__enter__ = lambda s: s
+            proc.__exit__ = MagicMock(return_value=False)
+            mock_popen.return_value = proc
+            run_corrector(config)
+            cmd = mock_popen.call_args[0][0]
+            assert '--fix-url' not in cmd
             cmd = mock_popen.call_args[0][0]
             assert '--skip-source' not in cmd

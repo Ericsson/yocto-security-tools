@@ -360,9 +360,9 @@ def process_single_cve(config: AgentConfig,
     try:
         if config.cve_info_path:
             cve_data = load_cve_metadata(config.cve_info_path)
-        elif config.fix_url and config.recipe:
-            from shared.url_parser import parse_fix_url
-            url_metadata = parse_fix_url(config.fix_url)
+        elif config.fix_urls and config.recipe:
+            from shared.url_parser import parse_fix_urls
+            url_metadata = parse_fix_urls(config.fix_urls)
             cve_data = {config.cve_id: {'name': config.recipe, **url_metadata}}
         else:
             return _make_result(

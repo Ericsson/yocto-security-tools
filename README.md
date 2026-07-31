@@ -70,6 +70,25 @@ cve-corrector --cve-id CVE-2024-1234 --cve-info cve-metadata.json
 cve-corrector --continue
 ```
 
+**Dependent commit chains.** `--fix-url` is repeatable. A single URL applies
+one fix commit (or one pull request's commits); two or more URLs are treated
+as one ordered, dependent chain — the caller controls the order, and **all**
+commits must apply or the run stops at a conflict (no falling back to
+applying just one of them). Use this when a CVE is fixed by a short series
+of follow-up commits on the same branch, e.g. acl's CVE-2026-XXXXX:
+
+```bash
+cve-corrector --cve-id CVE-2026-XXXXX --recipe acl \
+  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=5906d2868ec8d3b08be556153696e6b1122eeeda \
+  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=0071c6d1fea0a8a6270333baa85fb609be325c26 \
+  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c
+```
+
+If the chain conflicts partway through, resolve it and resume with
+`cve-corrector --continue` — the remaining commits are applied in the same
+order. `cve-agent` accepts the same repeated `--fix-url` flag and forwards
+it unchanged to `cve-corrector`.
+
 ### AI-assisted backporting
 
 ```bash
