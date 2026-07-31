@@ -106,7 +106,7 @@ class AgentConfig:
     interactive: bool = False
     bbappend: bool = False
     skip_cve_applicability: bool = False
-    fix_url: Optional[str] = None
+    fix_urls: list[str] = field(default_factory=list)
     recipe: Optional[str] = None
     backend: str = "kiro"
     skip_sources: list[str] = field(default_factory=list)

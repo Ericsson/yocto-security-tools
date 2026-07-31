@@ -81,6 +81,41 @@ class TestProcessSingleCve:
 
     @patch("cve_agent.__main__._log_result")
     @patch("cve_agent.orchestrator.get_workspace_path", return_value=None)
+    @patch("cve_agent.orchestrator.run_corrector", return_value=(0, ""))
+    def test_multiple_fix_urls_build_one_dependent_series(
+            self, mock_run, mock_ws, mock_log, tmp_path):
+        """Three --fix-url values merge into one series consumed by the workflow."""
+        urls = [
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=5906d2868ec8d3b08be556153696e6b1122eeeda",
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=0071c6d1fea0a8a6270333baa85fb609be325c26",
+            "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+            "?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c",
+        ]
+        cfg = _cfg(cve_info_path=None, fix_urls=urls, recipe="acl")
+        result = process_single_cve(cfg, KnowledgeBase(tmp_path / "kb.json"))
+        assert result.status == ResultStatus.SUCCESS
+        expected_hashes = [
+            '5906d2868ec8d3b08be556153696e6b1122eeeda',
+            '0071c6d1fea0a8a6270333baa85fb609be325c26',
+            '170dbd3beff9bd5bdab3f72db1a04bf282f6087c']
+        cve_data_arg = mock_ws.call_args[0][1]
+        cve_info = cve_data_arg[cfg.cve_id]
+        assert cve_info['hashes'] == expected_hashes
+        assert cve_info['series'] == [{'pull_url': '', 'commits': expected_hashes}]
+
+    @patch("cve_agent.__main__._log_result")
+    def test_single_fix_url_without_recipe_fails(self, mock_log, tmp_path):
+        cfg = _cfg(cve_info_path=None,
+                   fix_urls=['https://github.com/o/r/commit/abc123'],
+                   recipe=None)
+        result = process_single_cve(cfg, KnowledgeBase(tmp_path / "kb.json"))
+        assert result.status == ResultStatus.FAILED
+        assert "No --cve-info or --fix-url" in result.resolution_summary
+
+    @patch("cve_agent.__main__._log_result")
+    @patch("cve_agent.orchestrator.get_workspace_path", return_value=None)
     @patch("cve_agent.orchestrator.run_corrector", return_value=(2, ""))
     @patch("cve_agent.orchestrator.load_cve_metadata",
            return_value={"CVE-2025-0001": {"name": "r"}})

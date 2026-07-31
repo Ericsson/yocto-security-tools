@@ -138,9 +138,10 @@ def _compute_cve_tag_flags(state: WorkflowState, patches: list[str]) -> list[boo
     Only the patch corresponding to the fix commit gets the ``CVE:`` tag;
     prerequisite commits the agent added get ``Upstream-Status: Backport``
     only. This distinction is applied **only** when the agent introduced
-    extra commits (no known PR series, but more than one patch). Known PR
-    series (``series_state`` set) and single-patch fixes keep the existing
-    all-``CVE:`` behavior untouched.
+    extra commits (no known series, but more than one patch). A known
+    series (``series_state`` set — from a pull request or from repeated
+    ``--fix-url``) and single-patch fixes keep the existing all-``CVE:``
+    behavior untouched.
 
     Safety: if the fix commit's subject can't be matched to any generated
     patch, fall back to tagging every patch — the fix must never silently

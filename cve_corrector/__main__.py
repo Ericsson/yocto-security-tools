@@ -92,8 +92,13 @@ def main():
                         help='CVE identifier (e.g., CVE-2024-1234)')
     input_group.add_argument('--cve-info', type=Path,
                         help='JSON file with CVE metadata (e.g., cve-metadata.json)')
-    input_group.add_argument('--fix-url',
-                        help='URL of fix commit or pull request')
+    input_group.add_argument('--fix-url', action='append', default=[],
+                        metavar='URL', dest='fix_urls',
+                        help='URL of fix commit or pull request (repeatable). '
+                             'Two or more URLs are applied as one dependent '
+                             'series, in the order given, and all of them must '
+                             'apply — a partial application is reported as a '
+                             'conflict.')
     input_group.add_argument('--recipe',
                         help='Recipe name (required with --fix-url without --cve-info)')
     input_group.add_argument('--skip-source', action='append', default=[],
@@ -162,18 +167,23 @@ def main():
     if not args.cve_id:
         parser.error('--cve-id is required (unless using --continue)')
 
-    if args.fix_url:
-        from shared.url_parser import parse_fix_url
+    if args.fix_urls:
+        from shared.url_parser import parse_fix_urls
         if not args.cve_info and not args.recipe:
             parser.error('--recipe is required when using --fix-url without --cve-info')
-        url_metadata = parse_fix_url(args.fix_url)
+        try:
+            url_metadata = parse_fix_urls(args.fix_urls)
+        except ValueError as err:
+            parser.error(str(err))
         if args.cve_info:
             cve_data = load_cve_metadata(args.cve_info)
             if args.cve_id not in cve_data:
                 cve_data[args.cve_id] = {'name': args.recipe or ''}
             cve_data[args.cve_id]['hashes'] = url_metadata['hashes']
             cve_data[args.cve_id]['hash_details'] = url_metadata['hash_details']
-            if url_metadata['series']:
+            # A multi-URL chain is authoritative: replace any series from the
+            # JSON so a stale PR series cannot compete with the explicit chain.
+            if url_metadata['series'] or len(args.fix_urls) > 1:
                 cve_data[args.cve_id]['series'] = url_metadata['series']
         else:
             cve_data = {args.cve_id: {'name': args.recipe, **url_metadata}}
@@ -264,6 +274,11 @@ def main():
         else:
             print(f"No mirror found for '{recipe_name}', will deduce from hash details")
 
+    # Two or more --fix-url values declare an ordered dependent chain: every
+    # commit must apply or the run stops at a conflict (no single-commit
+    # fallback, no least-conflict pick).
+    require_all_commits = len(args.fix_urls) > 1
+
     if args.dry_run:
         hashes = cve_info.get('hashes', [])
         series = cve_info.get('series', [])
@@ -272,6 +287,8 @@ def main():
         print(f"Meta-layer: {meta_layer}")
         print(f"Commits:    {len(hashes)}")
         print(f"Series:     {len(series)}")
+        if require_all_commits:
+            print(f"Dependent:  yes — all {len(hashes)} commit(s) must apply, in this order")
         if hashes:
             for h in hashes[:5]:
                 print(f"  - {h[:12]}")
@@ -304,7 +321,8 @@ def main():
                 skip_ptest=args.skip_ptest, edit_mode=args.edit,
                 manual_mode=args.manual, bbappend=args.bbappend,
                 skip_cve_applicability=args.skip_cve_applicability,
-                skip_confirm=args.yes))
+                skip_confirm=args.yes,
+                require_all_commits=require_all_commits))
         state.skip_confirm = args.yes
 
         finish_cve_workflow(state)

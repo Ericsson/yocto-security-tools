@@ -115,6 +115,83 @@ class TestMainCli:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 6  # EXIT_METADATA_ERROR
+
+
+class TestRepeatableFixUrl:
+    """--fix-url is repeatable; N>1 values form one dependent chain."""
+
+    ACL_URLS = [
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=5906d2868ec8d3b08be556153696e6b1122eeeda",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=0071c6d1fea0a8a6270333baa85fb609be325c26",
+        "https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+        "?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c",
+    ]
+
+    def test_single_fix_url_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-corrector', '--cve-id', 'CVE-2025-0001',
+            '--recipe', 'foo', '--fix-url', self.ACL_URLS[0],
+            '--dry-run', '--meta-layer', str(tmp_path)])
+        captured = []
+        with patch('builtins.print', lambda *a, **k: captured.append(' '.join(map(str, a)))):
+            main()
+        joined = '\n'.join(captured)
+        assert 'Commits:    1' in joined
+        assert 'Series:     0' in joined
+        assert 'Dependent:' not in joined
+
+    def test_three_fix_urls_form_one_dependent_series(self, tmp_path, monkeypatch):
+        argv = ['cve-corrector', '--cve-id', 'CVE-2025-0002',
+                '--recipe', 'acl', '--dry-run', '--meta-layer', str(tmp_path)]
+        for url in self.ACL_URLS:
+            argv += ['--fix-url', url]
+        monkeypatch.setattr('sys.argv', argv)
+
+        captured = []
+        with patch('builtins.print', lambda *a, **k: captured.append(' '.join(map(str, a)))):
+            main()
+        joined = '\n'.join(captured)
+        assert 'Commits:    3' in joined
+        assert 'Series:     1' in joined
+        assert 'Dependent:  yes' in joined
+
+    def test_multiple_fix_urls_replace_stale_json_series(self, tmp_path, monkeypatch):
+        """N>1 --fix-url values must win over a stale series in --cve-info."""
+        cve_info = tmp_path / 'cve.json'
+        cve_info.write_text(json.dumps({
+            'CVE-2025-0003': {
+                'name': 'acl',
+                'hashes': ['stale1'],
+                'series': [{'pull_url': 'https://old', 'commits': ['stale1']}],
+            }
+        }))
+        argv = ['cve-corrector', '--cve-id', 'CVE-2025-0003',
+                '--cve-info', str(cve_info), '--dry-run',
+                '--meta-layer', str(tmp_path)]
+        for url in self.ACL_URLS:
+            argv += ['--fix-url', url]
+        monkeypatch.setattr('sys.argv', argv)
+
+        captured = []
+        with patch('builtins.print', lambda *a, **k: captured.append(' '.join(map(str, a)))):
+            main()
+        joined = '\n'.join(captured)
+        assert 'Commits:    3' in joined
+        assert 'stale1' not in joined
+
+    def test_bad_url_among_many_reports_parser_error(self, tmp_path, monkeypatch, capsys):
+        argv = ['cve-corrector', '--cve-id', 'CVE-2025-0004',
+                '--recipe', 'acl', '--dry-run', '--meta-layer', str(tmp_path),
+                '--fix-url', self.ACL_URLS[0],
+                '--fix-url', 'https://example.com/no-hash-here']
+        monkeypatch.setattr('sys.argv', argv)
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 2  # argparse.error() exit code
+        assert 'no-hash-here' in capsys.readouterr().err
+
     def test_already_applied_skips_meta_layer_deduction(self, tmp_path, monkeypatch):
         """The SRC_URI already-applied check must run before — and skip —
         the (expensive) meta-layer deduction step."""

@@ -278,7 +278,9 @@ def check_vulnerability_origin(workspace_path: Path,
             checked out at the recipe version).
         commit_hashes: List of upstream fix commit hashes.
         recipe_version: Current recipe version string.
-        series: Optional list of PR series dicts with 'commits' keys.
+        series: Optional list of series dicts with 'commits' keys — an
+            ordered set of commits that must all be applied, from a pull
+            request or from repeated ``--fix-url``.
 
     Returns:
         A reason string suitable for CVE_STATUS if the CVE is not

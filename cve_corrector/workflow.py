@@ -79,8 +79,12 @@ def filter_by_skip_sources(cve_info: dict, skip_sources: list[str]) -> dict:
     ``hash_details`` and all of its sources are skipped — hashes with no
     ``hash_details`` entry are left untouched (we cannot attribute them).
 
-    Series are not filtered: series entries carry only ``pull_url`` and no
-    reliable source field, so their provenance cannot be determined here.
+    Series are not filtered: a series is an ordered set of commits that must
+    all be applied — from a pull request, or from repeated ``--fix-url`` —
+    and it carries only ``pull_url``/``commits`` (plus, for a PR, the ``cli``
+    source recorded in ``hash_details``); provenance for individual series
+    commits cannot be reliably attributed here, so series entries pass
+    through unfiltered.
 
     Args:
         cve_info: Per-CVE metadata dict (not mutated).
@@ -445,7 +449,15 @@ def continue_from_conflict() -> WorkflowState:
 
 @dataclass
 class WorkflowConfig:
-    """Configuration parameters for CVE workflow initialization."""
+    """Configuration parameters for CVE workflow initialization.
+
+    Attributes:
+        require_all_commits: When True, the fix commits form an ordered
+            dependent chain that must apply in full (set by passing
+            ``--fix-url`` more than once). A partial application is reported
+            as a conflict instead of falling back to applying a single
+            commit, which would leave the CVE only partially fixed.
+    """
     mirror_path: Optional[Path]
     mirror_dir: Optional[Path]
     meta_layer: Optional[Path]
@@ -457,6 +469,7 @@ class WorkflowConfig:
     bbappend: bool = False
     skip_cve_applicability: bool = False
     skip_confirm: bool = False
+    require_all_commits: bool = False
 
 
 def _handle_failed_series(workspace_path, best_series, make_state, recipe):
@@ -469,10 +482,17 @@ def _handle_failed_series(workspace_path, best_series, make_state, recipe):
     raise ConflictError("Conflict detected")
 
 
-def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe):
+def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
+                           require_all_commits=False):
     """Handle case where no commit applied cleanly."""
     if series:
-        logger.error("All PR series failed")
+        logger.error("All commit series failed")
+    if require_all_commits:
+        # The commits form a dependent chain: picking the single
+        # least-conflicting commit would produce a partial, wrong fix.
+        logger.error("Dependent commit chain must be resolved as a whole — "
+                     "resolve the conflict and resume with 'cve-corrector --continue'")
+        raise ConflictError("Conflict detected")
     if hashes:
         best_hash, conflicts = find_least_conflict_commit(workspace_path, hashes)
         if best_hash and conflicts < float('inf'):
@@ -667,7 +687,7 @@ def initialize_cve_workflow(
 
     if series:
         success, successful_hash, best_series = apply_series(
-            workspace_path, series)
+            workspace_path, series, require_all=config.require_all_commits)
         if success:
             # Preserve commit list for patch metadata (Upstream-Status per patch)
             for pr_series in series:
@@ -676,16 +696,22 @@ def initialize_cve_workflow(
                     applied_series = pr_series
                     break
         if not success and best_series:
+            # The strictness flag deliberately does not travel into
+            # series_state: the --continue path already applies every
+            # remaining commit and fails on the first conflict.
             _handle_failed_series(
                 workspace_path, best_series, make_state, recipe)
 
-    if not success and hashes:
+    # A dependent chain must apply in full, so never fall back to trying the
+    # commits individually — one commit alone is a partial fix.
+    if not success and hashes and not config.require_all_commits:
         success, successful_hash = apply_single_commits(
             workspace_path, hashes, subproject=subproject)
 
     if not success:
         _handle_no_clean_apply(
-            workspace_path, hashes, series, make_state, recipe)
+            workspace_path, hashes, series, make_state, recipe,
+            require_all_commits=config.require_all_commits)
 
     if config.edit_mode:
         save_workflow_state(make_state(successful_hash))

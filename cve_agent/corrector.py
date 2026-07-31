@@ -46,8 +46,8 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
         ]
         if config.cve_info_path:
             cmd += ['--cve-info', str(config.cve_info_path)]
-        if config.fix_url:
-            cmd += ['--fix-url', config.fix_url]
+        for fix_url in config.fix_urls:
+            cmd += ['--fix-url', fix_url]
         if config.recipe:
             cmd += ['--recipe', config.recipe]
         if config.clean:

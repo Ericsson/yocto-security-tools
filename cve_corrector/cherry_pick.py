@@ -191,15 +191,31 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
 
 
 def apply_series(workspace_path: Path,
-                 series: list[dict]) -> tuple[bool, Optional[str], Optional[dict]]:
-    """Apply PR series commits using batch cherry-pick.
+                 series: list[dict],
+                 require_all: bool = False) -> tuple[bool, Optional[str], Optional[dict]]:
+    """Apply a commit series using batch cherry-pick.
+
+    A series is an ordered set of commits that must all be applied — either
+    a pull request's commits or a dependent chain given via repeated
+    ``--fix-url``.
+
+    Args:
+        workspace_path: Path to the git repository.
+        series: Series dicts with ``commits`` (and optional ``pull_url``).
+        require_all: When True the commits form a caller-declared dependent
+            chain, so conflict state is reported even if nothing applied.
 
     Returns:
         Tuple of (success, last_commit_hash, best_partial_series)
     """
-    logger.info("Found %s pull request series", len(series))
+    logger.info("Found %s commit series", len(series))
     best_series = None
-    max_applied = 0
+    # A required chain must always surface conflict state, even when the very
+    # first commit conflicts and zero commits were applied — otherwise the
+    # caller falls back to applying a single commit, silently leaving the CVE
+    # only partially fixed. Candidate series keep the original ">0 applied"
+    # bar so their existing fallback behaviour is unchanged.
+    max_applied = -1 if require_all else 0
 
     for idx, pr_series in enumerate(series, 1):
         pull_url = pr_series.get('pull_url', '')
@@ -209,14 +225,16 @@ def apply_series(workspace_path: Path,
         if skipped:
             logger.warning("  Skipping %s bad object(s) in series", skipped)
         if not valid:
-            logger.warning("[%s/%s] No valid commits in series from %s", idx, len(series), pull_url)
+            logger.warning("[%s/%s] No valid commits in series from %s", idx, len(series),
+                           pull_url or 'command line')
             continue
-        logger.info("[%s/%s] Trying PR series from %s", idx, len(series), pull_url)
+        origin = f"PR {pull_url}" if pull_url else f"dependent chain of {len(valid)} commit(s)"
+        logger.info("[%s/%s] Trying %s", idx, len(series), origin)
 
         result = run_cmd(['git', 'cherry-pick'] + valid, cwd=workspace_path)
 
         if result == 0:
-            logger.info("✓ Successfully applied all %s commits from PR series", len(valid))
+            logger.info("✓ Successfully applied all %s commits from %s", len(valid), origin)
             return True, valid[-1], None
 
         cherry_pick_head = workspace_path / '.git' / 'CHERRY_PICK_HEAD'

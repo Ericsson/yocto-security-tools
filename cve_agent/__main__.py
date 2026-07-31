@@ -206,8 +206,13 @@ def _parse_args() -> argparse.Namespace:
                            help='File with CVE IDs, one per line')
     input_group.add_argument('--cve-info', type=Path,
                         help='JSON file with CVE metadata')
-    input_group.add_argument('--fix-url',
-                        help='URL of fix commit or pull request')
+    input_group.add_argument('--fix-url', action='append', default=[],
+                        metavar='URL', dest='fix_urls',
+                        help='URL of fix commit or pull request (repeatable). '
+                             'Two or more URLs are applied as one dependent '
+                             'series, in the order given, and all of them must '
+                             'apply — a partial application is reported as a '
+                             'conflict.')
     input_group.add_argument('--recipe',
                         help='Recipe name (required with --fix-url without --cve-info)')
     input_group.add_argument('--skip-source', action='append', default=[],
@@ -285,7 +290,7 @@ def _config_from_args(args: argparse.Namespace,
         bbappend=args.bbappend,
         skip_cve_applicability=args.skip_cve_applicability,
         interactive=args.interactive,
-        fix_url=args.fix_url,
+        fix_urls=args.fix_urls,
         recipe=args.recipe,
         backend=args.backend,
         skip_sources=args.skip_sources,
@@ -298,10 +303,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, _sigint_handler(results))
     args = _parse_args()
 
-    if not args.cve_info and not args.fix_url:
+    if not args.cve_info and not args.fix_urls:
         print("Error: --cve-info or --fix-url is required", file=sys.stderr)
         sys.exit(EXIT_AGENT_ERROR)
-    if args.fix_url and not args.cve_info and not args.recipe:
+    if args.fix_urls and not args.cve_info and not args.recipe:
         print("Error: --recipe is required when using --fix-url without "
               "--cve-info", file=sys.stderr)
         sys.exit(EXIT_AGENT_ERROR)
