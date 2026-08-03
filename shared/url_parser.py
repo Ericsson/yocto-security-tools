@@ -256,6 +256,21 @@ _GIT_INDICATORS = (
 )
 
 
+def _savannah_domain(host: str) -> Optional[str]:
+    """Return ``'gnu.org'``/``'nongnu.org'`` if host is a genuine Savannah
+    host on that domain, or None otherwise (including for lookalike hosts
+    such as ``savannah.gnu.org.evil.com``).
+
+    Any subdomain depth is accepted (``git.``, ``cgit.git.``,
+    ``https.git.``, ...) since Savannah fronts the same repositories under
+    several hostnames.
+    """
+    for domain in ('savannah.gnu.org', 'savannah.nongnu.org'):
+        if host == domain or host.endswith(f'.{domain}'):
+            return domain.removeprefix('savannah.')
+    return None
+
+
 def deduce_repo_url(url: str) -> Optional[str]:
     """Deduce the git repository URL from a commit/patch URL.
 
@@ -286,23 +301,30 @@ def deduce_repo_url(url: str) -> Optional[str]:
             return f'https://sourceware.org/git/{repo_name}'
         if 'sourceware.org' in host:
             return None  # lookalike host
-        if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
-            return f'https://git.savannah.gnu.org/git/{repo_name}'
-        if 'savannah.gnu.org' in host:
+        savannah_domain = _savannah_domain(host)
+        if savannah_domain:
+            return f'https://https.git.savannah.{savannah_domain}/git/{repo_name}'
+        if 'savannah.' in host:
             return None  # lookalike host
         # Generic gitweb
         return f'{parsed.scheme}://{parsed.netloc}/{repo_name}'
 
-    # Savannah /cgit/ or /git/ path style
-    if host == 'git.savannah.gnu.org' or host.endswith('.savannah.gnu.org'):
+    # Savannah /cgit/ or /git/ path style, on either the gnu.org or
+    # nongnu.org Savannah instance (e.g. cgit.git.savannah.nongnu.org).
+    # Savannah's plain https://git. host 302-redirects every request to
+    # https://https.git. (its actual TLS-terminating vhost); some git/proxy
+    # configs don't follow that redirect, so build the URL against
+    # https.git. directly.
+    savannah_domain = _savannah_domain(host)
+    if savannah_domain:
         if '/cgit/' in parsed.path:
             repo_name = parsed.path.split('/cgit/')[1].split('/')[0]
         elif '/git/' in parsed.path:
             repo_name = parsed.path.split('/git/')[1].split('/')[0]
         else:
             return None
-        return f'https://git.savannah.gnu.org/git/{repo_name}'
-    if 'savannah.gnu.org' in host:
+        return f'https://https.git.savannah.{savannah_domain}/git/{repo_name}'
+    if 'savannah.' in host:
         return None  # lookalike host
 
     # Sourceware /cgit/ or /git/ path style

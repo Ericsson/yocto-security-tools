@@ -46,7 +46,7 @@ def test_deduce_repo_rejects_sourceware_lookalike_host():
 def test_deduce_repo_savannah_cgit():
     url = "https://git.savannah.gnu.org/cgit/grub.git/commit/?id=abc123"
     result = deduce_repo_from_patches([url])
-    assert result == "https://git.savannah.gnu.org/git/grub.git"
+    assert result == "https://https.git.savannah.gnu.org/git/grub.git"
 
 
 def test_deduce_repo_savannah_git():
