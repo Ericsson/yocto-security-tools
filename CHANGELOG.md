@@ -8,13 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-03
+
 ### Added
 
+- **cve-corrector** / **cve-agent**: `--fix-url` is now repeatable; two or
+  more URLs are merged into one ordered, dependent commit chain that must
+  apply in full (no falling back to a single commit or the least-conflicting
+  one). Use this for CVEs fixed by a short series of follow-up commits, e.g.
+  acl's CVE-2026-XXXXX.
 - **cve-agent**: Allow the git commands the documented backport workflow needs:
   `git restore --staged <path>` (index-only unstage), `git checkout
   --ours/--theirs <path>`, `git rm [--cached] <path>`, `git commit -m/-F` and
   `git commit --amend --no-edit/-m/-F`, `git cherry-pick --skip`, plus the
   read-only diagnostics `git ls-files` and `git submodule status`.
+- **cve-metadata-extractor**: Checkpoint completed results periodically and
+  on interruption (Ctrl-C, exceptions), writing atomically so a failed or
+  interrupted save can't truncate prior output. Controlled by
+  `--checkpoint-interval` (default 60s; 0 disables periodic saves).
 
 ### Changed
 
@@ -23,6 +34,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/jq.test`) can be edited when they are in the session's Allowed Files
   list. `git reset`, `git stash`, `git submodule update`, `git checkout
   <path>`, and any `--no-verify`/`--force`/`--hard` form remain rejected.
+- **cve-agent**: Disable the session timeout in `-i`/`--interactive` mode,
+  since a human decides when an interactive session ends. Non-interactive
+  (CI) runs still enforce `--session-timeout`.
+
+### Fixed
+
+- **cve-corrector**: Fix Savannah URL deduction to use the `https.git.` host
+  and cover `nongnu.org`, so cgit links like
+  `cgit.git.savannah.nongnu.org` resolve to a fetchable repo URL instead of
+  a redirect-only host.
+- **cve-corrector**: Don't clobber `HEAD` symlinks when copying files missing
+  from the devtool branch — release tarballs dereference symlinks into real
+  directories, and copying those out of devtool previously overwrote the
+  symlink with a real directory and stalled every subsequent cherry-pick.
+- **cve-corrector**: Initialize git submodules before cherry-picking when a
+  recipe is built from a tarball but the upstream repo has submodules (e.g.
+  jq's `oniguruma`), preventing a dirty working tree from blocking
+  cherry-pick.
+- **cve-corrector**: Fix ptest result parsing to match the real
+  `PASS:`/`FAIL:`/`SKIP:` (single-colon) log format instead of a
+  `PASSED:`/`FAILED:`/`SKIPPED:` format that never matched, which made every
+  run report "no regression" regardless of actual results. Also detect tests
+  aborted by a per-test timeout and flag incomplete/unreliable runs.
+- **cve-agent**: Fix the mandatory build-verification command being rejected
+  by the kiro-cli command guard (file redirection is refused unconditionally,
+  and compound commands are matched part-by-part); switch to a `tee`-based
+  form and read the exit code from `PIPESTATUS[0]`.
+- **cve-agent**: Escalate `git checkout` to a forced checkout/reset/clean
+  sequence when the devtool workspace is dirty (e.g. regenerated autotools
+  files, modified submodule content), instead of silently failing to revert
+  unauthorized changes.
+- **shared**: Use replace-on-decode (`errors='replace'`) instead of strict
+  UTF-8 for external subprocess/file text (git diffs, commit messages, ptest
+  logs), so a single non-UTF-8 byte no longer aborts the whole run.
+- **shared**: Restrict commit-hash extraction to URLs that structurally
+  denote a commit object, eliminating false positives from advisory UUIDs,
+  vendor doc IDs, Gerrit change IDs, and repository names that happened to
+  look like a hex hash.
+- **shared**: Downgrade `git blame` "no such path" warnings to debug level
+  for files newly added by the fix commit itself, rather than logging them
+  as blame failures.
+- **readme**: Replace dead Kiro-cli links.
 
 ## [1.0.3] - 2026-07-27
 
@@ -103,6 +156,7 @@ Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
 - Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
+[1.0.4]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.0...v1.0.1
