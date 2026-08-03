@@ -104,9 +104,12 @@ def blame_line_ranges(workspace_path: Path,
             cmd += ['--', filepath]
             result = run_cmd_capture(cmd, cwd=workspace_path)
             if result.returncode != 0:
-                logger.warning(
-                    f"git blame failed for {filepath}:{start}-{end}: "
-                    f"{result.stderr.strip()}")
+                stderr = result.stderr.strip()
+                # A newly-added file has no path at the parent revision —
+                # this is an expected, harmless case (not a genuine blame
+                # failure), so log it at debug level instead of warning.
+                log = logger.debug if 'no such path' in stderr else logger.warning
+                log(f"git blame failed for {filepath}:{start}-{end}: {stderr}")
                 continue
             for blame_line in result.stdout.splitlines():
                 m = _BLAME_HASH_RE.match(blame_line)
