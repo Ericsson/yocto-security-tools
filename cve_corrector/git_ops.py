@@ -236,6 +236,10 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
 
     Files under registered submodule paths are skipped — those are tracked
     by git submodule and must not be overwritten with regular file copies.
+
+    Files under paths that HEAD tracks as symlinks are also skipped — release
+    tarballs dereference symlinks into real directories, and copying those
+    files would clobber the symlink and break subsequent cherry-picks.
     """
     devtool_files = run_cmd_capture(
         ['git', 'ls-tree', '-r', '--name-only', 'devtool'], cwd=workspace_path)
@@ -248,10 +252,32 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
 
     cve_set = set(cve_files.stdout.strip().splitlines())
     submodule_paths = _get_submodule_paths(workspace_path)
+
+    # Collect paths that HEAD tracks as symlinks (git mode 120000). Release
+    # tarballs dereference symlinks into real directories, so the devtool
+    # branch lists the symlink target's contents (e.g.
+    # tutorial/swift/swift-dep/Sources/*.swift) as regular files. Copying
+    # those out of devtool would clobber the symlink with a real directory,
+    # leaving a staged deletion + untracked dir that blocks every subsequent
+    # cherry-pick. Skip anything living under a HEAD symlink: the symlink
+    # already resolves to an in-tree path, so nothing is actually missing.
+    symlink_prefixes: tuple[str, ...] = ()
+    cve_tree = run_cmd_capture(
+        ['git', 'ls-tree', '-r', 'HEAD'], cwd=workspace_path)
+    if cve_tree.returncode == 0:
+        symlinks = []
+        for line in cve_tree.stdout.strip().splitlines():
+            # Format: "<mode> <type> <hash>\t<path>"
+            meta, _, path = line.partition('\t')
+            if path and meta.split(' ', 1)[0] == '120000':
+                symlinks.append(path + '/')
+        symlink_prefixes = tuple(symlinks)
+
     missing = [f for f in devtool_files.stdout.strip().splitlines()
                if f not in cve_set
                and not any(f == sm or f.startswith(sm + '/')
-                           for sm in submodule_paths)]
+                           for sm in submodule_paths)
+               and not (symlink_prefixes and f.startswith(symlink_prefixes))]
     if not missing:
         return
 
