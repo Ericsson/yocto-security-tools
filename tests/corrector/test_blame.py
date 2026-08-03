@@ -170,6 +170,35 @@ class TestBlameLineRanges:
         commits = blame_line_ranges(repo, {'file.c': [(1, 5)]})
         assert initial_hash in commits
 
+    def test_new_file_blame_failure_logged_as_debug(self, tmp_path, caplog):
+        """Blaming a file at a revision before it was added should log at
+        debug level (expected, harmless) rather than warning.
+
+        Reproduces the noisy "git blame failed ... no such path" warnings
+        seen when a fix commit both modifies existing files and adds new
+        ones (e.g. acl's *_at.c variants) — blaming the new file against
+        its own parent revision always fails since the path didn't exist
+        yet, which is not a genuine error.
+        """
+        repo = _init_repo(tmp_path)
+        # Add a brand-new file in a second commit.
+        (repo / 'new_file.c').write_text('a\nb\nc\n')
+        _git(repo, 'add', 'new_file.c')
+        _git(repo, 'commit', '-m', 'add new file')
+        new_hash = _git(repo, 'rev-parse', 'HEAD')
+
+        import logging
+        with caplog.at_level(logging.DEBUG):
+            commits = blame_line_ranges(
+                repo, {'new_file.c': [(1, 3)]},
+                file_revisions={'new_file.c': f'{new_hash}~1'})
+
+        assert commits == set()
+        warning_records = [r for r in caplog.records if r.levelname == 'WARNING']
+        debug_records = [r for r in caplog.records if r.levelname == 'DEBUG']
+        assert not warning_records
+        assert any('no such path' in r.message for r in debug_records)
+
 
 # --- _tag_to_version_str ---
 
