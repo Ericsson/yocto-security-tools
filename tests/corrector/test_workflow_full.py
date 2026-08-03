@@ -196,6 +196,10 @@ class TestCopyMissingFilesFromDevtool:
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="a.c\nb.c\nconfigure\n"),
             MagicMock(returncode=0, stdout="a.c\nb.c\n"),
+            # git ls-tree -r HEAD (symlink detection) — no symlinks
+            MagicMock(returncode=0,
+                      stdout="100644 blob abc123\ta.c\n"
+                             "100644 blob def456\tb.c\n"),
             MagicMock(returncode=0),  # checkout
             MagicMock(returncode=0),  # reset
         ]
@@ -206,6 +210,8 @@ class TestCopyMissingFilesFromDevtool:
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="a.c\n"),
             MagicMock(returncode=0, stdout="a.c\n"),
+            # git ls-tree -r HEAD (symlink detection) — no symlinks
+            MagicMock(returncode=0, stdout="100644 blob abc123\ta.c\n"),
         ]
         copy_missing_files_from_devtool(Path("/ws"))
 
