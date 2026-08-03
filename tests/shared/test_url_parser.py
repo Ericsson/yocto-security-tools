@@ -408,7 +408,16 @@ class TestDeduceRepoUrl:
 
     def test_savannah_cgit_still_works(self):
         url = "https://git.savannah.gnu.org/cgit/coreutils.git/commit/?id=abc1234"
-        assert deduce_repo_url(url) == "https://git.savannah.gnu.org/git/coreutils.git"
+        assert deduce_repo_url(url) == "https://https.git.savannah.gnu.org/git/coreutils.git"
+
+    def test_savannah_nongnu_cgit_subdomain(self):
+        url = ("https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/"
+               "?id=abc1234")
+        assert deduce_repo_url(url) == "https://https.git.savannah.nongnu.org/git/acl.git"
+
+    def test_savannah_nongnu_lookalike_host_rejected(self):
+        url = "https://git.savannah.nongnu.org.evil.com/cgit/acl.git/commit/?id=abc1234"
+        assert deduce_repo_url(url) is None
 
     def test_github_commit_url(self):
         url = "https://github.com/owner/repo/commit/abc1234"
