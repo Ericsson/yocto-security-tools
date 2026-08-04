@@ -32,6 +32,7 @@ from cve_corrector.ui import print_conflict_instructions, print_edit_instruction
 from cve_corrector.workflow import (
     _handle_failed_series,
     _handle_no_clean_apply,
+    _log_ptest_debug_conf,
     _make_should_run,
     _run_build_step,
     _run_ptest_step,
@@ -725,6 +726,31 @@ class TestRunPtestStep:
         state = _state(tmp_path, skip_ptest=False, ptest_before="PASSED: 5, FAILED: 0")
         with pytest.raises(PtestError):
             _run_ptest_step(state)
+
+
+class TestLogPtestDebugConf:
+    """Tests for _log_ptest_debug_conf helper."""
+
+    def test_logs_when_debug_conf_exists(self, tmp_path, monkeypatch):
+        """Logs the debug conf path when the file exists and BBPATH is set."""
+        monkeypatch.setenv("BBPATH", str(tmp_path))
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        debug_conf = conf_dir / "local.conf.ptest-debug"
+        debug_conf.write_text("# debug config\n")
+        # Should not raise; just logs
+        _log_ptest_debug_conf()
+
+    def test_noop_when_no_bbpath(self, monkeypatch):
+        """Does nothing when BBPATH is not set (no crash)."""
+        monkeypatch.delenv("BBPATH", raising=False)
+        _log_ptest_debug_conf()
+
+    def test_noop_when_file_missing(self, tmp_path, monkeypatch):
+        """Does nothing when the debug file doesn't exist."""
+        monkeypatch.setenv("BBPATH", str(tmp_path))
+        (tmp_path / "conf").mkdir()
+        _log_ptest_debug_conf()
 
 
 class TestApplySeries:

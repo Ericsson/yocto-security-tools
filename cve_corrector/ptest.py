@@ -86,15 +86,27 @@ def run_ptest(recipe: str, build_timeout: int = 7200,
             f.write(f'CORE_IMAGE_EXTRA_INSTALL = "{recipe}-ptest openssh-sshd"\n')
 
     print("Building test image...")
+    _failed = False
     try:
         if run_cmd(['bitbake', 'core-image-minimal'], timeout=build_timeout) != 0:
             print("bitbake build failed", file=sys.stderr)
+            _failed = True
             raise BuildPreexistingError("Test image build failed")
 
         print("Running testimage...")
         rc = run_cmd(['bitbake', 'core-image-minimal', '-c', 'testimage'],
                      timeout=test_timeout)
+        if rc != 0:
+            _failed = True
     finally:
+        # On failure, preserve the test-modified local.conf for debugging
+        if _failed and _original_conf is not None:
+            debug_conf = local_conf.with_suffix('.conf.ptest-debug')
+            debug_conf.write_text(local_conf.read_text())
+            logger.info(
+                "Preserved test-modified local.conf for debugging: %s",
+                debug_conf,
+            )
         # Restore original local.conf to remove insecure test features
         if _original_conf is not None:
             local_conf.write_text(_original_conf)

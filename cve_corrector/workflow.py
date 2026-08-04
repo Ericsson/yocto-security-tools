@@ -204,6 +204,19 @@ def _run_build_step(state: WorkflowState) -> None:
         raise BuildError(f"Build failed for {state.recipe}")
 
 
+def _log_ptest_debug_conf() -> None:
+    """Log the location of the preserved ptest debug local.conf, if it exists."""
+    import os
+    bbpath = os.environ.get('BBPATH', '')
+    if not bbpath:
+        return
+    debug_conf = Path(bbpath.split(':')[0]) / 'conf' / 'local.conf.ptest-debug'
+    if debug_conf.exists():
+        logger.error(
+            "Preserved local.conf with test settings: %s", debug_conf
+        )
+
+
 def _run_ptest_step(state: WorkflowState) -> Optional[str]:
     """Run ptest after patch, returning ptest output or None."""
     if state.skip_ptest:
@@ -223,11 +236,13 @@ def _run_ptest_step(state: WorkflowState) -> Optional[str]:
             if not compare_ptest_results(state.ptest_before, ptest_after):
                 logger.error("Ptest failures increased after patch. Fix the patch to correct the failing test cases.")
                 logger.error("cd %s", state.workspace_path)
+                _log_ptest_debug_conf()
                 save_progress(state, 'ptest_after_patch')
                 raise PtestError("Ptest failures increased after patch")
     elif state.ptest_before:
         logger.error("Post-patch ptest failed to run. Fix the patch.")
         logger.error("cd %s", state.workspace_path)
+        _log_ptest_debug_conf()
         save_progress(state, 'ptest_after_patch')
         raise PtestError("Post-patch ptest failed to run")
     state.ptest_after = ptest_after
