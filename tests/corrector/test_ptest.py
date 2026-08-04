@@ -211,3 +211,75 @@ class TestComparePtestResults:
         before = "PASSED: 10, FAILED: 0, SKIPPED: 0, ABORTED: 0"
         after = summarize_ptest_log(_JQ_TIMEOUT_LOG.replace("STOP: ptest-runner\n", ""))
         assert compare_ptest_results(before, after) is False
+
+
+class TestLocalConfPreservation:
+    """Tests for local.conf.ptest-debug preservation on failure."""
+
+    @patch("cve_corrector.ptest.run_cmd")
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_debug_conf_created_on_build_failure(
+        self, mock_bp, mock_check, mock_capture, mock_cmd, tmp_path
+    ):
+        """local.conf.ptest-debug is written when the test image build fails."""
+        mock_bp.return_value = tmp_path
+        (tmp_path / "conf").mkdir()
+        conf = tmp_path / "conf" / "local.conf"
+        conf.write_text("# original\n")
+        mock_capture.return_value = MagicMock(stdout="testimage enabled")
+        mock_cmd.return_value = 1  # build fails
+
+        with pytest.raises(BuildPreexistingError):
+            run_ptest("busybox")
+
+        debug_conf = tmp_path / "conf" / "local.conf.ptest-debug"
+        assert debug_conf.exists()
+        # Debug conf should contain the test-modified content (not original)
+        debug_content = debug_conf.read_text()
+        assert "testimage" in debug_content or "ptest" in debug_content
+        # Original local.conf should be restored
+        assert conf.read_text() == "# original\n"
+
+    @patch("cve_corrector.ptest.run_cmd")
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_debug_conf_created_on_testimage_failure(
+        self, mock_bp, mock_check, mock_capture, mock_cmd, tmp_path
+    ):
+        """local.conf.ptest-debug is written when testimage returns non-zero."""
+        mock_bp.return_value = tmp_path
+        (tmp_path / "conf").mkdir()
+        conf = tmp_path / "conf" / "local.conf"
+        conf.write_text("# original\n")
+        mock_capture.return_value = MagicMock(stdout="IMAGE_CLASSES = ''")
+        # Build succeeds, testimage fails
+        mock_cmd.side_effect = [0, 1]
+
+        run_ptest("busybox")
+
+        debug_conf = tmp_path / "conf" / "local.conf.ptest-debug"
+        assert debug_conf.exists()
+        # Original local.conf should be restored
+        assert conf.read_text() == "# original\n"
+
+    @patch("cve_corrector.ptest.run_cmd", return_value=0)
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_no_debug_conf_on_success(
+        self, mock_bp, mock_check, mock_capture, mock_cmd, tmp_path
+    ):
+        """local.conf.ptest-debug is NOT written when everything succeeds."""
+        mock_bp.return_value = tmp_path
+        (tmp_path / "conf").mkdir()
+        conf = tmp_path / "conf" / "local.conf"
+        conf.write_text("# original\n")
+        mock_capture.return_value = MagicMock(stdout="testimage enabled")
+
+        run_ptest("busybox")
+
+        debug_conf = tmp_path / "conf" / "local.conf.ptest-debug"
+        assert not debug_conf.exists()
