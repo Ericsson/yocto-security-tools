@@ -22,6 +22,7 @@ from .git_ops import (
     find_exact_tag,
     git_clean_workspace,
     is_bad_object,
+    remove_git_only_build_triggers,
     try_cherry_pick,
 )
 from .meta_layer import create_layer_commit, write_cve_status
@@ -198,6 +199,7 @@ def _run_build_step(state: WorkflowState) -> None:
     logger.info("Building %s", state.recipe)
     git_clean_workspace(state.workspace_path, remove_ignored=True)
     copy_missing_files_from_devtool(state.workspace_path)
+    remove_git_only_build_triggers(state.workspace_path)
     run_cmd(['bitbake', '-c', 'clean', state.recipe])
     if run_cmd(['devtool', 'build', state.recipe]) != 0:
         save_progress(state, 'build_after_patch')
@@ -667,10 +669,18 @@ def initialize_cve_workflow(
         if not ptest_before:
             logger.error("Failed to run pre-patch tests")
             raise PtestPreexistingError("Pre-patch ptest failed")
-        if 'FAILED:' in ptest_before and re.search(r'FAILED:\s*[1-9]', ptest_before):
+        # A truncated run with zero results is not a usable baseline —
+        # treat it the same as a failed ptest so we skip regression
+        # comparison rather than blocking on an unreliable before/after.
+        if ptest_before.startswith('WARNING:') and 'PASSED: 0, FAILED: 0' in ptest_before:
+            logger.warning("Pre-patch ptest was cut short with zero results — "
+                           "no usable baseline, skipping ptest comparison")
+            ptest_before = None
+        elif 'FAILED:' in ptest_before and re.search(r'FAILED:\s*[1-9]', ptest_before):
             logger.warning("Pre-patch ptest has existing failures — recording baseline")
             logger.warning("Results: %s", ptest_before)
-        logger.info("Before: %s", ptest_before)
+        if ptest_before:
+            logger.info("Before: %s", ptest_before)
 
     if not config.skip_build and not ptest_before:
         logger.info("Pre-patch build verification for %s", recipe)

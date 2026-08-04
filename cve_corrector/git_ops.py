@@ -289,6 +289,103 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
     run_cmd_capture(['git', 'reset', 'HEAD'] + missing, cwd=workspace_path)
 
 
+def remove_git_only_build_triggers(workspace_path: Path) -> None:
+    """Remove files that exist in the git tree but not in the tarball and
+    that act as build-system triggers for additional dependencies.
+
+    Some projects (e.g. gnutls) distinguish git checkouts from release
+    tarballs by testing for sentinel files in ``configure.ac``. For
+    example, gnutls checks:
+
+        SUITE_FILE="${srcdir}/tests/suite/prime-check.c"
+        if test "$full_test_suite" = yes && test ! -f "$SUITE_FILE"; then
+            full_test_suite=no
+        fi
+
+    When the file exists (git checkout), the full test suite is enabled and
+    libev4 becomes a hard requirement — a dependency the OE recipe does not
+    provide because it expects tarball builds where the file is absent.
+
+    This function:
+    1. Parses ``configure.ac`` for file-existence checks (``test -f`` /
+       ``test ! -f`` patterns referencing ``$SUITE_FILE``-style variables
+       or literal paths).
+    2. Identifies which referenced files exist in the git tree (HEAD) but
+       NOT in the devtool branch (tarball).
+    3. Removes those files from the working tree (filesystem delete only)
+       so the build system behaves as it would with the release tarball.
+       The git index is left untouched — the file remains "tracked" — so
+       ``git checkout .`` can safely restore it later (e.g. before
+       ``devtool finish``). The function is idempotent and can be called
+       again after a restore.
+
+    This is safe because:
+    - The files are NOT part of the release tarball, so the recipe never
+      expected them to be present.
+    - Only the working tree is modified — the git index and history are
+      untouched, so cherry-picks and ``git checkout .`` work normally.
+    - If a CVE fix cherry-pick needs one of these files, it will re-add
+      the file as part of its own commit.
+    - The function is called before each build step and is idempotent.
+    """
+    configure_ac = workspace_path / 'configure.ac'
+    if not configure_ac.exists():
+        return
+
+    # Parse configure.ac to find file-existence checks and variable assignments
+    content = configure_ac.read_text(errors='replace')
+    trigger_files: set[str] = set()
+
+    # Collect variable assignments like SUITE_FILE="${srcdir}/tests/suite/prime-check.c"
+    var_pattern = re.compile(
+        r'^([A-Z_][A-Z_0-9]*)=["\']?\$\{srcdir\}/([^"\'}\s]+)["\']?',
+        re.MULTILINE,
+    )
+    vars_to_paths: dict[str, str] = {}
+    for m in var_pattern.finditer(content):
+        vars_to_paths[m.group(1)] = m.group(2)
+
+    # Find "test -f" / "test ! -f" checks referencing these variables
+    test_f_var = re.compile(r'test\s+!?\s*-f\s+["\']?\$\{?([A-Z_][A-Z_0-9]*)\}?["\']?')
+    for m in test_f_var.finditer(content):
+        varname = m.group(1)
+        if varname in vars_to_paths:
+            trigger_files.add(vars_to_paths[varname])
+
+    # Also find direct literal path checks: test -f "${srcdir}/some/path"
+    test_f_literal = re.compile(
+        r'test\s+!?\s*-f\s+["\']?\$\{srcdir\}/([^"\'}\s]+)["\']?'
+    )
+    for m in test_f_literal.finditer(content):
+        trigger_files.add(m.group(1))
+
+    if not trigger_files:
+        return
+
+    # Get the set of files in the devtool branch (tarball representation)
+    devtool_files = run_cmd_capture(
+        ['git', 'ls-tree', '-r', '--name-only', 'devtool'], cwd=workspace_path)
+    if devtool_files.returncode != 0:
+        return
+    tarball_set = set(devtool_files.stdout.strip().splitlines())
+
+    # Remove trigger files that are git-only (not in tarball)
+    removed = []
+    for filepath in sorted(trigger_files):
+        if filepath in tarball_set:
+            continue  # File exists in tarball too — recipe expects it
+        full_path = workspace_path / filepath
+        if full_path.exists():
+            full_path.unlink()
+            removed.append(filepath)
+
+    if removed:
+        logger.info(
+            "Removed %d git-only build trigger(s) absent from tarball: %s",
+            len(removed), ', '.join(removed),
+        )
+
+
 def git_clean_workspace(workspace_path: Path, remove_ignored: bool = False) -> None:
     """Clean untracked files from workspace, preserving oe-local-files."""
     flags = '-fdx' if remove_ignored else '-fd'

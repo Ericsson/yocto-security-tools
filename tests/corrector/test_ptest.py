@@ -283,3 +283,60 @@ class TestLocalConfPreservation:
 
         debug_conf = tmp_path / "conf" / "local.conf.ptest-debug"
         assert not debug_conf.exists()
+
+
+class TestPtestLogRetrieval:
+    """Tests for ptest log path matching and STOP marker injection."""
+
+    def _setup_ptest_log(self, tmp_path, recipe_content, runner_content):
+        """Create the testimage ptest log directory structure."""
+        (tmp_path / "conf").mkdir(exist_ok=True)
+        (tmp_path / "conf" / "local.conf").write_text("# config\n")
+        log_dir = (tmp_path / "tmp-glibc" / "work" / "qemux86_64-oe-linux"
+                   / "core-image-minimal" / "1.0" / "testimage"
+                   / "ptest_log.20260804114023")
+        log_dir.mkdir(parents=True)
+        (log_dir / "gnutls").write_text(recipe_content)
+        (log_dir / "ptest-runner.log").write_text(runner_content)
+
+    @patch("cve_corrector.ptest.run_cmd", return_value=0)
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_completed_run_parses_per_recipe_format(
+        self, mock_bp, mock_check, mock_capture, mock_cmd, tmp_path
+    ):
+        """Matches ptest_log.TIMESTAMP dirs, reads PASSED:/FAILED:/SKIPPED:
+        format from per-recipe log, and injects STOP from ptest-runner.log."""
+        mock_bp.return_value = tmp_path
+        mock_capture.return_value = MagicMock(stdout="testimage enabled")
+        self._setup_ptest_log(tmp_path,
+                              "PASSED: test1\nPASSED: test2\n"
+                              "SKIPPED: test3\nFAILED: test4\n",
+                              "START: ptest-runner\nSTOP: ptest-runner\n")
+
+        result = run_ptest("gnutls")
+
+        assert result is not None
+        assert not result.startswith("WARNING:")
+        assert "PASSED: 2" in result
+        assert "FAILED: 1" in result
+        assert "SKIPPED: 1" in result
+
+    @patch("cve_corrector.ptest.run_cmd", return_value=0)
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_truncated_run_emits_warning(
+        self, mock_bp, mock_check, mock_capture, mock_cmd, tmp_path
+    ):
+        """WARNING when ptest-runner.log has no STOP marker (run cut short)."""
+        mock_bp.return_value = tmp_path
+        mock_capture.return_value = MagicMock(stdout="testimage enabled")
+        self._setup_ptest_log(tmp_path, "", "START: ptest-runner\n")
+
+        result = run_ptest("gnutls")
+
+        assert result is not None
+        assert result.startswith("WARNING:")
+        assert "PASSED: 0" in result
