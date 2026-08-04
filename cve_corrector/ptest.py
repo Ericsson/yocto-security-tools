@@ -116,12 +116,22 @@ def run_ptest(recipe: str, build_timeout: int = 7200,
         return None
 
     ptest_logs = list((build_path / 'tmp-glibc').glob(
-        f'work/*/core-image-minimal/*/testimage/ptest_log/{recipe}'))
+        f'work/*/core-image-minimal/*/testimage/ptest_log*/{recipe}'))
     if not ptest_logs:
         ptest_logs = list((build_path / 'tmp').glob(
-            f'work/*/core-image-minimal/*/testimage/ptest_log/{recipe}'))
+            f'work/*/core-image-minimal/*/testimage/ptest_log*/{recipe}'))
     if ptest_logs:
-        content = sorted(ptest_logs)[-1].read_text()
+        log_file = sorted(ptest_logs)[-1]
+        content = log_file.read_text()
+        # The per-recipe log doesn't contain the STOP: ptest-runner marker —
+        # that lives in the ptest-runner.log alongside it.  Check the runner
+        # log so summarize_ptest_log can distinguish a complete run from a
+        # truncated one.
+        runner_log = log_file.parent / 'ptest-runner.log'
+        if runner_log.exists():
+            runner_content = runner_log.read_text()
+            if 'STOP: ptest-runner' in runner_content:
+                content += '\nSTOP: ptest-runner\n'
         return summarize_ptest_log(content)
     return None
 
@@ -132,7 +142,10 @@ def run_ptest(recipe: str, build_timeout: int = 7200,
 # elsewhere on the line — e.g. the aggregate "STOP: ptest-runner" /
 # "TOTAL: 1 FAIL: 2" summary lines ptest-runner prints at the end of a
 # run — is never mistaken for an individual test result.
-_RESULT_LINE_RE = re.compile(r'^\s*(PASS|FAIL|SKIP):\s*(.+)$')
+#
+# ptest-runner.log uses "PASS:", "FAIL:", "SKIP:" while the per-recipe
+# log file uses "PASSED:", "FAILED:", "SKIPPED:" — match both variants.
+_RESULT_LINE_RE = re.compile(r'^\s*(PASS(?:ED)?|FAIL(?:ED)?|SKIP(?:PED)?):\s*(.+)$')
 
 # A test run that never reaches a PASS/FAIL/SKIP result line because the
 # runner killed it (e.g. it hung and hit the per-test timeout) instead
@@ -185,12 +198,12 @@ def summarize_ptest_log(content: str) -> str:
         if not match:
             continue
         result, name = match.group(1), match.group(2).strip()
-        if result == 'PASS':
+        if result.startswith('PASS'):
             passed += 1
-        elif result == 'FAIL':
+        elif result.startswith('FAIL'):
             failed += 1
             failing.append(name)
-        elif result == 'SKIP':
+        elif result.startswith('SKIP'):
             skipped += 1
 
     aborted = sum(1 for line in content.splitlines() if line.startswith(_ABORTED_MARKER))

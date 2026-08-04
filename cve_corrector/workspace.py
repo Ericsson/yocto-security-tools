@@ -13,7 +13,12 @@ from .bitbake_ops import (
     get_recipe_src_uri_git,
     get_upstream_check_uri,
 )
-from .git_ops import checkout_version, copy_missing_files_from_devtool, deduce_repo_from_patches
+from .git_ops import (
+    checkout_version,
+    copy_missing_files_from_devtool,
+    deduce_repo_from_patches,
+    remove_git_only_build_triggers,
+)
 from .ptest import enable_ptest
 from .state import DevtoolError, GitError, MetadataError
 from .utils import logger, run_cmd, run_cmd_capture
@@ -328,6 +333,7 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
             logger.info("  - %s", entry)
 
     copy_missing_files_from_devtool(workspace_path)
+    remove_git_only_build_triggers(workspace_path)
 
     logger.debug("Creating tag original-version at current position")
     run_cmd_capture(['git', 'tag', '-f', 'original-version'], cwd=workspace_path)
