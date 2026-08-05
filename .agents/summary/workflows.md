@@ -62,7 +62,7 @@ stateDiagram-v2
     LoadMetadata --> CheckCveStatus : metadata valid
     LoadMetadata --> EXIT_METADATA_ERROR : invalid
 
-    CheckCveStatus --> SetupWorkspace : Unpatched / not set
+    CheckCveStatus --> SetupWorkspace : Unpatched / not set / cpe: scope mismatch
     CheckCveStatus --> EXIT_IGNORED_BY_STATUS : Ignored or Patched
 
     SetupWorkspace --> CheckApplicability

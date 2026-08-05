@@ -249,6 +249,78 @@ _CVE_STATUS_PATCHED_REASONS = frozenset({
 })
 
 
+def _decode_cve_status_cpe(raw_value: str) -> tuple[str, str]:
+    """Extract the ``cpe:`` scope from a CVE_STATUS value.
+
+    Mirrors ``decode_cve_status()`` in oe-core's ``meta/lib/oe/cve_check.py``.
+    The grammar is ``<detail>: cpe:<vendor>:<product>:<description>``, where
+    vendor and product are both mandatory when ``cpe:`` is present. Anything
+    else (no ``cpe:`` segment, or a malformed one, which oe-core warns about
+    and then ignores) leaves the scope unrestricted.
+
+    Args:
+        raw_value: The full CVE_STATUS value.
+
+    Returns:
+        A ``(vendor, product)`` tuple, each ``"*"`` when unrestricted.
+    """
+    parts = raw_value.split(':', 4)
+    if len(parts) >= 4 and parts[1].strip() == 'cpe':
+        return parts[2].strip(), parts[3].strip()
+    return '*', '*'
+
+
+def get_cve_product(recipe: str) -> Optional[str]:
+    """Get the recipe's CVE_PRODUCT — the CPE product(s) it is scanned as.
+
+    The recipe name is deliberately *not* used as a fallback: it is often not
+    the CPE product (zstd is scanned as ``zstandard``, tcpdump as
+    ``tcpdump:tcpdump``), so substituting it could invent a scope match that
+    oe-core would not make.
+
+    Args:
+        recipe: Recipe name to query.
+
+    Returns:
+        The CVE_PRODUCT value, a space-separated list whose entries are
+        either ``<product>`` or ``<vendor>:<product>``. An empty string is
+        returned as-is — oe-core excludes such recipes from CVE checking, so
+        no scope matches. Returns None if the product could not be
+        determined.
+    """
+    result = run_cmd_capture(['bitbake-getvar', 'CVE_PRODUCT', '-r', recipe, '--value'])
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _has_cve_product_match(vendor: str, product: str, cve_products: str) -> bool:
+    """Check a CVE_STATUS ``cpe:`` scope against a recipe's CVE_PRODUCT.
+
+    Mirrors ``has_cve_product_match()`` in oe-core's
+    ``meta/lib/oe/cve_check.py``: a ``"*"`` on the CVE_STATUS side matches
+    anything, and CVE_PRODUCT entries may be ``<vendor>:<product>`` pairs.
+
+    Args:
+        vendor: Vendor from the CVE_STATUS ``cpe:`` scope.
+        product: Product from the CVE_STATUS ``cpe:`` scope.
+        cve_products: The recipe's CVE_PRODUCT value.
+
+    Returns:
+        True if any CVE_PRODUCT entry falls within the scope.
+    """
+    for entry in cve_products.split():
+        entry_vendor = '*'
+        entry_product = entry
+        if ':' in entry:
+            entry_vendor, entry_product = entry.split(':', 1)
+
+        if ((entry_vendor == vendor or vendor == '*')
+                and (entry_product == product or product == '*')):
+            return True
+    return False
+
+
 def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
     """Check the recipe's existing CVE_STATUS flag for this CVE.
 
@@ -256,6 +328,14 @@ def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
     if set, maps the "reason: description" value to the final CVE state
     (``Patched``, ``Unpatched``, or ``Ignored``) using the same reason
     keywords as oe-core's ``cve-check-map.conf``.
+
+    A CVE_STATUS value may carry a ``cpe:<vendor>:<product>:`` scope that
+    limits it to matching recipes. Such entries are typically set distro-wide
+    (oe-core's own ``cve-extra-exclusions.inc`` is entirely scoped this way),
+    which makes the varflag visible from *every* recipe's datastore —
+    ``bitbake-getvar`` returns it regardless of the scope. A scope that does
+    not match this recipe's CVE_PRODUCT is therefore treated as no status
+    being set, exactly as oe-core's cve-check does.
 
     Args:
         recipe: Recipe name to query.
@@ -265,7 +345,8 @@ def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
         A ``(state, raw_value)`` tuple where ``state`` is one of
         ``"Patched"``, ``"Unpatched"``, or ``"Ignored"``, and ``raw_value``
         is the full ``CVE_STATUS`` value as set in the recipe. Returns
-        None if CVE_STATUS is not set for this CVE or could not be
+        None if CVE_STATUS is not set for this CVE, does not apply to this
+        recipe, or if either it or the recipe's CVE_PRODUCT could not be
         determined.
     """
     result = run_cmd_capture([
@@ -277,6 +358,16 @@ def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
     raw_value = result.stdout.strip()
     if not raw_value:
         return None
+
+    vendor, product = _decode_cve_status_cpe(raw_value)
+    if (vendor, product) != ('*', '*'):
+        cve_products = get_cve_product(recipe)
+        # An undeterminable CVE_PRODUCT means the scope cannot be evaluated.
+        # Report no status rather than guess: honouring an entry that may not
+        # apply skips the CVE silently, which is the failure this scope check
+        # exists to prevent.
+        if cve_products is None or not _has_cve_product_match(vendor, product, cve_products):
+            return None
 
     reason = raw_value.split(':', 1)[0].strip().lower()
     if reason in _CVE_STATUS_IGNORED_REASONS:
