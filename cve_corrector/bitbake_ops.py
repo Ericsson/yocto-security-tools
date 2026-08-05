@@ -29,6 +29,33 @@ def get_state_dir() -> Path:
     return state_dir
 
 
+def _is_workspace_layer_line(line: str, workspace_path: Path) -> bool:
+    """Check whether a bblayers.conf line is the devtool workspace layer.
+
+    Matches only the exact devtool workspace layer path, not any path that
+    merely contains a ``workspace`` component. A substring test on
+    ``/workspace`` would strip every layer in the file whenever the build
+    tree itself lives under a directory called ``workspace`` (e.g.
+    ``/home/user/workspace/build/...``), silently emptying ``BBLAYERS``.
+
+    Args:
+        line: A single raw line from ``bblayers.conf``.
+        workspace_path: Absolute path of the devtool workspace layer.
+
+    Returns:
+        True if the line declares the devtool workspace layer.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        return False
+    # Layer entries inside the BBLAYERS list carry a trailing line
+    # continuation backslash; drop it before comparing.
+    entry = stripped.removesuffix('\\').strip()
+    if not entry.startswith('/'):
+        return False
+    return Path(entry) == workspace_path
+
+
 def cleanup_workspace(bbpath: str, full: bool = False) -> None:
     """Remove devtool workspace layer from bblayers.conf and optionally delete build output.
 
@@ -63,8 +90,7 @@ def cleanup_workspace(bbpath: str, full: bool = False) -> None:
             lines = content.splitlines(keepends=True)
             new_lines = [
                 line for line in lines
-                if not (line.strip() and '/workspace' in line and
-                        not line.strip().startswith('#'))
+                if not _is_workspace_layer_line(line, workspace_path)
             ]
             if len(new_lines) != len(lines):
                 bblayers_conf.write_text(''.join(new_lines))

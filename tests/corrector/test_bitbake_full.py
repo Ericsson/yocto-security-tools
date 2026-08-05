@@ -60,9 +60,10 @@ class TestCleanupWorkspace:
         conf = tmp_path / "conf"
         conf.mkdir()
         bblayers = conf / "bblayers.conf"
-        bblayers.write_text("BBLAYERS = \"\\\n  /path/to/meta \\\n  /path/to/workspace \\\n\"\n")
+        workspace_path = tmp_path / "workspace"
+        bblayers.write_text(f"BBLAYERS = \"\\\n  /path/to/meta \\\n  {workspace_path} \\\n\"\n")
         cleanup_workspace(str(tmp_path))
-        assert "workspace" not in bblayers.read_text()
+        assert str(workspace_path) not in bblayers.read_text()
 
     def test_handles_missing_dirs(self, tmp_path):
         cleanup_workspace(str(tmp_path))  # no crash
