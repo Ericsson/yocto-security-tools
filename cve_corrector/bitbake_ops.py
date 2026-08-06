@@ -146,14 +146,46 @@ def find_mirror_repo(mirror_dir: Path, recipe_name: str,
 
 
 def deduce_meta_layer_from_recipe(recipe: str) -> Optional[Path]:
-    """Deduce meta-layer path from recipe using bitbake-layers."""
-    result = run_cmd_capture(['bitbake-layers', 'show-recipes', '-f', recipe])
+    """Deduce meta-layer path from recipe using bitbake-layers.
+
+    Returns the layer directory containing the recipe, or None if it cannot
+    be determined. On failure, diagnostics are written to stderr: silently
+    returning None makes the caller report a generic "Could not deduce
+    meta-layer", which is indistinguishable from (and has in practice been
+    confused with) a broken bitbake environment, a parse error, or an
+    unreachable fetch mirror.
+    """
+    cmd = ['bitbake-layers', 'show-recipes', '-f', recipe]
+    result = run_cmd_capture(cmd)
     for line in result.stdout.splitlines():
         if line.startswith('/') and recipe in line and '.bb' in line:
             recipe_path = Path(line.strip())
             for parent in recipe_path.parents:
                 if parent.name.startswith('meta') or parent.name == 'openembedded-core':
                     return parent
+
+    print(f"deduce_meta_layer_from_recipe: no layer found for {recipe!r}",
+          file=sys.stderr)
+    print(f"  command: {' '.join(cmd)} (exit {result.returncode})",
+          file=sys.stderr)
+    if result.returncode != 0:
+        print("  bitbake-layers failed — the environment or metadata is "
+              "broken, this is not a missing recipe", file=sys.stderr)
+    elif not result.stdout.strip():
+        print("  bitbake-layers succeeded but produced no output",
+              file=sys.stderr)
+    else:
+        print("  bitbake-layers produced output, but no line matched "
+              f"'/...{recipe}....bb' — recipe may not exist in any "
+              "configured layer", file=sys.stderr)
+    for stream_name, stream in (('stdout', result.stdout),
+                                ('stderr', result.stderr)):
+        tail = (stream or '').strip().splitlines()[-25:]
+        if tail:
+            print(f"  --- {stream_name} (last {len(tail)} lines) ---",
+                  file=sys.stderr)
+            for line in tail:
+                print(f"  {line}", file=sys.stderr)
     return None
 
 
