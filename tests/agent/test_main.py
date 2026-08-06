@@ -335,16 +335,20 @@ class TestResolutionLoop:
         assert result.status == ResultStatus.CONFLICT_RESOLVED
 
 
+def _mock_proc(lines=()):
+    proc = MagicMock()
+    proc.stdout = iter(lines)
+    proc.wait.return_value = None
+    proc.returncode = 0
+    proc.__enter__ = lambda s: s
+    proc.__exit__ = MagicMock(return_value=False)
+    return proc
+
+
 class TestRunCorrector:
     @patch("subprocess.Popen")
     def test_initial_mode(self, mock_popen):
-        proc = MagicMock()
-        proc.stdout = iter(["line1\n"])
-        proc.wait.return_value = None
-        proc.returncode = 0
-        proc.__enter__ = lambda s: s
-        proc.__exit__ = MagicMock(return_value=False)
-        mock_popen.return_value = proc
+        mock_popen.return_value = _mock_proc(["line1\n"])
         cfg = _cfg(clean=True, mirror_dir=Path("/m"), meta_layer=Path("/l"), skip_ptest=True)
         code, output = _run_corrector(cfg)
         assert code == 0
@@ -356,18 +360,48 @@ class TestRunCorrector:
         assert "--skip-ptest" in cmd
 
     @patch("subprocess.Popen")
+    def test_initial_mode_no_sign_off_by_default(self, mock_popen):
+        mock_popen.return_value = _mock_proc()
+        _run_corrector(_cfg())
+        cmd = mock_popen.call_args[0][0]
+        assert "--sign-off" not in cmd
+
+    @patch("subprocess.Popen")
+    def test_initial_mode_sign_off_passthrough(self, mock_popen):
+        mock_popen.return_value = _mock_proc()
+        _run_corrector(_cfg(sign_off=True))
+        cmd = mock_popen.call_args[0][0]
+        assert "--sign-off" in cmd
+
+    @patch("subprocess.Popen")
     def test_continue_mode(self, mock_popen):
-        proc = MagicMock()
-        proc.stdout = iter([])
-        proc.wait.return_value = None
-        proc.returncode = 0
-        proc.__enter__ = lambda s: s
-        proc.__exit__ = MagicMock(return_value=False)
-        mock_popen.return_value = proc
+        mock_popen.return_value = _mock_proc()
         code, _ = _run_corrector(_cfg(), continue_mode=True)
         assert code == 0
         cmd = mock_popen.call_args[0][0]
         assert "--continue" in cmd
+
+    @patch("subprocess.Popen")
+    def test_continue_mode_sign_off_passthrough(self, mock_popen):
+        mock_popen.return_value = _mock_proc()
+        _run_corrector(_cfg(sign_off=True), continue_mode=True)
+        cmd = mock_popen.call_args[0][0]
+        assert "--sign-off" in cmd
+
+    @patch("subprocess.Popen")
+    def test_mark_not_applicable_sign_off_passthrough(self, mock_popen):
+        mock_popen.return_value = _mock_proc()
+        _run_corrector(_cfg(sign_off=True), mark_not_applicable="reason")
+        cmd = mock_popen.call_args[0][0]
+        assert "--mark-not-applicable" in cmd
+        assert "--sign-off" in cmd
+
+    @patch("subprocess.Popen")
+    def test_mark_not_applicable_no_sign_off_by_default(self, mock_popen):
+        mock_popen.return_value = _mock_proc()
+        _run_corrector(_cfg(), mark_not_applicable="reason")
+        cmd = mock_popen.call_args[0][0]
+        assert "--sign-off" not in cmd
 
 
 class TestPrintBatchSummary:

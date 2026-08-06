@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 def modify_patch(patch_file: Path, cve_id: str, original_url: str,
-                 include_cve_tag: bool = True) -> None:
+                 include_cve_tag: bool = True, sign_off: bool = False) -> None:
     """Add CVE and/or Upstream-Status metadata to a patch.
 
     Args:
@@ -38,27 +38,50 @@ def modify_patch(patch_file: Path, cve_id: str, original_url: str,
             so it gets ``Upstream-Status: Backport`` **only**. The ``CVE:``
             tag drives ``sbom-cve-check``; tagging a prerequisite with it
             would falsely report that patch as the fix.
+        sign_off: When True, append a ``Signed-off-by`` trailer using the
+            resolved git identity. Default False — the tool must not
+            fabricate a DCO certification nobody made; only emit one when
+            explicitly requested.
     """
     text = patch_file.read_text(encoding="utf-8")
 
-    # Idempotence: skip if the patch already carries the metadata it needs.
+    # Idempotence: skip re-adding metadata the patch already carries.
     # The fix patch needs both tags; a prerequisite needs only Upstream-Status.
     has_upstream = "Upstream-Status:" in text
     has_cve = f"CVE: {cve_id}" in text
-    if has_upstream and (has_cve or not include_cve_tag):
+    metadata_present = has_upstream and (has_cve or not include_cve_tag)
+
+    # Check for our own resolved identity's line specifically, not just any
+    # "Signed-off-by:" text — the upstream commit being backported may carry
+    # its original author's own signoff in the copied commit message, which
+    # must not be mistaken for our local identity already having signed off.
+    own_signoff_line = None
+    has_own_signoff = False
+    if sign_off:
+        author, email = get_git_user_info()
+        own_signoff_line = f"Signed-off-by: {author} <{email}>"
+        has_own_signoff = own_signoff_line in text
+
+    if metadata_present and (not sign_off or has_own_signoff):
         return
 
-    author, email = get_git_user_info()
-
-    cve_line = f"CVE: {cve_id}\n" if include_cve_tag else ""
-    block = (
-        "\n"
-        f"{cve_line}"
-        f"Upstream-Status: Backport [{original_url}]\n\n"
-        f"Signed-off-by: {author} <{email}>\n"
-    )
-
     lines = text.splitlines(keepends=True)
+
+    if metadata_present:
+        # CVE:/Upstream-Status: are already there (e.g. a resumed or
+        # reprocessed patch) — sign_off is the only thing missing. Add just
+        # the trailer instead of re-running the block below, which would
+        # duplicate the existing headers.
+        block = f"\n{own_signoff_line}\n"
+    else:
+        cve_line = f"CVE: {cve_id}\n" if include_cve_tag else ""
+        block = (
+            "\n"
+            f"{cve_line}"
+            f"Upstream-Status: Backport [{original_url}]\n"
+        )
+        if sign_off:
+            block += f"\n{own_signoff_line}\n"
 
     insert_index = None
     for i, line in enumerate(lines):
@@ -245,7 +268,7 @@ def update_patches_with_metadata(state: WorkflowState) -> None:
         kind = "" if include_cve else " (prerequisite, no CVE tag)"
         logger.info("Upstream-Status: Backport [%s]%s", original_url, kind)
         modify_patch(original_patch, state.cve_id, original_url,
-                     include_cve_tag=include_cve)
+                     include_cve_tag=include_cve, sign_off=state.sign_off)
 
         new_name = (f"{state.cve_id}.patch" if len(original_patches) == 1
                     else f"{state.cve_id}-{idx}.patch")

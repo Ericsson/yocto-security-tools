@@ -67,6 +67,38 @@ class TestMainCli:
             with pytest.raises(SystemExit):
                 main()
 
+    def _resumed_state(self, tmp_path, sign_off):
+        from cve_corrector.state import WorkflowState
+        return WorkflowState(
+            workspace_path=tmp_path / 'ws', cve_id='CVE-2025-0001', recipe='foo',
+            commit_hash='abc123', hash_details=[], meta_layer=None,
+            skip_build=True, skip_ptest=True, sign_off=sign_off)
+
+    def test_continue_preserves_stored_sign_off_when_flag_omitted(self, tmp_path, monkeypatch):
+        """--continue without repeating --sign-off must not silently unsign a
+        run that opted in on its original invocation."""
+        monkeypatch.setattr('sys.argv', ['cve-corrector', '--continue'])
+        monkeypatch.setenv('BBPATH', '/tmp')
+        state = self._resumed_state(tmp_path, sign_off=True)
+        with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.continue_from_conflict', return_value=state), \
+             patch('cve_corrector.__main__.setup_logging', return_value='log.txt'), \
+             patch('cve_corrector.__main__.finish_cve_workflow') as mock_finish:
+            main()
+        assert mock_finish.call_args[0][0].sign_off is True
+
+    def test_continue_sign_off_flag_overrides_stored_value(self, tmp_path, monkeypatch):
+        """Repeating --sign-off on --continue still overrides the stored value."""
+        monkeypatch.setattr('sys.argv', ['cve-corrector', '--continue', '--sign-off'])
+        monkeypatch.setenv('BBPATH', '/tmp')
+        state = self._resumed_state(tmp_path, sign_off=False)
+        with patch('shutil.which', return_value='/usr/bin/bitbake-layers'), \
+             patch('cve_corrector.__main__.continue_from_conflict', return_value=state), \
+             patch('cve_corrector.__main__.setup_logging', return_value='log.txt'), \
+             patch('cve_corrector.__main__.finish_cve_workflow') as mock_finish:
+            main()
+        assert mock_finish.call_args[0][0].sign_off is True
+
     def test_skip_source_removes_only_matching(self, tmp_path, monkeypatch):
         """--skip-source drops the osv-only commit but keeps the debian one."""
         cve_info = tmp_path / 'cve.json'

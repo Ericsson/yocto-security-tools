@@ -233,7 +233,8 @@ def _parse_args() -> argparse.Namespace:
                         default=DEFAULT_SESSION_TIMEOUT,
                         help='Timeout per session in seconds (default: %(default)s)')
     ai_group.add_argument('--trust', action='store_true',
-                        help='Skip human review (NOT recommended)')
+                        help='Skip human review (NOT recommended). Cannot be '
+                             'combined with --sign-off.')
     ai_group.add_argument('-i', '--interactive', action='store_true',
                         help='Enable interactive mode (human-in-the-loop). '
                              'Omit for non-interactive/CI use (default).')
@@ -258,6 +259,13 @@ def _parse_args() -> argparse.Namespace:
     env_group = parser.add_argument_group('environment')
     env_group.add_argument('--mirror-dir', type=Path,
                         help='Directory with bare repository mirrors')
+    env_group.add_argument('--sign-off', action='store_true',
+                        help='Pass --sign-off through to cve-corrector, adding a '
+                             'Signed-off-by trailer to generated patches and '
+                             'commits using the git identity resolved from '
+                             '`git config`. Off by default — only a human who has '
+                             'reviewed the change can certify the DCO. Cannot be '
+                             'combined with --trust.')
 
     return parser.parse_args()
 
@@ -294,6 +302,7 @@ def _config_from_args(args: argparse.Namespace,
         recipe=args.recipe,
         backend=args.backend,
         skip_sources=args.skip_sources,
+        sign_off=args.sign_off,
     )
 
 
@@ -302,6 +311,13 @@ def main() -> None:
     results: list[CveResult] = []
     signal.signal(signal.SIGINT, _sigint_handler(results))
     args = _parse_args()
+
+    if args.trust and args.sign_off:
+        print("Error: --trust and --sign-off cannot be combined — --trust "
+              "skips human review of AI-generated changes, so --sign-off "
+              "would certify a DCO that nobody actually reviewed. Drop one "
+              "of the two flags.", file=sys.stderr)
+        sys.exit(EXIT_AGENT_ERROR)
 
     if not args.cve_info and not args.fix_urls:
         print("Error: --cve-info or --fix-url is required", file=sys.stderr)

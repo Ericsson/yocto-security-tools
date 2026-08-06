@@ -589,6 +589,41 @@ class TestCreateLayerCommit:
         assert 'ubuntu.com/security' not in logged
         assert 'osv.dev' not in logged
 
+    @patch("cve_corrector.meta_layer.get_build_path")
+    @patch("subprocess.run")
+    @patch("cve_corrector.meta_layer.run_cmd", return_value=0)
+    @patch("cve_corrector.meta_layer.get_git_user_info", return_value=("A", "a@b.c"))
+    def test_no_signoff_by_default(self, mock_info, mock_cmd, mock_subrun, mock_bp,
+                                   tmp_path, caplog):
+        """Default behavior must not fabricate a Signed-off-by / DCO certification."""
+        mock_bp.return_value = tmp_path
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        mock_subrun.return_value = MagicMock(returncode=0, stdout="")
+        import logging
+        with caplog.at_level(logging.INFO, logger="cve_corrector"):
+            create_layer_commit(meta, "busybox", "CVE-1", skip_confirm=True)
+        logged = "\n".join(caplog.messages)
+        assert "Signed-off-by" not in logged
+        mock_info.assert_not_called()
+
+    @patch("cve_corrector.meta_layer.get_build_path")
+    @patch("subprocess.run")
+    @patch("cve_corrector.meta_layer.run_cmd", return_value=0)
+    @patch("cve_corrector.meta_layer.get_git_user_info", return_value=("A", "a@b.c"))
+    def test_signoff_opt_in(self, mock_info, mock_cmd, mock_subrun, mock_bp,
+                            tmp_path, caplog):
+        mock_bp.return_value = tmp_path
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        mock_subrun.return_value = MagicMock(returncode=0, stdout="")
+        import logging
+        with caplog.at_level(logging.INFO, logger="cve_corrector"):
+            create_layer_commit(meta, "busybox", "CVE-1", skip_confirm=True,
+                                sign_off=True)
+        logged = "\n".join(caplog.messages)
+        assert "Signed-off-by: A <a@b.c>" in logged
+
 
 class TestContinueFromConflict:
     @patch("cve_corrector.workflow.get_state_dir")
