@@ -242,6 +242,13 @@ def _fetch_remote(workspace_path: Path, remote_name: str, url: str) -> bool:
         return True
     alt = _alternate_protocol_url(url)
     if not alt:
+        # Surface the reason: without upstream history every fix commit
+        # later reads as "bad object" and the run ends in a generic
+        # conflict, which hides that the real failure was here.
+        res = run_cmd_capture(['git', 'fetch', remote_name, '--tags'],
+                              cwd=workspace_path)
+        logger.error("Fetch of %s failed and no alternate protocol to retry:\n%s",
+                     url, (res.stderr or res.stdout or '').strip()[-2000:])
         return False
     logger.warning("Fetch of %s failed — retrying via %s", url, alt)
     run_cmd(['git', 'remote', 'set-url', remote_name, alt], cwd=workspace_path)
