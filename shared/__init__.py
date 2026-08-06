@@ -26,6 +26,18 @@ GIT_ENV_ALLOWLIST: frozenset[str] = frozenset({
     'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME',
     'GIT_COMMITTER_EMAIL', 'GIT_SSH',
     'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+    # TLS trust store. Required when git comes from a relocatable SDK
+    # (e.g. Yocto buildtools-extended): its binaries are compiled with a
+    # hardcoded sysroot path that does not exist once relocated, so the
+    # environment-setup script exports these to point at the real one.
+    # Dropping them makes every https fetch fail with
+    #   error setting certificate file:
+    #   /usr/local/oe-sdk-hardcoded-buildpath/.../ca-certificates.crt
+    # which surfaced only as "Failed to fetch upstream — continuing
+    # without upstream history", and then as unusable fix commits
+    # ("bad object") at cherry-pick time.
+    'GIT_SSL_CAINFO', 'GIT_SSL_CAPATH', 'GIT_SSL_NO_VERIFY',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE',
     # Proxy
     'http_proxy', 'https_proxy', 'no_proxy',
     'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
