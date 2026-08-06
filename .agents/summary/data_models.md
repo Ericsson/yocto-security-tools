@@ -25,6 +25,7 @@ classDiagram
         +Optional~str~ subproject
         +bool bbappend
         +Optional~str~ version
+        +bool sign_off
         +to_dict() dict
         +from_dict(data) WorkflowState
     }
@@ -56,6 +57,7 @@ classDiagram
         +Optional~str~ fix_url
         +Optional~str~ recipe
         +str backend
+        +bool sign_off
     }
 ```
 
@@ -131,6 +133,7 @@ classDiagram
         +bool bbappend
         +bool skip_cve_applicability
         +Optional~str~ fix_url
+        +bool sign_off
     }
 ```
 

@@ -37,8 +37,12 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
         ]
         if config.meta_layer:
             cmd += ['--meta-layer', str(config.meta_layer)]
+        if config.sign_off:
+            cmd.append('--sign-off')
     elif continue_mode:
         cmd += ['--continue', '--yes']
+        if config.sign_off:
+            cmd.append('--sign-off')
     else:
         cmd += [
             '--cve-id', config.cve_id,
@@ -64,6 +68,8 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
             cmd.append('--skip-cve-applicability')
         for source in config.skip_sources:
             cmd += ['--skip-source', source]
+        if config.sign_off:
+            cmd.append('--sign-off')
 
     output_lines = []
     with subprocess.Popen(

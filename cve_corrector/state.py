@@ -115,6 +115,7 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
     subproject: Optional[str] = None
     bbappend: bool = False
     version: Optional[str] = None
+    sign_off: bool = False
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -134,7 +135,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             'skip_confirm': self.skip_confirm,
             'subproject': self.subproject,
             'bbappend': self.bbappend,
-            'version': self.version
+            'version': self.version,
+            'sign_off': self.sign_off
         }
 
     @classmethod
@@ -156,7 +158,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             skip_confirm=data.get('skip_confirm', False),
             subproject=data.get('subproject'),
             bbappend=data.get('bbappend', False),
-            version=data.get('version')
+            version=data.get('version'),
+            sign_off=data.get('sign_off', False)
         )
 
 

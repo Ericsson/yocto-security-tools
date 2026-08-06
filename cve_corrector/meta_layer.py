@@ -110,8 +110,15 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
                         ptest_output: Optional[str] = None, skip_confirm: bool = False,
                         hash_details: Optional[list] = None,
                         series_state: Optional[dict] = None,
-                        used_commits: Optional[list] = None) -> bool:
+                        used_commits: Optional[list] = None,
+                        sign_off: bool = False) -> bool:
     """Create git commit in meta-layer with updated recipe and patch.
+
+    Args:
+        sign_off: When True, append a ``Signed-off-by`` trailer using the
+            resolved git identity. Default False — the tool must not
+            fabricate a DCO certification nobody made; only emit one when
+            explicitly requested.
 
     Returns:
         True if a commit was created, False otherwise.
@@ -120,7 +127,6 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
         logger.warning("Meta-layer path invalid: %s", meta_layer)
         return False
 
-    author, email = get_git_user_info()
     commit_msg = f"{recipe}: fix {cve_id}\n\nBackport patch to fix {cve_id}.\n\n"
 
     # Templated per-source tracker references (NVD plus any contributing public
@@ -168,7 +174,9 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
         logger.info(ptest_output)
         commit_msg += f"Tested with ptest:\n{ptest_output}\n\n"
 
-    commit_msg += f"Signed-off-by: {author} <{email}>\n"
+    if sign_off:
+        author, email = get_git_user_info()
+        commit_msg += f"Signed-off-by: {author} <{email}>\n"
 
     logger.info("Commit Message:")
     logger.info(commit_msg)
@@ -292,8 +300,15 @@ def _map_cve_status_reason(reason: str) -> str:
 
 
 def write_cve_status(meta_layer: Optional[Path], recipe: str, cve_id: str,
-                     reason: str, skip_confirm: bool = False) -> bool:
+                     reason: str, skip_confirm: bool = False,
+                     sign_off: bool = False) -> bool:
     """Append a CVE_STATUS line to the recipe's .bb or .bbappend in the meta-layer.
+
+    Args:
+        sign_off: When True, append a ``Signed-off-by`` trailer using the
+            resolved git identity. Default False — the tool must not
+            fabricate a DCO certification nobody made; only emit one when
+            explicitly requested.
 
     Returns:
         True if the CVE_STATUS was written and committed, False otherwise.
@@ -322,12 +337,10 @@ def write_cve_status(meta_layer: Optional[Path], recipe: str, cve_id: str,
     recipe_file.write_text(content, encoding='utf-8')
     logger.info("Wrote CVE_STATUS for %s to %s", cve_id, recipe_file)
 
-    author, email = get_git_user_info()
-    commit_msg = (
-        f"{recipe}: mark {cve_id} as not applicable\n\n"
-        f"{reason}\n\n"
-        f"Signed-off-by: {author} <{email}>\n"
-    )
+    commit_msg = f"{recipe}: mark {cve_id} as not applicable\n\n{reason}\n"
+    if sign_off:
+        author, email = get_git_user_info()
+        commit_msg += f"\nSigned-off-by: {author} <{email}>\n"
 
     if not skip_confirm:
         print(f"\nCVE_STATUS line:\n  {status_line}")

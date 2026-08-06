@@ -87,6 +87,9 @@ Options:
   --bbappend              Use bbappend instead of modifying recipe
   --dry-run               Show what would be done without executing
   --continue              Resume from saved state (after conflict resolution)
+  --sign-off              Add Signed-off-by trailer (default: off). On
+                          --continue, omitting it preserves the choice made
+                          on the original run; passing it again overrides
   --verbose               Enable debug logging
 ```
 
@@ -116,6 +119,9 @@ Options:
   --mirror-dir DIR        Local git mirror directory
   --meta-layer DIR        Target meta-layer
   --bbappend              Use bbappend mode
+  --sign-off              Passed through to cve-corrector (default: off).
+                          Rejected in combination with --trust — no human
+                          review means no DCO certification to make.
 ```
 
 ## Inter-Process Interface

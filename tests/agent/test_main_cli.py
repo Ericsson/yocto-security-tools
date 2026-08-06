@@ -71,6 +71,19 @@ class TestParseArgs:
         args = _parse_args()
         assert args.skip_sources == []
 
+    def test_sign_off_default_false(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json'])
+        args = _parse_args()
+        assert args.sign_off is False
+
+    def test_sign_off_flag(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json',
+            '--sign-off'])
+        args = _parse_args()
+        assert args.sign_off is True
+
 
 class TestConfigFromArgs:
     def test_creates_config(self, monkeypatch):
@@ -90,6 +103,71 @@ class TestConfigFromArgs:
         args = _parse_args()
         config = _config_from_args(args, 'CVE-2025-0001')
         assert config.skip_sources == ['osv', 'ubuntu']
+
+    def test_sign_off_passthrough(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', '/tmp/cve.json', '--sign-off'])
+        args = _parse_args()
+        config = _config_from_args(args, 'CVE-2025-0001')
+        assert config.sign_off is True
+
+    def test_sign_off_default_false(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', '/tmp/cve.json'])
+        args = _parse_args()
+        config = _config_from_args(args, 'CVE-2025-0001')
+        assert config.sign_off is False
+
+
+class TestTrustSignOffRejected:
+    """--trust auto-approves AI changes with no human review; combined with
+    --sign-off that would certify a DCO nobody actually reviewed. The
+    combination is rejected outright rather than allowed silently."""
+
+    @patch('cve_agent.__main__.ensure_agents')
+    @patch('cve_agent.__main__.process_single_cve')
+    def test_trust_and_sign_off_rejected(self, mock_process, mock_ensure,
+                                         monkeypatch, capsys):
+        from cve_agent import EXIT_AGENT_ERROR
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001', '--cve-info', '/tmp/c.json',
+            '--trust', '--sign-off'])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == EXIT_AGENT_ERROR
+        err = capsys.readouterr().err
+        assert '--trust' in err
+        assert '--sign-off' in err
+        # The rejection must happen before any agent/AI-session setup or CVE
+        # processing — no AI backend touched, no work attempted.
+        mock_ensure.assert_not_called()
+        mock_process.assert_not_called()
+
+    def test_sign_off_alone_not_rejected(self, monkeypatch, capsys):
+        """--sign-off without --trust must pass the combination check and
+        fall through to the next validation (missing --cve-info), not the
+        --trust/--sign-off rejection — distinguished by the error message
+        since both paths share EXIT_AGENT_ERROR."""
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001', '--sign-off'])
+        with pytest.raises(SystemExit):
+            main()
+        err = capsys.readouterr().err
+        assert '--trust and --sign-off cannot be combined' not in err
+        assert '--cve-info or --fix-url is required' in err
+
+    def test_trust_alone_not_rejected(self, monkeypatch, capsys):
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001', '--trust'])
+        with pytest.raises(SystemExit):
+            main()
+        err = capsys.readouterr().err
+        assert '--trust and --sign-off cannot be combined' not in err
 
 
 class TestReadCveList:

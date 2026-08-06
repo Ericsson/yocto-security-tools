@@ -28,7 +28,8 @@ def handle_empty_cherry_pick(state: WorkflowState) -> None:
     reason = (f"Upstream fix ({state.commit_hash[:12]}: {subject}) produces "
               f"no changes — code already matches the fixed version")
     write_cve_status(state.meta_layer, state.recipe, state.cve_id,
-                     reason, skip_confirm=state.skip_confirm)
+                     reason, skip_confirm=state.skip_confirm,
+                     sign_off=state.sign_off)
 
 
 def collect_cve_commits(state: WorkflowState) -> list[str]:

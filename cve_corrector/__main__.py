@@ -143,6 +143,13 @@ def main():
                         help='Directory containing bare repository mirrors')
     env_group.add_argument('--yes', '-y', action='store_true',
                         help='Skip confirmation prompts')
+    env_group.add_argument('--sign-off', action='store_true', default=None,
+                        help='Add a Signed-off-by trailer to generated patches and '
+                             'commits, using the git identity resolved from '
+                             '`git config`. Off by default — only a human who has '
+                             'reviewed the change can certify the DCO. With '
+                             '--continue, omitting this flag preserves the choice '
+                             'made on the original run; passing it again overrides.')
     env_group.add_argument('--verbose', '-v', action='store_true',
                         help='Show verbose output (live command execution)')
 
@@ -155,6 +162,11 @@ def main():
         try:
             state = continue_from_conflict()
             state.skip_confirm = args.yes
+            # Only override the persisted choice when --sign-off is repeated;
+            # omitting it on --continue must not silently unsign a run that
+            # opted in on its original invocation.
+            if args.sign_off is not None:
+                state.sign_off = args.sign_off
             log_file = setup_logging(state.cve_id, get_build_path(), args.verbose)
             logger.info("Resuming %s for %s...", state.cve_id, state.recipe)
             logger.info("Log file: %s", log_file)
@@ -258,7 +270,8 @@ def main():
         from .meta_layer import write_cve_status
         ok = write_cve_status(meta_layer, recipe_name, args.cve_id,
                               args.mark_not_applicable,
-                              skip_confirm=args.yes)
+                              skip_confirm=args.yes,
+                              sign_off=bool(args.sign_off))
         sys.exit(0 if ok else EXIT_METADATA_ERROR)
 
     mirror_path = None
@@ -322,7 +335,8 @@ def main():
                 manual_mode=args.manual, bbappend=args.bbappend,
                 skip_cve_applicability=args.skip_cve_applicability,
                 skip_confirm=args.yes,
-                require_all_commits=require_all_commits))
+                require_all_commits=require_all_commits,
+                sign_off=bool(args.sign_off)))
         state.skip_confirm = args.yes
 
         finish_cve_workflow(state)

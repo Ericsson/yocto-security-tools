@@ -110,6 +110,7 @@ class AgentConfig:
     recipe: Optional[str] = None
     backend: str = "kiro"
     skip_sources: list[str] = field(default_factory=list)
+    sign_off: bool = False
 
 
 @dataclass

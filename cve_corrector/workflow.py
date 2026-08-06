@@ -350,7 +350,8 @@ def finish_cve_workflow(state: WorkflowState) -> None:
                                     ptest_output, state.skip_confirm,
                                     hash_details=state.hash_details,
                                     series_state=state.series_state,
-                                    used_commits=used_commits)
+                                    used_commits=used_commits,
+                                    sign_off=state.sign_off)
 
     if not committed and state.meta_layer:
         # Check if there were actually no changes (vs user cancelled)
@@ -366,7 +367,8 @@ def finish_cve_workflow(state: WorkflowState) -> None:
                       f"no net changes after conflict resolution — "
                       f"code already matches the fixed version")
             write_cve_status(state.meta_layer, state.recipe, state.cve_id,
-                             reason, skip_confirm=state.skip_confirm)
+                             reason, skip_confirm=state.skip_confirm,
+                             sign_off=state.sign_off)
             if state_file.exists():
                 state_file.unlink()
             logger.info("CVE_STATUS written for %s — no patch needed", state.cve_id)
@@ -487,6 +489,7 @@ class WorkflowConfig:
     skip_cve_applicability: bool = False
     skip_confirm: bool = False
     require_all_commits: bool = False
+    sign_off: bool = False
 
 
 def _handle_failed_series(workspace_path, best_series, make_state, recipe):
@@ -652,11 +655,13 @@ def initialize_cve_workflow(
                         # User disagrees — don't raise, continue with normal workflow
                     else:
                         write_cve_status(config.meta_layer, recipe, cve_id,
-                                         not_applicable, skip_confirm=True)
+                                         not_applicable, skip_confirm=True,
+                                         sign_off=config.sign_off)
                         raise NotApplicableError("CVE not applicable")
                 else:
                     write_cve_status(config.meta_layer, recipe, cve_id,
-                                     not_applicable, skip_confirm=True)
+                                     not_applicable, skip_confirm=True,
+                                     sign_off=config.sign_off)
                     raise NotApplicableError("CVE not applicable")
             else:
                 raise NotApplicableError("CVE not applicable")
@@ -699,7 +704,7 @@ def initialize_cve_workflow(
             skip_build=config.skip_build, skip_ptest=config.skip_ptest,
             ptest_before=ptest_before, series_state=series_state,
             subproject=subproject, bbappend=config.bbappend,
-            version=version)
+            version=version, sign_off=config.sign_off)
 
     if config.manual_mode:
         state = make_state(hashes[0] if hashes else '')

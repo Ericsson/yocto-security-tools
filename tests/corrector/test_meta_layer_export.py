@@ -4,10 +4,11 @@
 LAYERSERIES_CORENAMES-based --subject-prefix used when exporting a patch
 for mailing-list submission.
 """
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from cve_corrector.bitbake_ops import get_layerseries_corename
-from cve_corrector.meta_layer import _export_commit_patch
+from cve_corrector.meta_layer import _export_commit_patch, write_cve_status
 
 
 class TestGetLayerseriesCorename:
@@ -86,3 +87,53 @@ class TestExportCommitPatch:
         with caplog.at_level(logging.WARNING, logger="cve_corrector"):
             _export_commit_patch(meta)
         assert any("Failed to export patch" in r.message for r in caplog.records)
+
+
+class TestWriteCveStatusSignoff:
+    """write_cve_status must not fabricate a Signed-off-by trailer unless
+    explicitly requested — the tool cannot know whether the resolved git
+    identity represents a human who has reviewed this specific change."""
+
+    def _meta_layer_with_recipe(self, tmp_path, recipe="busybox"):
+        meta = tmp_path / "meta"
+        recipe_dir = meta / "recipes-core" / recipe
+        recipe_dir.mkdir(parents=True)
+        recipe_file = recipe_dir / f"{recipe}_1.36.bb"
+        recipe_file.write_text('SUMMARY = "busybox"\n')
+        return meta, recipe_file
+
+    @staticmethod
+    def _capturing_run_cmd(captured):
+        def _run_cmd(cmd, cwd=None):
+            if cmd[:2] == ['git', 'commit']:
+                msg_file = cmd[cmd.index('-F') + 1]
+                captured.append(Path(msg_file).read_text())
+            return 0
+        return _run_cmd
+
+    @patch("cve_corrector.meta_layer._export_commit_patch")
+    @patch("cve_corrector.meta_layer.get_git_user_info", return_value=("A", "a@b.c"))
+    def test_no_signoff_by_default(self, mock_info, mock_export, tmp_path):
+        meta, recipe_file = self._meta_layer_with_recipe(tmp_path)
+        captured = []
+        with patch("cve_corrector.recipe_ops._find_recipe_file",
+                   return_value=recipe_file), \
+             patch("cve_corrector.meta_layer.run_cmd",
+                  side_effect=self._capturing_run_cmd(captured)):
+            write_cve_status(meta, "busybox", "CVE-1", "not applicable",
+                             skip_confirm=True)
+        assert captured and "Signed-off-by" not in captured[0]
+        mock_info.assert_not_called()
+
+    @patch("cve_corrector.meta_layer._export_commit_patch")
+    @patch("cve_corrector.meta_layer.get_git_user_info", return_value=("A", "a@b.c"))
+    def test_signoff_opt_in(self, mock_info, mock_export, tmp_path):
+        meta, recipe_file = self._meta_layer_with_recipe(tmp_path)
+        captured = []
+        with patch("cve_corrector.recipe_ops._find_recipe_file",
+                   return_value=recipe_file), \
+             patch("cve_corrector.meta_layer.run_cmd",
+                  side_effect=self._capturing_run_cmd(captured)):
+            write_cve_status(meta, "busybox", "CVE-1", "not applicable",
+                             skip_confirm=True, sign_off=True)
+        assert captured and "Signed-off-by: A <a@b.c>" in captured[0]

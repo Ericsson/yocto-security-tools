@@ -18,19 +18,130 @@ Some description.
 diff --git a/file.c b/file.c
 """
 
+UPSTREAM_SIGNED_PATCH = """\
+From abc123 Mon Sep 17 00:00:00 2001
+Subject: Fix something
+
+Some description.
+
+Signed-off-by: Upstream Author <upstream@example.com>
+---
+ file.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/file.c b/file.c
+"""
+
 
 def test_modify_patch_inserts_metadata(tmp_path):
+    p = tmp_path / "test.patch"
+    p.write_text(MINIMAL_PATCH)
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info") as mock_info:
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc")
+        # Default (no sign_off): must never fabricate a DCO certification —
+        # the resolved git identity isn't even looked up.
+        mock_info.assert_not_called()
+    content = p.read_text()
+    assert "CVE: CVE-2025-0001" in content
+    assert "Upstream-Status: Backport [https://example.com/commit/abc]" in content
+    assert "Signed-off-by:" not in content
+    # Metadata should appear before the --- separator
+    assert content.index("CVE: CVE-2025-0001") < content.index("\n---\n")
+
+
+def test_modify_patch_sign_off_opt_in(tmp_path):
+    p = tmp_path / "test.patch"
+    p.write_text(MINIMAL_PATCH)
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info",
+                    return_value=("Test User", "test@example.com")):
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc",
+                     sign_off=True)
+    content = p.read_text()
+    assert "CVE: CVE-2025-0001" in content
+    assert "Upstream-Status: Backport [https://example.com/commit/abc]" in content
+    assert "Signed-off-by: Test User <test@example.com>" in content
+
+
+def test_modify_patch_sign_off_added_to_already_annotated_patch(tmp_path):
+    """A patch that already has CVE:/Upstream-Status: (e.g. resumed or
+    reprocessed) must still gain a Signed-off-by trailer on an explicit
+    opt-in call, without duplicating the existing headers."""
     p = tmp_path / "test.patch"
     p.write_text(MINIMAL_PATCH)
     with mock_patch("cve_corrector.patch_ops.get_git_user_info",
                     return_value=("Test User", "test@example.com")):
         modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc")
+        no_signoff = p.read_text()
+        assert "Signed-off-by:" not in no_signoff
+
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc",
+                     sign_off=True)
     content = p.read_text()
-    assert "CVE: CVE-2025-0001" in content
-    assert "Upstream-Status: Backport [https://example.com/commit/abc]" in content
+    assert content.count("CVE: CVE-2025-0001") == 1
+    assert content.count("Upstream-Status:") == 1
     assert "Signed-off-by: Test User <test@example.com>" in content
-    # Metadata should appear before the --- separator
-    assert content.index("CVE: CVE-2025-0001") < content.index("\n---\n")
+
+    # Idempotent: calling again with sign_off=True doesn't duplicate it.
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info",
+                    return_value=("Test User", "test@example.com")):
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc",
+                     sign_off=True)
+    assert p.read_text().count("Signed-off-by:") == 1
+
+
+def test_modify_patch_sign_off_not_satisfied_by_upstream_signoff(tmp_path):
+    """An upstream commit's own Signed-off-by, copied into the patch body by
+    format-patch, must not be mistaken for our local identity already having
+    signed off — --sign-off checks for the resolved identity's own line.
+
+    The bug only surfaces once CVE:/Upstream-Status: are already present
+    (metadata_present=True), which is when the idempotence early-return
+    kicks in — so this must be reproduced across two calls, matching a
+    resumed/reprocessed patch, not a single call on a fresh one.
+    """
+    p = tmp_path / "test.patch"
+    p.write_text(UPSTREAM_SIGNED_PATCH)
+    # First pass, sign_off=False (e.g. the default first run): adds CVE:/
+    # Upstream-Status: alongside the upstream author's pre-existing signoff.
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info") as mock_info:
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc")
+        mock_info.assert_not_called()
+    after_first = p.read_text()
+    assert "Signed-off-by: Upstream Author <upstream@example.com>" in after_first
+    assert "Test User" not in after_first
+
+    # Second pass, sign_off=True (e.g. a resumed run with --sign-off): must
+    # add our own trailer, not treat the upstream author's line as already
+    # satisfying it.
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info",
+                    return_value=("Test User", "test@example.com")):
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc",
+                     sign_off=True)
+    content = p.read_text()
+    assert "Signed-off-by: Upstream Author <upstream@example.com>" in content
+    assert "Signed-off-by: Test User <test@example.com>" in content
+
+    # Idempotent: re-running doesn't duplicate our own line or touch upstream's.
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info",
+                    return_value=("Test User", "test@example.com")):
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc",
+                     sign_off=True)
+    final = p.read_text()
+    assert final.count("Signed-off-by: Upstream Author <upstream@example.com>") == 1
+    assert final.count("Signed-off-by: Test User <test@example.com>") == 1
+
+
+def test_modify_patch_upstream_signoff_alone_does_not_trigger_ours(tmp_path):
+    """Without --sign-off, an upstream commit's own signoff already present
+    in the patch body must not cause us to add our own — default stays off."""
+    p = tmp_path / "test.patch"
+    p.write_text(UPSTREAM_SIGNED_PATCH)
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info") as mock_info:
+        modify_patch(p, "CVE-2025-0001", "https://example.com/commit/abc")
+        mock_info.assert_not_called()
+    content = p.read_text()
+    assert content.count("Signed-off-by:") == 1
+    assert "Signed-off-by: Upstream Author <upstream@example.com>" in content
 
 
 def test_modify_patch_idempotent(tmp_path):
@@ -173,7 +284,8 @@ Prerequisite introducing the helper the fix calls.
 
 
 def test_modify_patch_prerequisite_omits_cve_tag(tmp_path):
-    """A prerequisite patch gets Upstream-Status but NOT a CVE tag."""
+    """A prerequisite patch gets Upstream-Status but NOT a CVE tag, and no
+    Signed-off-by unless explicitly requested."""
     p = tmp_path / "prereq.patch"
     p.write_text(_PREREQ_PATCH)
     with mock_patch("cve_corrector.patch_ops.get_git_user_info",
@@ -183,7 +295,16 @@ def test_modify_patch_prerequisite_omits_cve_tag(tmp_path):
     content = p.read_text()
     assert "CVE: CVE-2025-0001" not in content
     assert "Upstream-Status: Backport [https://example.com/commit/bbb]" in content
-    assert "Signed-off-by: Test User <test@example.com>" in content
+    assert "Signed-off-by:" not in content
+
+    p2 = tmp_path / "prereq2.patch"
+    p2.write_text(_PREREQ_PATCH)
+    with mock_patch("cve_corrector.patch_ops.get_git_user_info",
+                    return_value=("Test User", "test@example.com")):
+        modify_patch(p2, "CVE-2025-0001", "https://example.com/commit/bbb",
+                     include_cve_tag=False, sign_off=True)
+    content2 = p2.read_text()
+    assert "Signed-off-by: Test User <test@example.com>" in content2
 
 
 def test_modify_patch_prerequisite_idempotent(tmp_path):
