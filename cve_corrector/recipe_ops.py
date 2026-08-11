@@ -114,6 +114,12 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
     - SRC_URI:append = "..."
     - SRC_URI:append:class-target = "..."
 
+    When the recipe file has no plain SRC_URI assignment, sibling ``.inc``
+    files in the same directory are checked for the main SRC_URI block.
+    If only scoped override forms exist (e.g. ``SRC_URI:append:class-nativesdk``),
+    a new ``SRC_URI:append`` line is appended rather than inserting into
+    the scoped override (which would limit the patch to that class/machine).
+
     Entries already present in the file's SRC_URI are skipped, so callers
     that don't track what they already merged in (e.g. via
     ``restore_bbappend_extras``) don't end up with a duplicate ``file://``
@@ -124,15 +130,10 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
     if not patch_names:
         return
 
-    lines = recipe_file.read_text(encoding='utf-8').splitlines()
+    target_file = recipe_file
+    lines = target_file.read_text(encoding='utf-8').splitlines()
     insert_at = None
 
-    # Match all SRC_URI assignment forms including override syntax
-    src_uri_re = re.compile(
-        r'^\s*SRC_URI\s*'
-        r'(?::\w[\w-]*)*'  # optional override suffixes like :append:class-target
-        r'\s*(?:\+|\.|\?)?='  # assignment operators: =, +=, .=, ?=
-    )
     # A plain SRC_URI assignment, with no override suffix at all. This is
     # the block new file:// entries should be spliced into. Override-suffixed
     # forms (e.g. SRC_URI:append:class-target = "...") are usually a distinct,
@@ -142,18 +143,41 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
     # bare, malformed continuation line that breaks bitbake parsing.
     base_src_uri_re = re.compile(r'^\s*SRC_URI\s*(?:\+|\.|\?)?=')
 
-    src_uri_start = None
-    for i, line in enumerate(lines):
-        if base_src_uri_re.match(line):
-            src_uri_start = i
-            break
+    # An unscoped override — SRC_URI:append or SRC_URI:prepend with no
+    # further class/machine suffix. Safe to insert into since it applies
+    # globally.
+    unscoped_override_re = re.compile(
+        r'^\s*SRC_URI:(append|prepend)\s*(?:\+|\.|\?)?='
+    )
+
+    src_uri_start = _find_base_src_uri_line(lines, base_src_uri_re)
+
     if src_uri_start is None:
-        # No plain SRC_URI assignment — fall back to the first override form
-        # (e.g. a bbappend whose only SRC_URI line is ``SRC_URI:append``).
+        # No plain SRC_URI in the .bb — check sibling .inc files
+        inc_file = _find_inc_with_base_src_uri(recipe_file, base_src_uri_re)
+        if inc_file:
+            target_file = inc_file
+            # Also check .inc doesn't already have these patches
+            inc_existing = _get_src_uri_files(inc_file)
+            patch_names = [name for name in patch_names if name not in inc_existing]
+            if not patch_names:
+                return
+            lines = inc_file.read_text(encoding='utf-8').splitlines()
+            src_uri_start = _find_base_src_uri_line(lines, base_src_uri_re)
+
+    if src_uri_start is None:
+        # Still no plain SRC_URI — try unscoped override (SRC_URI:append = ...)
         for i, line in enumerate(lines):
-            if src_uri_re.match(line):
+            if unscoped_override_re.match(line):
                 src_uri_start = i
                 break
+
+    if src_uri_start is None:
+        # Only scoped overrides remain — do NOT insert into them.
+        # Append a new SRC_URI:append line to the original recipe file.
+        _append_new_src_uri_append(recipe_file, patch_names)
+        return
+
     if src_uri_start is not None:
         # Scan forward from SRC_URI to find the closing line
         for i in range(src_uri_start, len(lines)):
@@ -191,14 +215,56 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
             new_lines = [f'{indent}file://{name} \\' for name in patch_names]
             lines[insert_at:insert_at] = new_lines
     else:
-        lines.append('')
-        if len(patch_names) == 1:
-            lines.append(f'SRC_URI += "file://{patch_names[0]}"')
-        else:
-            lines.append('SRC_URI += " \\')
-            for name in patch_names:
-                lines.append(f'            file://{name} \\')
-            lines.append('            "')
+        # No closing quote found — append as a new block
+        _append_new_src_uri_append(target_file, patch_names)
+        return
+    target_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+def _find_base_src_uri_line(lines: list[str], base_src_uri_re: re.Pattern) -> Optional[int]:
+    """Find the first line matching a plain SRC_URI assignment."""
+    for i, line in enumerate(lines):
+        if base_src_uri_re.match(line):
+            return i
+    return None
+
+
+def _find_inc_with_base_src_uri(recipe_file: Path,
+                                base_src_uri_re: re.Pattern) -> Optional[Path]:
+    """Find a sibling .inc file that contains the main SRC_URI block.
+
+    Searches the same directory as recipe_file for .inc files and returns
+    the first one that has a plain SRC_URI assignment.
+    """
+    recipe_dir = recipe_file.parent
+    recipe_stem = recipe_file.stem.split('_')[0]  # e.g. 'binutils' from 'binutils_2.46'
+    # Prefer .inc files whose name matches the recipe base name
+    inc_files = sorted(
+        recipe_dir.glob('*.inc'),
+        key=lambda p: (0 if p.stem.startswith(recipe_stem) else 1, p.name),
+    )
+    for inc in inc_files:
+        try:
+            content = inc.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in content.splitlines():
+            if base_src_uri_re.match(line):
+                return inc
+    return None
+
+
+def _append_new_src_uri_append(recipe_file: Path, patch_names: list[str]) -> None:
+    """Append a new SRC_URI:append line with the given patches to the file."""
+    lines = recipe_file.read_text(encoding='utf-8').splitlines()
+    lines.append('')
+    if len(patch_names) == 1:
+        lines.append(f'SRC_URI:append = " file://{patch_names[0]}"')
+    else:
+        lines.append('SRC_URI:append = " \\')
+        for name in patch_names:
+            lines.append(f'           file://{name} \\')
+        lines.append('           "')
     recipe_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
