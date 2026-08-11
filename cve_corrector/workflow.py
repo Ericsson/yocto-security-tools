@@ -49,7 +49,12 @@ from .state import (
     save_progress,
     save_workflow_state,
 )
-from .ui import print_conflict_instructions, print_edit_instructions, print_manual_instructions
+from .ui import (
+    print_build_failure_instructions,
+    print_conflict_instructions,
+    print_edit_instructions,
+    print_manual_instructions,
+)
 from .utils import logger, run_cmd, run_cmd_capture
 from .workspace import prepare_cve_branch, setup_devtool_workspace, setup_upstream_remote
 
@@ -238,6 +243,7 @@ def _run_build_step(state: WorkflowState) -> None:
     run_cmd(['bitbake', '-c', 'clean', state.recipe])
     if run_cmd(['devtool', 'build', state.recipe]) != 0:
         save_progress(state, 'build_after_patch')
+        print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Build failed for {state.recipe}")
 
 
@@ -264,6 +270,7 @@ def _run_ptest_step(state: WorkflowState) -> Optional[str]:
         ptest_after = run_ptest(state.recipe)
     except BuildPreexistingError:
         save_progress(state, 'build_after_patch')
+        print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Test image build failed for {state.recipe}") from None
     if ptest_after:
         logger.info("✓ Ptest completed: %s", ptest_after)

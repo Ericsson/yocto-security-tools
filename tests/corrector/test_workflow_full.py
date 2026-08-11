@@ -28,7 +28,11 @@ from cve_corrector.state import (
     PtestError,
     WorkflowState,
 )
-from cve_corrector.ui import print_conflict_instructions, print_edit_instructions
+from cve_corrector.ui import (
+    print_build_failure_instructions,
+    print_conflict_instructions,
+    print_edit_instructions,
+)
 from cve_corrector.workflow import (
     _handle_failed_series,
     _handle_no_clean_apply,
@@ -100,6 +104,18 @@ class TestPrintEditInstructions:
         out = capsys.readouterr().out
         assert "EDIT MODE" in out
         assert "abc123de" in out
+
+
+class TestPrintBuildFailureInstructions:
+    def test_basic(self, capsys, tmp_path):
+        print_build_failure_instructions(tmp_path, "libxml2")
+        out = capsys.readouterr().out
+        assert "BUILD FAILED" in out
+        assert "libxml2" in out
+        assert str(tmp_path) in out
+        assert "devtool build libxml2" in out
+        assert "git commit --amend" in out
+        assert "cve-corrector --continue" in out
 
 
 class TestComparePtestResults:
