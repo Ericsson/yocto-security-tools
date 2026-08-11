@@ -11,7 +11,7 @@ from typing import Optional
 
 from .bitbake_ops import get_build_path, get_layerseries_corename
 from .git_ops import get_git_user_info
-from .recipe_ops import _append_src_uri_entries
+from .recipe_ops import _append_src_uri_entries, _find_recipe_file
 from .utils import logger, run_cmd, run_cmd_capture
 
 
@@ -227,18 +227,12 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
             if (f.endswith('.bb') or f.endswith('.inc')) and f'/{recipe}' in f:
                 run_cmd(['git', 'checkout', 'HEAD', '--', f], cwd=meta_layer)
 
-        target = None
-        for pattern in (f'**/{recipe}*.inc', f'**/{recipe}*.bb',
-                        f'**/{recipe}*.bbappend'):
-            for candidate in sorted(meta_layer.glob(pattern)):
-                try:
-                    if 'file://' in candidate.read_text(encoding='utf-8'):
-                        target = candidate
-                        break
-                except (OSError, UnicodeDecodeError):
-                    continue
-            if target:
-                break
+        # Resolve the recipe's actual .bb/.bbappend/.inc file by name, not by
+        # scanning for an existing 'file://' entry — a recipe's *first* CVE
+        # patch has no prior file:// entries, so that check would find no
+        # target and silently drop the new SRC_URI line (and the whole
+        # recipe file, since it would then have no diff to stage).
+        target = _find_recipe_file(meta_layer, recipe)
         if target:
             _append_src_uri_entries(target, sorted(new_patches))
             logger.info("Added %s new SRC_URI entry/entries to %s",
@@ -249,9 +243,20 @@ def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
         ['git', 'diff', '--relative', '--name-only'],
         cwd=meta_layer).stdout.strip().splitlines()
 
+    # Determine the recipe's own directory so its .bb/.bbappend/.inc file is
+    # staged even when that directory is not named after the recipe (e.g.
+    # 'acl' lives under recipes-support/attr/). Falls back to the old
+    # substring match if the recipe file can't be located (e.g. in tests
+    # that don't create one on disk).
     recipe_prefix = 'recipes-'
-    to_stage = [f for f in changed + untracked
-                if recipe_prefix in f and f'/{recipe}/' in f]
+    recipe_file = _find_recipe_file(meta_layer, recipe)
+    if recipe_file:
+        recipe_dir = str(recipe_file.parent.relative_to(meta_layer)) + '/'
+        to_stage = [f for f in changed + untracked
+                    if recipe_prefix in f and (f.startswith(recipe_dir) or f'/{recipe}/' in f)]
+    else:
+        to_stage = [f for f in changed + untracked
+                    if recipe_prefix in f and f'/{recipe}/' in f]
     if to_stage:
         run_cmd(['git', 'add', '--'] + to_stage, cwd=meta_layer)
     else:
@@ -313,8 +318,6 @@ def write_cve_status(meta_layer: Optional[Path], recipe: str, cve_id: str,
     Returns:
         True if the CVE_STATUS was written and committed, False otherwise.
     """
-    from .recipe_ops import _find_recipe_file
-
     if not meta_layer or not meta_layer.exists():
         logger.warning("Meta-layer path invalid: %s", meta_layer)
         return False
