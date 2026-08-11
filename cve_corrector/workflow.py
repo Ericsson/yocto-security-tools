@@ -125,6 +125,41 @@ def filter_by_skip_sources(cve_info: dict, skip_sources: list[str]) -> dict:
     return new_info
 
 
+def _existing_wildcard_bbappends(meta_layer: Optional[Path], recipe: str) -> set[Path]:
+    """Return the ``{recipe}_%.bbappend`` files already present in the layer.
+
+    Snapshot this before invoking ``devtool update-recipe -w`` so newly
+    created wildcard bbappends can be distinguished from ones that already
+    existed (e.g. from a previous CVE fix on this recipe).
+    """
+    if not meta_layer:
+        return set()
+    return set(meta_layer.rglob(f'{recipe}_%.bbappend'))
+
+
+def _rename_new_wildcard_bbappends(meta_layer: Optional[Path], recipe: str,
+                                   version: Optional[str],
+                                   pre_existing: set[Path]) -> None:
+    """Rename wildcard bbappends created by this run to a versioned name.
+
+    ``devtool update-recipe -a <layer> -w <recipe>`` always targets a
+    ``{recipe}_%.bbappend`` path. If one already existed before this call
+    (``pre_existing``), devtool merges the new content into it in place —
+    that file must be left as a wildcard bbappend, since it may carry
+    content (e.g. an earlier CVE fix) meant to apply to every recipe
+    version. Only a bbappend that did *not* exist beforehand — i.e. one
+    devtool just created — is renamed to a version-pinned name.
+    """
+    if not version or not meta_layer:
+        return
+    for wc in meta_layer.rglob(f'{recipe}_%.bbappend'):
+        if wc in pre_existing:
+            continue
+        versioned = wc.with_name(f'{recipe}_{version}.bbappend')
+        wc.rename(versioned)
+        logger.info("Renamed %s -> %s", wc.name, versioned.name)
+
+
 def _kill_bitbake_server() -> None:
     """Kill any running bitbake server and all child processes."""
     import os
@@ -309,17 +344,19 @@ def finish_cve_workflow(state: WorkflowState) -> None:
         pre_finish_entries = snapshot_src_uri(state.meta_layer, state.recipe)
         if state.bbappend:
             logger.info("Creating bbappend for %s in %s", state.recipe, state.meta_layer)
+            # Snapshot pre-existing wildcard bbappends so we never rename one
+            # that already existed (e.g. from a previous CVE fix) — devtool
+            # merges new content into it in place when -w/--wildcard-version
+            # finds a matching file already on disk, and renaming it here
+            # would hijack a file meant to apply to every recipe version.
+            pre_existing_wildcards = _existing_wildcard_bbappends(
+                state.meta_layer, state.recipe)
             if run_cmd(['devtool', 'update-recipe', '-a', str(state.meta_layer),
                         '-w', state.recipe]) != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
-            # Rename wildcard bbappend (recipe_%.bbappend) to versioned name
-            if state.version and state.meta_layer:
-                for wc in state.meta_layer.rglob(f'{state.recipe}_%.bbappend'):
-                    versioned = wc.with_name(
-                        f'{state.recipe}_{state.version}.bbappend')
-                    wc.rename(versioned)
-                    logger.info("Renamed %s -> %s", wc.name, versioned.name)
+            _rename_new_wildcard_bbappends(
+                state.meta_layer, state.recipe, state.version, pre_existing_wildcards)
             if run_cmd(['devtool', 'reset', state.recipe]) != 0:
                 logger.warning("devtool reset failed, continuing anyway")
         else:
