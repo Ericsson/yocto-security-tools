@@ -294,8 +294,9 @@ def deduce_repo_url(url: str) -> Optional[str]:
     parsed = urlparse(url)
     host = parsed.hostname or ''
 
-    # Gitweb ?p=<repo>;a=commit style
-    if '?p=' in url and ';a=' in url:
+    # Gitweb ?p=<repo> style (e.g. ?p=binutils-gdb.git;a=commit;h=... or
+    # ?p=binutils-gdb.git;h=...)
+    if '?p=' in url:
         repo_name = url.split('?p=')[1].split(';', maxsplit=1)[0]
         if host == 'sourceware.org' or host.endswith('.sourceware.org'):
             return f'https://sourceware.org/git/{repo_name}'
