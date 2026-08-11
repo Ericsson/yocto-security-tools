@@ -83,7 +83,8 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
                           mirror_dir: Optional[Path], recipe: str,
                           hash_details: list[dict],
                           series: Optional[list[dict]] = None,
-                          references: Optional[list[dict]] = None) -> Optional[str]:
+                          references: Optional[list[dict]] = None,
+                          premirror: Optional[str] = None) -> Optional[str]:
     """Configure upstream git remote and fetch references.
 
     Priority for upstream URL:
@@ -167,17 +168,39 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
     logger.info("Adding upstream remote: %s", upstream_url)
     assert upstream_url is not None
     result = run_cmd_capture(['git', 'remote'], cwd=workspace_path)
+
+    # Determine the fetch URL — try premirror first when configured and
+    # the upstream URL is a remote (not a local mirror path).
+    fetch_url = upstream_url
+    using_premirror = False
+    if premirror and not mirror_path:
+        from .bitbake_ops import rewrite_url_for_premirror
+        premirror_url = rewrite_url_for_premirror(upstream_url, premirror)
+        logger.info("Trying premirror: %s", premirror_url)
+        fetch_url = premirror_url
+        using_premirror = True
+
     if 'upstream' not in result.stdout:
-        run_cmd(['git', 'remote', 'add', 'upstream', upstream_url], cwd=workspace_path)
+        run_cmd(['git', 'remote', 'add', 'upstream', fetch_url], cwd=workspace_path)
     else:
         logger.debug("Upstream remote already exists, skipping...")
 
     logger.info("Fetching upstream references")
-    if not _fetch_remote(workspace_path, 'upstream', upstream_url):
-        logger.error("Failed to fetch upstream from %s — version checkout and "
-                     "blame analysis will be unavailable", upstream_url)
-        run_cmd(['git', 'remote', 'remove', 'upstream'], cwd=workspace_path)
-        return None
+    if not _fetch_remote(workspace_path, 'upstream', fetch_url):
+        if using_premirror:
+            logger.warning("Premirror fetch failed, falling back to %s", upstream_url)
+            run_cmd(['git', 'remote', 'set-url', 'upstream', upstream_url],
+                    cwd=workspace_path)
+            if not _fetch_remote(workspace_path, 'upstream', upstream_url):
+                logger.error("Failed to fetch upstream from %s — version checkout "
+                             "and blame analysis will be unavailable", upstream_url)
+                run_cmd(['git', 'remote', 'remove', 'upstream'], cwd=workspace_path)
+                return None
+        else:
+            logger.error("Failed to fetch upstream from %s — version checkout and "
+                         "blame analysis will be unavailable", upstream_url)
+            run_cmd(['git', 'remote', 'remove', 'upstream'], cwd=workspace_path)
+            return None
 
     # When the fix commits live in a different repo than the recipe fetches,
     # add that repo as a secondary remote and fetch it so the fix commits and

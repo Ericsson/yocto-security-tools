@@ -534,6 +534,7 @@ class WorkflowConfig:
     skip_confirm: bool = False
     require_all_commits: bool = False
     sign_off: bool = False
+    premirror: Optional[str] = None
 
 
 def _handle_failed_series(workspace_path, best_series, make_state, recipe):
@@ -649,7 +650,8 @@ def initialize_cve_workflow(
     mirror_name = setup_upstream_remote(
         workspace_path, config.mirror_path, config.mirror_dir,
         recipe, hash_details, series,
-        references=cve_info.get('references', []))
+        references=cve_info.get('references', []),
+        premirror=config.premirror)
 
     # Detect monorepo layout (e.g. GStreamer monorepo with subprojects/)
     subproject = None
