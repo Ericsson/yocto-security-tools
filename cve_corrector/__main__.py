@@ -141,6 +141,12 @@ def main():
     env_group = parser.add_argument_group('environment')
     env_group.add_argument('--mirror-dir', type=Path,
                         help='Directory containing bare repository mirrors')
+    env_group.add_argument('--premirror', type=str,
+                        help='Base URL for premirror. The upstream git URL is '
+                             'rewritten by stripping protocol and .git suffix, '
+                             'joining components with dots, and appending to this '
+                             'base (e.g. https://host/path → <base>/host.path.repo)')
+
     env_group.add_argument('--yes', '-y', action='store_true',
                         help='Skip confirmation prompts')
     env_group.add_argument('--sign-off', action='store_true', default=None,
@@ -336,7 +342,8 @@ def main():
                 skip_cve_applicability=args.skip_cve_applicability,
                 skip_confirm=args.yes,
                 require_all_commits=require_all_commits,
-                sign_off=bool(args.sign_off)))
+                sign_off=bool(args.sign_off),
+                premirror=args.premirror))
         state.skip_confirm = args.yes
 
         finish_cve_workflow(state)

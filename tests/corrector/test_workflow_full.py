@@ -1094,3 +1094,59 @@ class TestProtocolFallback:
         ok = _fetch_remote(tmp_path, "upstream-fix",
                            "https://sourceware.org/git/bzip2")
         assert ok is False
+
+
+class TestPremirrorFallback:
+    """Tests for premirror fallback in setup_upstream_remote."""
+
+    @patch("cve_corrector.workspace.run_cmd")
+    @patch("cve_corrector.workspace.run_cmd_capture")
+    @patch("cve_corrector.workspace.get_recipe_src_uri_git",
+           return_value="https://github.com/libexpat/libexpat")
+    @patch("cve_corrector.workspace.get_upstream_check_uri", return_value=None)
+    def test_premirror_fallback_on_fetch_failure(
+        self, mock_check_uri, mock_src_uri, mock_capture, mock_cmd, tmp_path
+    ):
+        """When premirror fetch fails, falls back to original upstream URL."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+
+        # Mock responses for run_cmd_capture:
+        # 1. git remote -> no upstream
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="origin\n", stderr=""
+        )
+
+        # run_cmd calls: premirror fetches fail, original URL fetch succeeds
+        fetch_attempt = [0]
+
+        def run_cmd_effect(cmd, **kwargs):
+            cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+            if 'fetch' in cmd_str:
+                fetch_attempt[0] += 1
+                # First two fetch attempts fail (premirror + alt protocol)
+                # Third fetch attempt succeeds (original URL)
+                if fetch_attempt[0] <= 2:
+                    return 128
+                return 0
+            return 0
+
+        mock_cmd.side_effect = run_cmd_effect
+
+        result = setup_upstream_remote(
+            ws, None, None, "libexpat", [],
+            premirror="https://git.example.com/mirror"
+        )
+
+        # Should succeed via fallback
+        assert result is not None
+
+        # Verify premirror URL was tried first (git remote add with premirror URL)
+        add_calls = [c for c in mock_cmd.call_args_list
+                     if 'remote' in str(c) and 'add' in str(c)]
+        assert any('git.example.com' in str(c) for c in add_calls)
+
+        # Verify fallback to original URL (git remote set-url)
+        set_url_calls = [c for c in mock_cmd.call_args_list
+                         if 'set-url' in str(c)]
+        assert any('github.com/libexpat/libexpat' in str(c) for c in set_url_calls)

@@ -663,3 +663,35 @@ class TestCheckCveStatusCpeScope:
         raw = "ignored: cpe:*:zstandard:names the real CPE product"
         mock_run.side_effect = self._mock_getvar(raw, "zstandard")
         assert check_cve_status("zstd", "CVE-2025-0001") == ("Ignored", raw)
+
+
+class TestRewriteUrlForPremirror:
+    """Tests for rewrite_url_for_premirror URL transformation."""
+
+    def test_sourceware_url(self):
+        from cve_corrector.bitbake_ops import rewrite_url_for_premirror
+        result = rewrite_url_for_premirror(
+            'https://sourceware.org/git/binutils-gdb',
+            'https://git.example.com/mirror')
+        assert result == 'https://git.example.com/mirror/sourceware.org.git.binutils-gdb'
+
+    def test_github_url(self):
+        from cve_corrector.bitbake_ops import rewrite_url_for_premirror
+        result = rewrite_url_for_premirror(
+            'https://github.com/libexpat/libexpat',
+            'https://git.example.com/mirror')
+        assert result == 'https://git.example.com/mirror/github.com.libexpat.libexpat'
+
+    def test_git_protocol_with_dot_git_suffix(self):
+        from cve_corrector.bitbake_ops import rewrite_url_for_premirror
+        result = rewrite_url_for_premirror(
+            'git://git.savannah.gnu.org/grub.git',
+            'https://git.example.com/mirror')
+        assert result == 'https://git.example.com/mirror/git.savannah.gnu.org.grub'
+
+    def test_trailing_slash_on_base_url(self):
+        from cve_corrector.bitbake_ops import rewrite_url_for_premirror
+        result = rewrite_url_for_premirror(
+            'https://github.com/libexpat/libexpat',
+            'https://git.example.com/mirror/')
+        assert result == 'https://git.example.com/mirror/github.com.libexpat.libexpat'

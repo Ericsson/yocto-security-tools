@@ -6,6 +6,7 @@ from .bitbake_ops import (
     deduce_meta_layer_from_recipe,
     find_mirror_repo,
     resolve_meta_layer,
+    rewrite_url_for_premirror,
 )
 from .state import (
                     EXIT_ALREADY_APPLIED,
@@ -45,4 +46,5 @@ __all__ = [
     'continue_from_conflict', 'WorkflowConfig', 'find_mirror_repo',
     'deduce_meta_layer_from_recipe', 'resolve_meta_layer',
     'filter_by_skip_sources', 'check_cve_status',
+    'rewrite_url_for_premirror',
 ]

@@ -99,6 +99,51 @@ def cleanup_workspace(bbpath: str, full: bool = False) -> None:
             print(f"Warning: Failed to update bblayers.conf: {e}", file=sys.stderr)
 
 
+def rewrite_url_for_premirror(upstream_url: str, premirror_base: str) -> str:
+    """Rewrite an upstream git URL into a premirror URL.
+
+    Strips the protocol scheme and ``.git`` suffix, joins host and path
+    components with dots, and appends the result to *premirror_base*.
+
+    Examples:
+        >>> rewrite_url_for_premirror(
+        ...     'https://sourceware.org/git/binutils-gdb',
+        ...     'https://git.example.com/mirror')
+        'https://git.example.com/mirror/sourceware.org.git.binutils-gdb'
+        >>> rewrite_url_for_premirror(
+        ...     'git://git.savannah.gnu.org/grub.git',
+        ...     'https://git.example.com/mirror/')
+        'https://git.example.com/mirror/git.savannah.gnu.org.grub'
+
+    Args:
+        upstream_url: Original upstream git URL (https, git, or http).
+        premirror_base: Base URL to prepend (trailing slash is handled).
+
+    Returns:
+        The rewritten premirror URL.
+    """
+    # Strip protocol scheme
+    url = upstream_url
+    for prefix in ('https://', 'http://', 'git://'):
+        if url.startswith(prefix):
+            url = url[len(prefix):]
+            break
+
+    # Strip trailing .git suffix
+    url = url.removesuffix('.git')
+
+    # Strip trailing slash
+    url = url.rstrip('/')
+
+    # Join host + path with dots: split on '/' and rejoin with '.'
+    parts = url.split('/')
+    mirror_name = '.'.join(parts)
+
+    # Ensure base has no trailing slash, then join
+    base = premirror_base.rstrip('/')
+    return f"{base}/{mirror_name}"
+
+
 _MIRROR_ALIASES = {
     'glib-2.0': 'glib',
     'go-runtime': 'go',
