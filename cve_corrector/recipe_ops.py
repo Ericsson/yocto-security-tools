@@ -123,10 +123,27 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
         r'(?::\w[\w-]*)*'  # optional override suffixes like :append:class-target
         r'\s*(?:\+|\.|\?)?='  # assignment operators: =, +=, .=, ?=
     )
+    # A plain SRC_URI assignment, with no override suffix at all. This is
+    # the block new file:// entries should be spliced into. Override-suffixed
+    # forms (e.g. SRC_URI:append:class-target = "...") are usually a distinct,
+    # narrowly-scoped line (e.g. machine/class specific) and must not be
+    # confused with the recipe's main patch list, or new entries would get
+    # spliced in front of an unrelated line's closing quote, producing a
+    # bare, malformed continuation line that breaks bitbake parsing.
+    base_src_uri_re = re.compile(r'^\s*SRC_URI\s*(?:\+|\.|\?)?=')
+
     src_uri_start = None
     for i, line in enumerate(lines):
-        if src_uri_re.match(line):
+        if base_src_uri_re.match(line):
             src_uri_start = i
+            break
+    if src_uri_start is None:
+        # No plain SRC_URI assignment — fall back to the first override form
+        # (e.g. a bbappend whose only SRC_URI line is ``SRC_URI:append``).
+        for i, line in enumerate(lines):
+            if src_uri_re.match(line):
+                src_uri_start = i
+                break
     if src_uri_start is not None:
         # Scan forward from SRC_URI to find the closing line
         for i in range(src_uri_start, len(lines)):
@@ -138,13 +155,31 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
                     insert_at = i
                 break
     if insert_at is not None:
-        indent = ''
-        for j in range(insert_at - 1, -1, -1):
-            if 'file://' in lines[j]:
-                indent = lines[j][:lines[j].index('file://')]
-                break
-        new_lines = [f'{indent}file://{name} \\' for name in patch_names]
-        lines[insert_at:insert_at] = new_lines
+        if insert_at == src_uri_start:
+            # Single-line assignment (e.g. SRC_URI = "file://a.patch") with
+            # no line continuation — splice the new entries inside its
+            # closing quote instead of inserting a bare line before it,
+            # which would leave the opening line's quote unterminated.
+            line = lines[insert_at]
+            quote_open = line.index('"')
+            quote_close = line.rfind('"')
+            var_part = line[:quote_open + 1]  # e.g. 'SRC_URI = "'
+            existing_content = line[quote_open + 1:quote_close].strip()
+            new_block = [f'{var_part} \\']
+            if existing_content:
+                new_block.append(f'           {existing_content} \\')
+            for name in patch_names:
+                new_block.append(f'           file://{name} \\')
+            new_block.append('           "')
+            lines[insert_at:insert_at + 1] = new_block
+        else:
+            indent = ''
+            for j in range(insert_at - 1, -1, -1):
+                if 'file://' in lines[j]:
+                    indent = lines[j][:lines[j].index('file://')]
+                    break
+            new_lines = [f'{indent}file://{name} \\' for name in patch_names]
+            lines[insert_at:insert_at] = new_lines
     else:
         lines.append('')
         if len(patch_names) == 1:

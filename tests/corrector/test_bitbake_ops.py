@@ -143,6 +143,98 @@ def test_append_src_uri_entries_override_style(tmp_path):
     assert content.index("CVE-2026-1234.patch") < content.rindex('"')
 
 
+def _assert_valid_bitbake_assignments(content):
+    """Minimal sanity check: every non-continuation, non-comment/blank line
+    that isn't inside a multi-line block must itself look like a complete
+    bitbake statement (an assignment, an override, or a plain keyword line),
+    never a bare orphaned ``file://...`` continuation fragment.
+    """
+    lines = content.splitlines()
+    in_continuation = False
+    for line in lines:
+        stripped = line.strip()
+        if in_continuation:
+            in_continuation = stripped.endswith('\\')
+            continue
+        if not stripped or stripped.startswith('#'):
+            continue
+        assert not stripped.startswith('file://'), (
+            f"Bare orphaned continuation line found (malformed bitbake): {line!r}")
+        in_continuation = stripped.endswith('\\')
+
+
+def test_append_src_uri_entries_ignores_trailing_override_line(tmp_path):
+    """A trailing single-line SRC_URI:append:* override must not be picked
+    as the merge target over the recipe's real, base SRC_URI block —
+    otherwise the new file:// entry gets spliced in as a bare line before
+    the override's closing quote, breaking bitbake parsing (regression test
+    for the reported malformed-SRC_URI-merge bug).
+    """
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "foo"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "foo_1.2.3.bb"
+    recipe.write_text(
+        'SUMMARY = "test"\n'
+        'SRC_URI = "http://example.com/foo.tar.gz \\\n'
+        '           file://existing.patch \\\n'
+        '           "\n'
+        '\n'
+        'SRC_URI:append:class-target = "file://target-only.patch"\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-99999.patch"])
+    content = recipe.read_text()
+    _assert_valid_bitbake_assignments(content)
+    # The new entry must land inside the base SRC_URI block, before its
+    # closing quote and before the unrelated override line.
+    lines = content.splitlines()
+    new_idx = next(i for i, l in enumerate(lines) if 'CVE-2026-99999.patch' in l)
+    override_idx = next(i for i, l in enumerate(lines) if l.startswith('SRC_URI:append'))
+    closing_quote_idx = next(i for i, l in enumerate(lines) if l.strip() == '"')
+    assert new_idx < closing_quote_idx < override_idx
+    # The unrelated override line must be untouched.
+    assert 'file://target-only.patch' in lines[override_idx]
+
+
+def test_append_src_uri_entries_single_line_assignment(tmp_path):
+    """A single-line (non-continued) SRC_URI assignment must be converted
+    into a valid multi-line block, not have a bare line spliced before it.
+    """
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "baz"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "baz_1.0.bb"
+    recipe.write_text('SRC_URI = "file://existing.patch"\n')
+    _append_src_uri_entries(recipe, ["CVE-2026-22222.patch"])
+    content = recipe.read_text()
+    _assert_valid_bitbake_assignments(content)
+    assert "file://existing.patch" in content
+    assert "file://CVE-2026-22222.patch" in content
+    # Original content must not be duplicated.
+    assert content.count("file://existing.patch") == 1
+
+
+def test_append_src_uri_entries_single_line_override_only(tmp_path):
+    """A single-line SRC_URI:append override (the only SRC_URI line present)
+    is used as the merge target and correctly converted to a multi-line
+    block.
+    """
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "bar"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "bar_1.0.bbappend"
+    recipe.write_text(
+        'FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"\n'
+        'SRC_URI:append = " file://old.patch"\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-11111.patch"])
+    content = recipe.read_text()
+    _assert_valid_bitbake_assignments(content)
+    assert content.count("file://old.patch") == 1
+    assert "file://CVE-2026-11111.patch" in content
+
+
+
 def test_find_recipe_file_exact_match(tmp_path):
     """_find_recipe_file does not match busybox-utils when looking for busybox."""
     from cve_corrector.recipe_ops import _find_recipe_file
