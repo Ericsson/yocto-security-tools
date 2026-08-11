@@ -174,7 +174,8 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
 
     logger.info("Fetching upstream references")
     if not _fetch_remote(workspace_path, 'upstream', upstream_url):
-        logger.warning("Failed to fetch upstream — continuing without upstream history")
+        logger.error("Failed to fetch upstream from %s — version checkout and "
+                     "blame analysis will be unavailable", upstream_url)
         run_cmd(['git', 'remote', 'remove', 'upstream'], cwd=workspace_path)
         return None
 
@@ -252,8 +253,11 @@ def _fetch_remote(workspace_path: Path, remote_name: str, url: str) -> bool:
         return False
     logger.warning("Fetch of %s failed — retrying via %s", url, alt)
     run_cmd(['git', 'remote', 'set-url', remote_name, alt], cwd=workspace_path)
-    return run_cmd(['git', 'fetch', remote_name, '--tags', '--progress'],
-                   cwd=workspace_path) == 0
+    if run_cmd(['git', 'fetch', remote_name, '--tags', '--progress'],
+               cwd=workspace_path) == 0:
+        return True
+    logger.error("Fetch of %s also failed (tried both %s and %s)", remote_name, url, alt)
+    return False
 
 
 def _init_submodules(workspace_path: Path) -> None:
