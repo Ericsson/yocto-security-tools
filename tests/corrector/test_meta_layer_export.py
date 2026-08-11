@@ -137,3 +137,43 @@ class TestWriteCveStatusSignoff:
             write_cve_status(meta, "busybox", "CVE-1", "not applicable",
                              skip_confirm=True, sign_off=True)
         assert captured and "Signed-off-by: A <a@b.c>" in captured[0]
+
+
+# --- _map_cve_status_reason ---
+
+class TestMapCveStatusReason:
+    def setup_method(self):
+        from cve_corrector.meta_layer import _map_cve_status_reason
+        self.map = _map_cve_status_reason
+
+    def test_version_based_reason_maps_to_fixed_version(self):
+        reason = ("Vulnerable code introduced in 2.15, "
+                  "recipe version is 2.42 — not affected")
+        assert self.map(reason) == 'fixed-version'
+
+    def test_introduced_in_keyword(self):
+        assert self.map("introduced in 3.0, too new") == 'fixed-version'
+
+    def test_recipe_version_keyword(self):
+        assert self.map("recipe version predates vuln") == 'fixed-version'
+
+    def test_not_affected_keyword(self):
+        assert self.map("not affected by this issue") == 'fixed-version'
+
+    def test_already_patched(self):
+        assert self.map("already patched in this version") == 'fixed-version'
+
+    def test_backport(self):
+        assert self.map("backport applied") == 'fixed-version'
+
+    def test_platform(self):
+        assert self.map("only affects ARM platform") == 'not-applicable-platform'
+
+    def test_config_disabled(self):
+        assert self.map("feature disabled in config") == 'not-applicable-config'
+
+    def test_cpe_incorrect(self):
+        assert self.map("CPE mismatch, wrong component") == 'cpe-incorrect'
+
+    def test_default_fallback(self):
+        assert self.map("generic reason with no keywords") == 'not-applicable-config'
