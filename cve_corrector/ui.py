@@ -56,6 +56,24 @@ def print_edit_instructions(workspace_path: Path, recipe: str, commit_hash: str)
     print("=" * 60 + "\n")
 
 
+def print_build_failure_instructions(workspace_path: Path, recipe: str) -> None:
+    """Print instructions for resolving build failures after patch application."""
+    print("=" * 60)
+    print("BUILD FAILED - Manual fix required")
+    print("=" * 60)
+    print(f"\nSource directory: {workspace_path}")
+    print(f"\nThe patch applied cleanly but the build failed for {recipe}.")
+    print("\nDebug and fix the build using:")
+    print(f"  cd {workspace_path}")
+    print(f"  devtool build {recipe}        # Reproduce the failure")
+    print("  # Fix the source code")
+    print("  git add <file>                # Stage your changes")
+    print("  git commit --amend            # Amend the patch commit")
+    print("\nAfter fixing the build, resume with:")
+    print("  cve-corrector --continue")
+    print("=" * 60 + "\n")
+
+
 def print_manual_instructions(workspace_path: Path, recipe: str,
                               hashes: list, series: list) -> None:
     """Print instructions for manual patching mode.
