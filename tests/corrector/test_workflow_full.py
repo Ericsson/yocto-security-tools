@@ -625,6 +625,62 @@ class TestCreateLayerCommit:
         assert "Signed-off-by: A <a@b.c>" in logged
 
 
+class TestCreateLayerCommitStagesRecipeFile:
+    """Regression test: the recipe's .bb file must be staged even when its
+    directory is not named after the recipe (e.g. 'acl' lives under
+    recipes-support/attr/, not recipes-support/acl/).
+    """
+
+    @staticmethod
+    def _git(args, cwd):
+        import subprocess
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True)
+
+    @patch("cve_corrector.meta_layer.get_layerseries_corename", return_value=None)
+    @patch("cve_corrector.meta_layer.get_build_path")
+    @patch("cve_corrector.git_ops.get_git_user_info", return_value=("A", "a@b.c"))
+    def test_bb_file_staged_when_dir_differs_from_recipe(self, mock_info, mock_bp,
+                                                          mock_corename, tmp_path):
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        self._git(["init"], cwd=meta)
+        self._git(["config", "user.email", "a@b.c"], cwd=meta)
+        self._git(["config", "user.name", "A"], cwd=meta)
+
+        recipe_dir = meta / "meta" / "recipes-support" / "attr"
+        recipe_dir.mkdir(parents=True)
+        bb_file = recipe_dir / "acl_2.3.2.bb"
+        bb_file.write_text('SRC_URI = "http://example.com/acl.tar.gz"\n')
+        self._git(["add", "-A"], cwd=meta)
+        self._git(["commit", "-m", "initial"], cwd=meta)
+
+        # Simulate devtool finish: append a new patch reference to the .bb
+        # file and drop the new patch under a same-named subdirectory.
+        bb_file.write_text(
+            'SRC_URI = "http://example.com/acl.tar.gz \\\n'
+            '           file://CVE-2026-54369.patch"\n')
+        patch_dir = recipe_dir / "acl"
+        patch_dir.mkdir()
+        (patch_dir / "CVE-2026-54369.patch").write_text(
+            "--- a/f\n+++ b/f\n---\n")
+
+        mock_bp.return_value = tmp_path
+
+        create_layer_commit(meta, "acl", "CVE-2026-54369", skip_confirm=True)
+
+        committed = subprocess_run(
+            ["git", "show", "--stat", "HEAD"], cwd=meta)
+        assert "acl_2.3.2.bb" in committed
+        assert "CVE-2026-54369.patch" in committed
+
+
+def subprocess_run(args, cwd):
+    import subprocess
+    return subprocess.run(args, cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout
+
+
 class TestContinueFromConflict:
     @patch("cve_corrector.workflow.get_state_dir")
     def test_no_state(self, mock_dir, tmp_path):
