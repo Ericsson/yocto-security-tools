@@ -25,6 +25,24 @@ def test_find_exact_tag_empty_list():
     assert find_exact_tag([], "3.7.9") is None
 
 
+def test_find_exact_tag_mixed_separators():
+    """binutils-style: tag uses underscore+dot mix like binutils-2_46.1"""
+    tags = ["binutils-2_46.1", "binutils-2_46", "binutils-2_45"]
+    assert find_exact_tag(tags, "2.46.1") == "binutils-2_46.1"
+
+
+def test_find_exact_tag_all_underscore_binutils():
+    """binutils-style: tag uses all underscores like binutils-2_46_1"""
+    tags = ["binutils-2_46_1", "binutils-2_46", "binutils-2_45"]
+    assert find_exact_tag(tags, "2.46.1") == "binutils-2_46_1"
+
+
+def test_find_exact_tag_does_not_match_branchpoint():
+    """branchpoint tags should not match (they contain extra text)."""
+    tags = ["binutils-2_46-branchpoint", "binutils-2_46"]
+    assert find_exact_tag(tags, "2.46") == "binutils-2_46"
+
+
 # --- deduce_repo_from_patches ---
 
 def test_deduce_repo_github():

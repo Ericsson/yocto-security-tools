@@ -22,15 +22,34 @@ def get_git_user_info() -> tuple[str, str]:
 
 def find_exact_tag(tags: list[str], version: str) -> Optional[str]:
     """Find exact tag matching version."""
-    norm = version.replace('.', '_')
+    norm_underscore = version.replace('.', '_')
+    norm_dot = version.replace('_', '.')
     escaped = re.escape(version)
-    escaped_norm = re.escape(norm)
+    escaped_underscore = re.escape(norm_underscore)
+    escaped_dot = re.escape(norm_dot)
+    # Match version at end of tag, with any prefix (e.g. v, release-, libfoo-)
+    # The prefix is optional and can end with a letter, dash, or underscore.
+    # Try all separator variants: original, all-underscore, all-dot
     pattern = re.compile(
-        rf'{escaped}$|{escaped_norm}$|.*{escaped_norm}$|.*{escaped}$'
+        rf'^(?:.*[-_]|v)?(?:{escaped}|{escaped_underscore}|{escaped_dot})$'
     )
     for tag in tags:
         if pattern.match(tag):
             return tag
+
+    # Retry with separator-normalized comparison: collapse both dots and
+    # underscores to a common form so mixed tags (e.g. binutils-2_46.1)
+    # match version 2.46.1.
+    def normalize_seps(s):
+        return s.replace('_', '.').replace('-', '.')
+
+    v_norm = normalize_seps(version)
+    for tag in tags:
+        # Strip common prefixes before comparing
+        tag_suffix = re.sub(r'^[a-zA-Z][\w]*[-_]', '', tag)
+        if normalize_seps(tag_suffix) == v_norm:
+            return tag
+
     # Retry with leading-zero-stripped comparison (e.g. 2024.2.2 vs 2024.02.02)
     def strip_zeros(s):
         return '.'.join(p.lstrip('0') or '0' for p in s.split('.'))
@@ -93,6 +112,13 @@ def checkout_version(repo_path: Path, version: str, branch_name: str,
     logger.info("Searching %s -> Matched: %s", search_version, target_tag)
 
     if not target_tag:
+        if tags:
+            logger.warning("No tag matched version %s among %d available tags",
+                           search_version, len(tags))
+            logger.debug("Available tags (first 10): %s", ', '.join(tags[:10]))
+        else:
+            logger.warning("No tags available in repository — "
+                           "upstream fetch may have failed")
         return False
 
     if subproject:
