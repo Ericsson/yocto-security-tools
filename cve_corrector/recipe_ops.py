@@ -113,7 +113,17 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
     - SRC_URI .= "..."
     - SRC_URI:append = "..."
     - SRC_URI:append:class-target = "..."
+
+    Entries already present in the file's SRC_URI are skipped, so callers
+    that don't track what they already merged in (e.g. via
+    ``restore_bbappend_extras``) don't end up with a duplicate ``file://``
+    line for the same patch.
     """
+    existing = _get_src_uri_files(recipe_file)
+    patch_names = [name for name in patch_names if name not in existing]
+    if not patch_names:
+        return
+
     lines = recipe_file.read_text(encoding='utf-8').splitlines()
     insert_at = None
 

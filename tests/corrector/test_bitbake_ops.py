@@ -125,6 +125,48 @@ def test_append_src_uri_entries_not_confused_by_sha256sum(tmp_path):
         assert idx < sha256_idx, f"Patch at line {idx} should be before sha256sum at {sha256_idx}"
 
 
+def test_append_src_uri_entries_skips_duplicate(tmp_path):
+    """_append_src_uri_entries does not re-add a patch already in SRC_URI.
+
+    Regression test: create_layer_commit() may call this with a patch name
+    that restore_bbappend_extras() already merged back into the bbappend
+    (e.g. because the .patch file is still untracked in git while the
+    bbappend's SRC_URI already lists it), which previously produced two
+    identical ``file://`` lines for the same CVE patch.
+    """
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "foo" / "foo"
+    recipe_dir.mkdir(parents=True)
+    recipe = tmp_path / "recipes-support" / "foo" / "foo_%.bbappend"
+    recipe.write_text(
+        'FILESEXTRAPATHS:prepend := "${THISDIR}/${PN}:"\n'
+        '\n'
+        'SRC_URI += " \\\n'
+        '           file://CVE-2026-54369.patch \\\n'
+        '           "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-54369.patch"])
+    content = recipe.read_text()
+    assert content.count("file://CVE-2026-54369.patch") == 1
+
+
+def test_append_src_uri_entries_mixed_new_and_duplicate(tmp_path):
+    """_append_src_uri_entries adds only the genuinely new entries."""
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "foo" / "foo"
+    recipe_dir.mkdir(parents=True)
+    recipe = tmp_path / "recipes-support" / "foo" / "foo_%.bbappend"
+    recipe.write_text(
+        'SRC_URI += " \\\n'
+        '           file://CVE-2026-54369.patch \\\n'
+        '           "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-54369.patch", "CVE-2026-99999.patch"])
+    content = recipe.read_text()
+    assert content.count("file://CVE-2026-54369.patch") == 1
+    assert content.count("file://CVE-2026-99999.patch") == 1
+
+
 def test_append_src_uri_entries_override_style(tmp_path):
     """_append_src_uri_entries handles SRC_URI:append override syntax."""
     from cve_corrector.recipe_ops import _append_src_uri_entries
