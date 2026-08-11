@@ -56,6 +56,13 @@ def test_deduce_repo_sourceware():
     assert "sourceware.org/git/binutils-gdb.git" in result
 
 
+def test_deduce_repo_sourceware_gitweb_without_action():
+    """Gitweb URL with ?p= and ;h= but no ;a= must still extract the repo."""
+    url = "https://sourceware.org/git/gitweb.cgi?p=binutils-gdb.git;h=8d97c1a53f3dc9fd8e1ccdb039b8a33d50133150"
+    result = deduce_repo_from_patches([url])
+    assert result == "https://sourceware.org/git/binutils-gdb.git"
+
+
 def test_deduce_repo_rejects_sourceware_lookalike_host():
     url = "https://sourceware.org.evil.com/git/gitweb.cgi?p=binutils-gdb.git;a=commit;h=abc123"
     assert deduce_repo_from_patches([url]) is None
