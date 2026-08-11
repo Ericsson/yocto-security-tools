@@ -276,6 +276,101 @@ def test_append_src_uri_entries_single_line_override_only(tmp_path):
     assert "file://CVE-2026-11111.patch" in content
 
 
+def test_append_src_uri_entries_inc_file_fallback(tmp_path):
+    """When .bb has no plain SRC_URI, insert into the sibling .inc file."""
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-devtools" / "binutils"
+    recipe_dir.mkdir(parents=True)
+    # The .inc file has the main SRC_URI
+    inc = recipe_dir / "binutils.inc"
+    inc.write_text(
+        'SUMMARY = "GNU binary utilities"\n'
+        'SRC_URI = "https://ftp.gnu.org/gnu/binutils/binutils-${PV}.tar.gz \\\n'
+        '           file://0001-fix-something.patch \\\n'
+        '           "\n'
+    )
+    # The .bb file only has a scoped override
+    recipe = recipe_dir / "binutils_2.46.bb"
+    recipe.write_text(
+        'require binutils.inc\n'
+        '\n'
+        'SRC_URI:append:class-nativesdk = " file://0003-nativesdk.patch "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-18220.patch"])
+    # Patch must end up in the .inc file, not the .bb
+    inc_content = inc.read_text()
+    bb_content = recipe.read_text()
+    assert "CVE-2026-18220.patch" in inc_content
+    assert "CVE-2026-18220.patch" not in bb_content
+    # Verify it's inside the SRC_URI block of the .inc
+    _assert_valid_bitbake_assignments(inc_content)
+
+
+def test_append_src_uri_entries_scoped_override_only_fallback(tmp_path):
+    """When only scoped overrides exist (no .inc, no plain SRC_URI),
+    append a new SRC_URI:append line rather than inserting into the scoped one.
+    """
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-devtools" / "binutils"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "binutils_2.46.bb"
+    recipe.write_text(
+        'require binutils.inc\n'
+        '\n'
+        'SRC_URI:append:class-nativesdk = " file://0003-nativesdk.patch "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-18220.patch"])
+    content = recipe.read_text()
+    # The nativesdk line must be untouched
+    assert 'SRC_URI:append:class-nativesdk = " file://0003-nativesdk.patch "' in content
+    # A new SRC_URI:append line must be added
+    assert 'SRC_URI:append = " file://CVE-2026-18220.patch"' in content
+    _assert_valid_bitbake_assignments(content)
+
+
+def test_append_src_uri_entries_scoped_override_multiple_patches(tmp_path):
+    """Multiple patches with scoped-override fallback produce a multi-line block."""
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-devtools" / "binutils"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "binutils_2.46.bb"
+    recipe.write_text(
+        'require binutils.inc\n'
+        '\n'
+        'SRC_URI:append:class-nativesdk = " file://0003-nativesdk.patch "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-18220.patch", "CVE-2026-18221.patch"])
+    content = recipe.read_text()
+    assert 'SRC_URI:append:class-nativesdk = " file://0003-nativesdk.patch "' in content
+    assert "file://CVE-2026-18220.patch" in content
+    assert "file://CVE-2026-18221.patch" in content
+    assert "SRC_URI:append = " in content
+    _assert_valid_bitbake_assignments(content)
+
+
+def test_append_src_uri_entries_unscoped_override_is_used(tmp_path):
+    """An unscoped SRC_URI:append (no class/machine suffix) is a valid target."""
+    from cve_corrector.recipe_ops import _append_src_uri_entries
+    recipe_dir = tmp_path / "recipes-support" / "foo"
+    recipe_dir.mkdir(parents=True)
+    recipe = recipe_dir / "foo_1.0.bb"
+    recipe.write_text(
+        'require foo.inc\n'
+        '\n'
+        'SRC_URI:append = " \\\n'
+        '    file://existing.patch \\\n'
+        '    "\n'
+        'SRC_URI:append:class-nativesdk = " file://sdk.patch "\n'
+    )
+    _append_src_uri_entries(recipe, ["CVE-2026-55555.patch"])
+    content = recipe.read_text()
+    # Must insert into the unscoped SRC_URI:append, not into class-nativesdk
+    assert "CVE-2026-55555.patch" in content
+    # The nativesdk line must remain unchanged
+    assert 'SRC_URI:append:class-nativesdk = " file://sdk.patch "' in content
+    _assert_valid_bitbake_assignments(content)
+
+
 
 def test_find_recipe_file_exact_match(tmp_path):
     """_find_recipe_file does not match busybox-utils when looking for busybox."""
