@@ -192,12 +192,30 @@ def find_introducing_version(workspace_path: Path,
     return earliest
 
 
+# Patterns for tags that are NOT release versions (development artifacts)
+_NON_RELEASE_TAG_RE = re.compile(
+    r'(?:^|[-_])'                    # at start or after separator
+    r'(?:branchpoint|branch[-_]?point|'
+    r'rc\d*|alpha\d*|beta\d*|'       # pre-release labels
+    r'dev|snapshot|nightly|'         # development builds
+    r'start|base|root|fork|merge)'   # branch management tags
+    r'(?:$|[-_])',                    # at end or before separator
+    re.IGNORECASE,
+)
+
+
+def _is_release_tag(tag: str) -> bool:
+    """Return True if the tag looks like a release version, not a branch marker."""
+    return not _NON_RELEASE_TAG_RE.search(tag)
+
+
 def _resolve_tag_for_commit(workspace_path: Path,
                             commit: str) -> Optional[str]:
-    """Find the earliest tag containing a commit.
+    """Find the earliest release tag containing a commit.
 
     Tries ``git describe --contains`` first (fast), falls back to
     ``git tag --contains`` (slower but works when describe fails).
+    Filters out non-release tags (branchpoint, rc, alpha, etc.).
     """
     # Lazy import
     from .version import Version  # noqa: E402
@@ -206,7 +224,7 @@ def _resolve_tag_for_commit(workspace_path: Path,
         ['git', 'describe', '--contains', commit], cwd=workspace_path)
     if result.returncode == 0:
         tag = _DESCRIBE_SUFFIX_RE.sub('', result.stdout.strip())
-        if tag:
+        if tag and _is_release_tag(tag):
             return tag
 
     # Fallback: git tag --contains
@@ -216,7 +234,11 @@ def _resolve_tag_for_commit(workspace_path: Path,
         logger.debug("No tag found containing %s", commit[:8])
         return None
 
-    tags = result.stdout.strip().splitlines()
+    tags = [t for t in result.stdout.strip().splitlines() if _is_release_tag(t)]
+    if not tags:
+        logger.debug("No release tags found containing %s (all filtered)", commit[:8])
+        return None
+
     # Pick the earliest version tag
     best = None
     for tag in tags:

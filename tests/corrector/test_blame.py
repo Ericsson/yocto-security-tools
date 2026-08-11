@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from cve_corrector.blame import (
+    _is_release_tag,
     _tag_to_version_str,
     blame_line_ranges,
     check_vulnerability_origin,
@@ -381,3 +382,63 @@ class TestCheckVulnerabilityOrigin:
         series = [{'commits': [fix_hash]}]
         reason = check_vulnerability_origin(repo, [], '1.0.0', series=series)
         assert reason is not None
+
+
+# --- _is_release_tag ---
+
+class TestIsReleaseTag:
+    def test_release_tags(self):
+        assert _is_release_tag('v2.42') is True
+        assert _is_release_tag('binutils-2_42') is True
+        assert _is_release_tag('release-3.7.9') is True
+        assert _is_release_tag('libxml2-2.13.0') is True
+        assert _is_release_tag('V_9_6_P1') is True
+
+    def test_branchpoint_tags(self):
+        assert _is_release_tag('binutils-2_15-branchpoint') is False
+        assert _is_release_tag('binutils-2_42-branchpoint') is False
+        assert _is_release_tag('foo-branchpoint') is False
+
+    def test_rc_tags(self):
+        assert _is_release_tag('v2.42-rc1') is False
+        assert _is_release_tag('binutils-2_42-rc3') is False
+
+    def test_alpha_beta_tags(self):
+        assert _is_release_tag('v1.0-alpha') is False
+        assert _is_release_tag('v1.0-beta2') is False
+        assert _is_release_tag('foo-alpha1') is False
+
+    def test_dev_tags(self):
+        assert _is_release_tag('v1.0-dev') is False
+        assert _is_release_tag('v2.0-snapshot') is False
+        assert _is_release_tag('nightly-build') is False
+
+    def test_branch_management_tags(self):
+        assert _is_release_tag('binutils-2_15-start') is False
+        assert _is_release_tag('foo-base') is False
+        assert _is_release_tag('merge-point') is False
+
+
+class TestFindIntroducingVersionFiltersBranchpoints:
+    def test_skips_branchpoint_tag(self, tmp_path):
+        """Non-release tags like branchpoint are skipped."""
+        repo = _init_repo(tmp_path)
+        _git(repo, 'tag', 'binutils-2_15-branchpoint')
+        _git(repo, 'tag', 'binutils-2_42')
+        initial_hash = _git(repo, 'rev-parse', 'HEAD')
+
+        version = find_introducing_version(repo, {initial_hash})
+        # Should pick 2.42, not 2.15-branchpoint
+        assert version is not None
+        assert 'branchpoint' not in version
+        assert '42' in version
+
+    def test_only_branchpoint_tags_returns_none(self, tmp_path):
+        """If only non-release tags exist, return None."""
+        repo = _init_repo(tmp_path)
+        _git(repo, 'tag', 'binutils-2_15-branchpoint')
+        _git(repo, 'tag', 'foo-rc1')
+        initial_hash = _git(repo, 'rev-parse', 'HEAD')
+
+        version = find_introducing_version(repo, {initial_hash})
+        assert version is None

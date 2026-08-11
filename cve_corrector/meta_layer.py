@@ -284,14 +284,16 @@ def _map_cve_status_reason(reason: str) -> str:
     """Map a human-readable reason to the correct CVE_STATUS keyword.
 
     Uses Yocto CVE_CHECK_STATUSMAP values:
-    - fixed-version: fix already present via version or backport
+    - fixed-version: fix already present via version or backport, or
+      vulnerable code not present in this version
     - not-applicable-platform: platform-specific, doesn't affect this target
     - not-applicable-config: requires config/feature not enabled
     - cpe-incorrect: CVE doesn't actually apply to this component
     """
     lower = reason.lower()
     if any(kw in lower for kw in ('already', 'matches the fixed', 'no net changes',
-                                   'backport', 'patched')):
+                                   'backport', 'patched', 'introduced in',
+                                   'recipe version', 'not affected')):
         return 'fixed-version'
     if any(kw in lower for kw in ('platform', 'architecture', 'target')):
         return 'not-applicable-platform'
