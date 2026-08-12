@@ -208,7 +208,7 @@ class TestMakeShouldRun:
 
 
 class TestCopyMissingFilesFromDevtool:
-    @patch("cve_corrector.git_ops.run_cmd_capture")
+    @patch("shared.git_runner.run_capture")
     def test_copies_missing(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="a.c\nb.c\nconfigure\n"),
@@ -222,7 +222,7 @@ class TestCopyMissingFilesFromDevtool:
         ]
         copy_missing_files_from_devtool(Path("/ws"))
 
-    @patch("cve_corrector.git_ops.run_cmd_capture")
+    @patch("shared.git_runner.run_capture")
     def test_nothing_missing(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="a.c\n"),
@@ -232,7 +232,7 @@ class TestCopyMissingFilesFromDevtool:
         ]
         copy_missing_files_from_devtool(Path("/ws"))
 
-    @patch("cve_corrector.git_ops.run_cmd_capture")
+    @patch("shared.git_runner.run_capture")
     def test_git_error(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
         copy_missing_files_from_devtool(Path("/ws"))  # should not crash
