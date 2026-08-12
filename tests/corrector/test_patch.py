@@ -374,6 +374,29 @@ def test_compute_flags_prerequisite_only_fix_tagged(tmp_path):
     assert flags == [False, True]
 
 
+def test_git_commit_subject_missing_workspace_returns_none(tmp_path):
+    """workspace_path may already be deleted by the time this runs (in
+    --bbappend mode, devtool reset removes the whole devtool workspace
+    before update_patches_with_metadata is called). Must return None
+    instead of raising FileNotFoundError from subprocess."""
+    from cve_corrector.patch_ops import _git_commit_subject
+    missing = tmp_path / "does-not-exist"
+    assert not missing.exists()
+    assert _git_commit_subject(missing, "abc123") is None
+
+
+def test_compute_flags_missing_workspace_falls_back_to_all(tmp_path):
+    """End-to-end: when workspace_path doesn't exist (devtool reset already
+    ran), _compute_cve_tag_flags must not crash and must fall back to
+    tagging every patch, same as the "subject not found" fallback."""
+    state = _make_state(tmp_path)
+    assert not state.workspace_path.exists()
+    rels = _write_patches(state.meta_layer,
+                          [("0001.patch", _PREREQ_PATCH), ("0002.patch", _FIX_PATCH)])
+    flags = _compute_cve_tag_flags(state, rels)
+    assert flags == [True, True]
+
+
 def test_compute_flags_no_subject_match_falls_back_to_all(tmp_path):
     """If the fix subject matches no patch, fall back to tagging all so the
     fix never silently loses its CVE tag."""
