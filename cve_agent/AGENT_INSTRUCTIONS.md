@@ -44,7 +44,8 @@ of tool names:
 
 Bash commands you CAN run:
 
-- Inspect: `git status`, `git status --porcelain`, `git diff[ *]`, `git log *`,
+- Inspect: `git status`, `git status --porcelain`, `git status --porcelain -- <path>`,
+  `git diff[ *]`, `git log *`,
   `git show *`, `git rev-parse *`, `git merge-base *`, `git ls-files[ *]`
   (`git ls-files -u` lists the unmerged stage entries of a conflict directly),
   `git submodule status[ *]` (diagnoses a gitlink recorded upstream that does
@@ -86,6 +87,13 @@ listing the directory first to confirm it exists.
 
 You may ONLY modify files listed in the **Allowed Files** section of the context header.
 A git pre-commit hook enforces this — commits with unauthorized files will be rejected.
+
+**Untracked files from tarball extraction:** The workspace will contain many
+untracked files (configure, Makefile.in, m4/*.m4, aclocal.m4, etc.) copied
+from the devtool branch. These are generated autotools/build files from the
+release tarball that don't exist in the upstream git history. **Ignore them** —
+do not stage, commit, or worry about them. They are intentionally untracked
+and exist only so `devtool build` succeeds.
 
 **NEVER do any of these:**
 - `git add .` or `git add -A`
@@ -231,10 +239,16 @@ git cherry-pick --no-edit --continue
 ```
 
 ### 3. Fix Build Errors (exit code 4)
-Read the last 50 lines of the build log. If the failing task belongs to a
-**different recipe** than the one being patched, **abort immediately** — do not
-attempt to fix it. This indicates a pre-existing or environmental issue.
-Otherwise, fix the code and amend the commit.
+Run the build to reproduce the failure:
+```bash
+devtool build <recipe> 2>&1 > <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
+```
+Only read log output on failure (`Exit code:` is non-zero). On failure, read
+the **last 50 lines** of `<agent_dir>/build.log` to identify the error.
+If the failing task belongs to a **different recipe** than the one being
+patched, **abort immediately** — do not attempt to fix it. This indicates a
+pre-existing or environmental issue.
+Otherwise, fix the code, amend the commit, and re-run the build to verify.
 
 ### 4. Fix Test Failures (exit code 3)
 Fix the **backported code in the allowed files only**.
@@ -243,6 +257,11 @@ flag for human review. Document which tests failed and what code change
 fixed them in the commit message.
 
 ### 5. Build Verification (mandatory after every change)
+**You MUST verify the build passes before finishing.** Do not declare success
+without confirming `devtool build` exits with code 0. This is a hard
+requirement — the orchestrator will reject your session if the build still
+fails.
+
 Run the build as a **single command on ONE line** — do NOT split it across
 lines and do NOT wrap it in a `BUILD_LOG=` variable. A multi-line submission
 matches no allowed command and is rejected outright:
@@ -256,18 +275,27 @@ Do **not** rewrite this as `devtool build <recipe> > <agent_dir>/build.log
 2>&1` — `>` redirection is refused by the command guard (see "Available
 Tools"). The `| tee` form is the only way to get a build log.
 
+**Handling the output:** The command will produce hundreds of lines of
+bitbake progress output (NOTE: Starting bitbake server, Parsing recipes,
+Sstate summary, etc.). **Ignore all of this.** Do NOT read or process the
+tool's stdout — it pollutes your context for no benefit. The only line that
+matters is the **last line**: `Exit code: <N>`.
+
 Read the exit code from the `echo "Exit code: ..."` line, **not** from the
 tool's own reported exit status: in a pipeline the tool reports `tee`'s
 status, which is `0` even when the build failed. `${PIPESTATUS[0]}` is
 `devtool`'s real status — a non-zero value there means the build FAILED,
 regardless of what the tool result says.
 
-On failure: `tail -50 <agent_dir>/build.log`, fix, `git commit --amend
---no-edit`, retry.
-If `devtool build` logs are insufficient, check Yocto task logs at:
-`<yocto_tmp>/work/<arch>/<recipe>/*/temp/log.do_compile`
-(paths are in the context header).
-On success: **stop — your work is done.**
+**After running the build:**
+- **Exit code 0**: the build passed. **Stop — your work is done.** Do not
+  read or tail the log file.
+- **Exit code non-zero**: the build failed. Read ONLY the error:
+  `tail -50 <agent_dir>/build.log`. Fix the code, `git commit --amend
+  --no-edit`, and re-run the build.
+  If `devtool build` logs are insufficient, check Yocto task logs at:
+  `<yocto_tmp>/work/<arch>/<recipe>/*/temp/log.do_compile`
+  (paths are in the context header).
 
 For cross-compilation: use `bitbake -c devshell <recipe>`, never run
 make/cmake/gcc directly.
