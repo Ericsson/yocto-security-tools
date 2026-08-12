@@ -134,15 +134,25 @@ flowchart TD
 sequenceDiagram
     participant Agent as orchestrator.py
     participant Session as session.py
-    participant Backend as KiroBackend
+    participant Backend as selected AIBackend
+    participant Endpoint as model endpoint
+    participant Native as typed host runtime
     participant Hook as git pre-commit hook
 
     Agent->>Session: guarded_session(config, context)
     Session->>Session: Install scope hook (allowed_files)
     Session->>Session: Log session start
     Session->>Backend: run_session(prompt, workspace, ...)
-    Backend->>Backend: kiro-cli chat --agent yocto-cve-backport
-    Note over Backend: AI modifies files in workspace
+    alt kiro or claude CLI backend
+        Backend->>Backend: launch guarded agent CLI
+        Note over Backend: CLI agent follows permitted shell/file workflow
+    else native openai backend
+        Backend->>Endpoint: POST /chat/completions with messages + tools
+        Endpoint-->>Backend: assistant tool_calls with IDs
+        Backend->>Native: sequential typed dispatch + approval
+        Native-->>Backend: structured tool results / verified finish
+        Note over Backend,Native: no arbitrary shell or agent runtime
+    end
     Backend->>Hook: git commit triggers hook
     Hook-->>Backend: Reject if unauthorized files
     Backend-->>Session: SessionResult
@@ -152,6 +162,14 @@ sequenceDiagram
     Session->>Session: Remove scope hook
     Session-->>Agent: SessionResult
 ```
+
+The native branch creates a mandatory mode-`0600` JSONL transcript and shares
+one deadline across HTTP, typed Git, approvals, build, and terminal checks.
+Only host-verified `finish` resolves the session. Unresolved results carry safe
+operator guidance plus the transcript path; the outer guard still reverts
+out-of-scope changes and writes its independent audit. The orchestrator does
+not read a conclusion or advance the corrector unless that guarded result is
+resolved; unresolved terminal artifacts are removed.
 
 ## Knowledge Base Workflow
 

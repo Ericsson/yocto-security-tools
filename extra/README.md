@@ -113,7 +113,9 @@ export CVE_EXTRA_SOURCES_DIR=/path/to/my/plugins
 
 - Files starting with `_` are skipped
 - Errors in plugins are logged but don't crash the main tool
-- Plugins in this directory are `.gitignore`'d (use symlinks from a private repo)
+- Plugins in this directory are `.gitignore`'d. Extractor source plugins may be
+  symlinks, but the stricter AI-backend loader rejects symlinked `.py` files;
+  install backend plugins as reviewed regular files.
 
 ## Security Model
 
@@ -141,7 +143,9 @@ time. A malicious plugin can:
 **Recommendations for deployers:**
 
 - Review all plugin source code before deployment
-- Use symlinks from a version-controlled private repository
+- Keep plugin source in a version-controlled private repository; deploy AI
+  backend plugins as reviewed regular files because their loader rejects
+  symlinks
 - Restrict filesystem permissions on the `extra/` directory
 - In CI environments, do not set `CVE_EXTRA_SOURCES_DIR` unless plugins are
   pinned and audited
