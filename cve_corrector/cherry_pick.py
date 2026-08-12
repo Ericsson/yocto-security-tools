@@ -17,6 +17,63 @@ from .state import AlreadyAppliedError, GitError, PatchError, WorkflowState, sav
 from .utils import logger, run_cmd, run_cmd_capture
 
 
+def reset_devtool_to_base(workspace_path: Path) -> bool:
+    """Reset the devtool branch back to its recipe-patched base commit.
+
+    Used when re-transferring CVE commits on a build/ptest-error resume:
+    the AI agent may have amended the CVE-branch commit to fix the error,
+    so the devtool branch needs a clean re-application of the (updated)
+    patch rather than another commit stacked on top of the stale one from
+    the previous attempt. Without this, ``git cherry`` in
+    :func:`collect_cve_commits` compares against a devtool branch that
+    already contains the stale patch-id and incorrectly concludes the CVE
+    commit is already applied, aborting the whole resume with
+    :class:`AlreadyAppliedError`.
+
+    The reset target is ``devtool-patched`` — the source with **all** of the
+    recipe's ``SRC_URI`` patches applied but without the CVE fix
+    cve_corrector transfers on top. It is *not* ``devtool-base`` (the pristine
+    upstream tarball import): resetting to ``devtool-base`` strips every
+    recipe patch, and since :func:`cherry_pick_to_devtool` only re-applies the
+    CVE commits, those recipe patches would never come back. That silently
+    drops files the build and ptest steps depend on — e.g. libxml2's
+    ``install-tests.patch``, which adds the ``install-test-data`` make target
+    that ``do_install_ptest_base`` invokes, so ptest fails with
+    "No rule to make target 'install-test-data'". ``devtool-patched`` keeps
+    those patches and drops only the previously-transferred CVE commits.
+
+    ``devtool-patched`` is created by ``devtool modify`` whenever the recipe
+    has ``SRC_URI`` patches. When a recipe has none, devtool omits it and
+    ``devtool-base`` already *is* the fully-patched tree, so fall back to it.
+    ``main``/``master`` are never used here (unlike ``workspace.py``'s
+    non-CVE-branch search): they point at upstream's own history, which may
+    already contain the CVE fix or unrelated later commits — exactly the
+    stale/wrong content this reset must avoid.
+
+    Args:
+        workspace_path: Path to workspace.
+
+    Returns:
+        True if a base ref was found and devtool was reset, False otherwise.
+    """
+    base_ref = None
+    for ref in ('devtool-patched', 'devtool-base'):
+        if run_cmd_capture(['git', 'rev-parse', '--verify', ref],
+                           cwd=workspace_path).returncode == 0:
+            base_ref = ref
+            break
+    if base_ref is None:
+        logger.error("Failed to find devtool-patched or devtool-base to reset "
+                     "devtool before re-transfer")
+        return False
+
+    git_clean_workspace(workspace_path, remove_ignored=True)
+    run_cmd(['git', 'checkout', '.'], cwd=workspace_path)
+    if run_cmd(['git', 'checkout', '-f', 'devtool'], cwd=workspace_path) != 0:
+        return False
+    return run_cmd(['git', 'reset', '--hard', base_ref], cwd=workspace_path) == 0
+
+
 def handle_empty_cherry_pick(state: WorkflowState) -> None:
     """Write CVE_STATUS when cherry-pick produces no changes."""
     if not state.meta_layer:

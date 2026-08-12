@@ -15,6 +15,7 @@ from .cherry_pick import (
     apply_single_commits,
     cherry_pick_to_devtool,
     find_least_conflict_commit,
+    reset_devtool_to_base,
 )
 from .git_ops import (
     copy_missing_files_from_devtool,
@@ -318,7 +319,19 @@ def finish_cve_workflow(state: WorkflowState) -> None:
     """
     should_run = _make_should_run(state)
 
+    # Always re-transfer CVE commits when resuming from build/ptest errors.
+    # The AI agent may have amended the commit on the CVE branch to fix the
+    # error, so the devtool branch needs the updated patch. Reset devtool
+    # back to its pre-patch base first — reusing cherry_pick_to_devtool's
+    # git-am transfer against a devtool branch that still holds the stale
+    # patch from the previous attempt makes collect_cve_commits' git-cherry
+    # patch-id comparison see it as already applied and abort the resume
+    # with AlreadyAppliedError instead of re-transferring the updated fix.
     if should_run('cherry_pick_to_devtool'):
+        cherry_pick_to_devtool(state)
+    elif state.current_step in ('build_after_patch', 'ptest_after_patch'):
+        if not reset_devtool_to_base(state.workspace_path):
+            raise GitError("Failed to reset devtool branch before re-transfer")
         cherry_pick_to_devtool(state)
 
     if should_run('build_after_patch'):
