@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
+from shared.git_runner import (  # noqa: F401  (re-exported for callers/tests)
+    _get_submodule_paths,
+    copy_missing_files_from_devtool,
+)
 
 from .utils import logger, run_cmd, run_cmd_capture
 
@@ -235,84 +239,6 @@ def deduce_repo_from_patches(patches: list[str]) -> Optional[str]:
         if result:
             return result
     return None
-
-
-def _get_submodule_paths(workspace_path: Path) -> set[str]:
-    """Return registered submodule paths from .gitmodules, if any."""
-    gitmodules = workspace_path / '.gitmodules'
-    if not gitmodules.exists():
-        return set()
-    paths: set[str] = set()
-    for line in gitmodules.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith('path'):
-            # e.g. "path = modules/oniguruma"
-            _, _, value = stripped.partition('=')
-            if value.strip():
-                paths.add(value.strip())
-    return paths
-
-
-def copy_missing_files_from_devtool(workspace_path: Path) -> None:
-    """Copy files present in devtool but missing from the CVE branch.
-
-    Release tarballs contain generated autotools files (configure, Makefile.in,
-    m4/*.m4, etc.) that don't exist in the upstream git repo. This copies them
-    from the devtool branch without tracking them, so builds succeed.
-
-    Files under registered submodule paths are skipped — those are tracked
-    by git submodule and must not be overwritten with regular file copies.
-
-    Files under paths that HEAD tracks as symlinks are also skipped — release
-    tarballs dereference symlinks into real directories, and copying those
-    files would clobber the symlink and break subsequent cherry-picks.
-    """
-    devtool_files = run_cmd_capture(
-        ['git', 'ls-tree', '-r', '--name-only', 'devtool'], cwd=workspace_path)
-    if devtool_files.returncode != 0:
-        return
-    cve_files = run_cmd_capture(
-        ['git', 'ls-tree', '-r', '--name-only', 'HEAD'], cwd=workspace_path)
-    if cve_files.returncode != 0:
-        return
-
-    cve_set = set(cve_files.stdout.strip().splitlines())
-    submodule_paths = _get_submodule_paths(workspace_path)
-
-    # Collect paths that HEAD tracks as symlinks (git mode 120000). Release
-    # tarballs dereference symlinks into real directories, so the devtool
-    # branch lists the symlink target's contents (e.g.
-    # tutorial/swift/swift-dep/Sources/*.swift) as regular files. Copying
-    # those out of devtool would clobber the symlink with a real directory,
-    # leaving a staged deletion + untracked dir that blocks every subsequent
-    # cherry-pick. Skip anything living under a HEAD symlink: the symlink
-    # already resolves to an in-tree path, so nothing is actually missing.
-    symlink_prefixes: tuple[str, ...] = ()
-    cve_tree = run_cmd_capture(
-        ['git', 'ls-tree', '-r', 'HEAD'], cwd=workspace_path)
-    if cve_tree.returncode == 0:
-        symlinks = []
-        for line in cve_tree.stdout.strip().splitlines():
-            # Format: "<mode> <type> <hash>\t<path>"
-            meta, _, path = line.partition('\t')
-            if path and meta.split(' ', 1)[0] == '120000':
-                symlinks.append(path + '/')
-        symlink_prefixes = tuple(symlinks)
-
-    missing = [f for f in devtool_files.stdout.strip().splitlines()
-               if f not in cve_set
-               and not any(f == sm or f.startswith(sm + '/')
-                           for sm in submodule_paths)
-               and not (symlink_prefixes and f.startswith(symlink_prefixes))]
-    if not missing:
-        return
-
-    logger.info("Copying %s missing file(s) from devtool branch", len(missing))
-    for filepath in missing:
-        run_cmd_capture(['git', 'checkout', 'devtool', '--', filepath],
-                        cwd=workspace_path)
-    # Unstage so they remain as untracked working-tree files
-    run_cmd_capture(['git', 'reset', 'HEAD'] + missing, cwd=workspace_path)
 
 
 def remove_git_only_build_triggers(workspace_path: Path) -> None:
