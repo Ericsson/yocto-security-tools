@@ -10,9 +10,11 @@ from typing import Optional
 
 from . import (
     EXIT_ALREADY_APPLIED,
+    EXIT_BUILD_ERROR,
     EXIT_BUILD_PREEXISTING,
     EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
+    EXIT_PTEST_ERROR,
     EXIT_PTEST_PREEXISTING,
     EXIT_SUCCESS,
     RECOVERABLE_EXITS,
@@ -149,11 +151,18 @@ def _run_single_resolution_attempt(
         cve_info: dict, knowledge_base: KnowledgeBase,
         attempt: int, start_time: float) -> _AttemptOutcome:
     """Execute one resolution attempt: context -> session -> approval -> continue."""
+    print("Building AI context (upstream diffs, knowledge, conflict details)...")
     context_file = build_context(
         workspace_path, exit_code, config.cve_id, cve_info, knowledge_base,
         model=config.model, backend=config.backend
     )
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
+
+    # Snapshot HEAD before the session to detect no-op resolutions
+    pre_session_head = run_git_stdout(
+        ['rev-parse', 'HEAD'], workspace_path
+    ).strip()
+
     session_result = guarded_session(
         context_file, workspace_path, upstream_sha, cve_info, config.model,
         config.session_timeout, config.cve_id, config.interactive,
@@ -199,6 +208,28 @@ def _run_single_resolution_attempt(
             f"Resolved via {config.backend} (workspace finalized)"
         ))
 
+    # Detect no-op sessions: if the AI didn't change HEAD and the failure
+    # was a build or ptest error, skip approval and retry immediately.
+    # There's nothing for the human to review — the AI didn't fix anything.
+    post_session_head = run_git_stdout(
+        ['rev-parse', 'HEAD'], workspace_path
+    ).strip()
+    if (pre_session_head == post_session_head
+            and exit_code in (EXIT_BUILD_ERROR, EXIT_PTEST_ERROR)):
+        print(f"AI session made no changes to resolve exit code {exit_code}, "
+              f"retrying...")
+        return _AttemptOutcome()
+
+    # The AI made a real change (HEAD moved, or this is a conflict resolution).
+    # Show the human the review *before* finalizing: request_approval runs
+    # against the still-present workspace, and only on approval does
+    # _finalize_resolution run --continue (build + ptest + devtool finish).
+    # Verifying the build before approval is not done here — it would require
+    # running --continue, whose devtool finish removes the workspace and leaves
+    # nothing to review, and it would also finalize a change the human has not
+    # yet approved. The agent self-verifies its build before finishing (see
+    # AGENT_INSTRUCTIONS.md "Build Verification"), and --continue re-verifies
+    # authoritatively after approval, retrying on a recoverable failure.
     approval, feedback = request_approval(workspace_path, upstream_sha, config)
 
     if approval == "edit":
