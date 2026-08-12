@@ -138,8 +138,21 @@ def _normalize_subject(subject: str) -> str:
 
 
 def _git_commit_subject(workspace_path: Path, commit_hash: str) -> str | None:
-    """Return the subject line of ``commit_hash``, or None if unavailable."""
+    """Return the subject line of ``commit_hash``, or None if unavailable.
+
+    ``workspace_path`` may already be gone by the time this runs: in
+    ``--bbappend`` mode, ``finish_cve_workflow`` calls ``devtool reset``
+    (which deletes the whole devtool workspace directory) before calling
+    ``update_patches_with_metadata`` -> ``_compute_cve_tag_flags`` ->
+    here. Checking existence up front avoids an uncaught
+    ``FileNotFoundError`` from ``subprocess`` trying to chdir into a
+    missing ``cwd`` and returns None instead, matching the existing
+    "can't determine subject" contract so the caller's documented
+    fallback (tag every patch with CVE) still applies.
+    """
     if not commit_hash:
+        return None
+    if not workspace_path.exists():
         return None
     result = run_cmd_capture(
         ["git", "log", "-1", "--format=%s", commit_hash], cwd=workspace_path)
