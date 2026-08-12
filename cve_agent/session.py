@@ -9,6 +9,8 @@ import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shared.git_runner import copy_missing_files_from_devtool, force_checkout_branch
+
 from . import get_agent_dir
 from .backend import SessionResult, get_backend
 from .git import (
@@ -77,6 +79,52 @@ def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
     return expanded
 
 
+def _ensure_cve_branch(workspace_path: Path, cve_id: str) -> None:
+    """Check out the CVE branch so the agent commits onto the source of truth.
+
+    The CVE branch is named after the CVE id (see
+    ``cve_corrector.workspace.prepare_cve_branch``). It holds the cherry-picked
+    upstream fix and is the branch ``cherry_pick_to_devtool`` transfers to the
+    throwaway ``devtool`` branch. If the agent were left on ``devtool`` (where
+    the corrector's build step leaves it), any amend would be discarded on the
+    next resume.
+
+    After landing on the CVE branch, restore the files the devtool branch
+    tracks but the (upstream-history) CVE branch does not — generated autotools
+    output (configure, Makefile.in, ...) and secondary-tarball payloads such as
+    libxml2's ``xmlconf/`` W3C conformance suite. Switching branches drops
+    them, and without them the agent's own ``devtool build`` verification fails
+    in do_configure/do_compile before it can even test the fix. They are
+    restored as untracked working-tree files, exactly as the corrector does
+    before each build step.
+
+    A no-op when ``cve_id`` is empty, the workspace is gone, or the branch does
+    not exist (e.g. some unit-test setups).
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+        cve_id: CVE identifier, which is also the CVE branch name.
+    """
+    if not cve_id or not workspace_path.exists():
+        return
+    current = run_git_stdout(
+        ['rev-parse', '--abbrev-ref', 'HEAD'], cwd=workspace_path
+    ).strip()
+    if current != cve_id:
+        branch_exists = run_capture(
+            ['git', 'rev-parse', '--verify', '--quiet', f'refs/heads/{cve_id}'],
+            cwd=workspace_path,
+        ).returncode == 0
+        if not branch_exists:
+            return
+        if not force_checkout_branch(workspace_path, cve_id):
+            print(f"\u26a0 Failed to check out CVE branch {cve_id} before "
+                  f"session (currently on {current}) — the agent's fix may "
+                  f"not persist")
+            return
+    copy_missing_files_from_devtool(workspace_path)
+
+
 def guarded_session(context_file: Path, workspace_path: Path,
                     upstream_sha: str, cve_info: dict,
                     model: str = "claude-sonnet-5",
@@ -90,6 +138,19 @@ def guarded_session(context_file: Path, workspace_path: Path,
     AI session via the configured backend, then verifies and reverts any
     unauthorized changes.
     """
+    # Ensure the agent operates on the CVE branch — the source of truth that
+    # cherry_pick_to_devtool transfers to the devtool branch. The corrector's
+    # build step leaves the *devtool* branch checked out, and the agent's
+    # command allow-list forbids switching branches, so without this the agent
+    # would amend its fix onto devtool. That fix is then orphaned when the
+    # session forces back to the CVE branch, and wiped entirely on the next
+    # resume when reset_devtool_to_base + cherry_pick_to_devtool re-apply the
+    # unfixed CVE-branch commit — silently reverting the agent's work every
+    # round. Landing the amend on the CVE branch keeps the fix on the branch
+    # that actually feeds the final patch.
+    print("Preparing workspace (CVE branch checkout, restoring build files)...")
+    _ensure_cve_branch(workspace_path, cve_id)
+
     all_shas = get_all_upstream_shas(cve_info, workspace_path)
     allowed: set[str] = set()
     # Snapshot upstream diffs per file before the session (single pass per SHA)
@@ -139,13 +200,19 @@ def guarded_session(context_file: Path, workspace_path: Path,
     prompt = (
         f"Read the file {context_file} and follow all instructions in it. "
         f"The file contains conflict context, patch details, and resolution "
-        f"steps for a CVE backport. Complete all tasks described in the file."
+        f"steps for a CVE backport. Complete all tasks described in the file.\n\n"
+        f"Key details (also in the file):\n"
+        f"- Recipe: {workspace_path.name}\n"
+        f"- Agent dir: {get_agent_dir(workspace_path)}\n"
+        f"- Workspace: {workspace_path}\n"
+        f"- Allowed files: {', '.join(sorted(allowed))}\n"
     )
 
     backend = get_backend(backend_name)
     agent_dir = get_agent_dir(workspace_path)
     _log_session_start(agent_dir, context_file)
 
+    print(f"Starting {backend_name} session (timeout {timeout}s)...")
     try:
         result = backend.run_session(
             prompt, workspace_path, allowed, model, timeout, interactive)
