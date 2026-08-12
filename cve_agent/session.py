@@ -62,10 +62,6 @@ def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
             stripped = '/'.join(parts[2:])
             if (workspace_path / stripped).exists():
                 expanded.add(stripped)
-        else:
-            # Try adding subprojects/<name>/ prefix by finding matching dirs
-            # Don't scan workspace_path.parent — too expensive
-            pass
 
         for prefix in _COMMON_PREFIXES:
             if filepath.startswith(prefix):

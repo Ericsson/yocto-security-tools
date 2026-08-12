@@ -71,15 +71,6 @@ def resolve_agent_instructions() -> Path:
     return PACKAGED_AGENT_INSTRUCTIONS
 
 
-# Kept for backward compatibility (existing tests/callers patch this
-# constant directly). Computed once at import time; DO NOT use in new code —
-# call resolve_agent_instructions() instead, which re-checks the stable
-# synced copy on every call and picks up a sync that happens later in the
-# same process (e.g. ensure_agents() runs before context building in the
-# real CLI flow).
-AGENT_INSTRUCTIONS = resolve_agent_instructions()
-
-
 class ResultStatus(Enum):
     """Outcome status for a CVE processing attempt."""
     SUCCESS = "success"
@@ -161,7 +152,7 @@ __all__ = [
     'AgentConfig', 'CveResult', 'ResultStatus',
     'RECOVERABLE_EXITS', 'UNRECOVERABLE_EXITS',
     'DEFAULT_KNOWLEDGE_PATH', 'DEFAULT_MAX_RETRIES', 'DEFAULT_SESSION_TIMEOUT',
-    'CORRECTOR_CMD', 'AGENT_INSTRUCTIONS', 'resolve_agent_instructions',
+    'CORRECTOR_CMD', 'resolve_agent_instructions',
     'get_build_dir', 'get_agent_dir',
     'EXIT_SUCCESS', 'EXIT_CONFLICT', 'EXIT_CHECKOUT_ERROR', 'EXIT_PTEST_ERROR',
     'EXIT_BUILD_ERROR', 'EXIT_PATCH_ERROR', 'EXIT_METADATA_ERROR', 'EXIT_GIT_ERROR',

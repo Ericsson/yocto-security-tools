@@ -9,7 +9,7 @@ from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import is_git_cmd
-from shared.git_runner import run_capture as _shared_run_capture
+from shared.git_runner import run_capture as run_cmd_capture  # noqa: F401  (re-exported)
 
 # Module-level config — set by setup_logging(), used by run_cmd()
 _verbose = True
@@ -86,8 +86,3 @@ def run_cmd(cmd: list[str], cwd: Optional[Path] = None,
             with open(_log_file, 'a', encoding='utf-8') as log:
                 log.write(f'=== TIMEOUT after {timeout}s ===\n\n')
         return -1
-
-
-def run_cmd_capture(cmd: list[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    """Execute command and capture output."""
-    return _shared_run_capture(cmd, cwd)
