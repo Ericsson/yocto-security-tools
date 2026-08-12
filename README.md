@@ -26,7 +26,7 @@ Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 - Python 3.9+
 - Git
 - For `cve-corrector` / `cve-agent`: a sourced Yocto build environment (`BBPATH` set)
-- For `cve-agent`: an AI backend — [kiro-cli](https://github.com/kirodotdev/Kiro) (default) or [Claude Code](https://code.claude.com) (`--backend claude`), or a custom backend plugin
+- For `cve-agent`: [kiro-cli](https://github.com/kirodotdev/Kiro) (default), [Claude Code](https://code.claude.com) (`--backend claude`), a tool-capable OpenAI-compatible model endpoint (`--backend openai`), or a custom backend plugin
 - Optional, for `cve-agent`: [`patchutils`](https://cyberelk.net/tim/software/patchutils/) (provides `interdiff`) — when installed, cve-agent enriches its review diff, console output, and AI context with a concise upstream-vs-backport adaptation delta. When absent, cve-agent falls back to its existing behavior unchanged.
 
 ## Installation
@@ -92,7 +92,7 @@ it unchanged to `cve-corrector`.
 ### AI-assisted backporting
 
 ```bash
-# Requires an AI backend CLI: kiro-cli (default) or Claude Code
+# Uses kiro-cli by default; Claude Code and native OpenAI-compatible modes are available
 cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust
 
 # Batch mode
@@ -118,6 +118,25 @@ The Claude Code backend needs a recent `claude` on `PATH`, already authenticated
 Pass `--model sonnet|opus|haiku` (or a full model id); the default
 `claude-sonnet-5` is mapped to `sonnet`. Both backends run under the same
 file-scope guard, so the AI can only modify the files the upstream fix touches.
+
+### Native OpenAI-compatible backend and Ollama
+
+The built-in `openai` backend directly calls a non-streaming
+`/chat/completions` endpoint and runs the agent loop and closed typed tools
+inside this project. It does not invoke another agent CLI and exposes no
+generic shell. Local Ollama is supported without an API key when the selected
+model reliably supports function tools:
+
+```bash
+export CVE_AGENT_OPENAI_MODEL='replace-with-a-tool-capable-model'
+export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
+cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
+```
+
+See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
+for the Ollama setup, exact API contract, configuration precedence, key and
+remote-endpoint gates, interactive approvals, transcript location, limitations,
+and troubleshooting.
 
 ## How It Works
 

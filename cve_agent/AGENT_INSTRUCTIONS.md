@@ -368,8 +368,8 @@ Substitute `<recipe>` and `<agent_dir>` with the values from the context
 header (keep it all on one physical line).
 
 For a native backend with no shell, call the advertised typed build operation;
-the host derives the recipe, captures the complete build log, and returns a
-bounded diagnostic tail. In both cases a successful build must occur after
+the host derives the recipe, captures a bounded protected build log, and
+returns a bounded diagnostic tail. In both cases a successful build must occur after
 the latest change before completion may be claimed.
 
 Do **not** rewrite this as `devtool build <recipe> > <agent_dir>/build.log

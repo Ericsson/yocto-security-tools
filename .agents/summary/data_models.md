@@ -114,6 +114,117 @@ classDiagram
         +bool resolved
         +float duration
         +Optional~Path~ transcript_path
+        +str failure_reason
+    }
+```
+
+### OpenAIConfig (cve_agent/openai_backend.py)
+
+Immutable, validated configuration for the native OpenAI-compatible backend.
+It stores the name of an API-key environment variable, never the key value.
+
+```mermaid
+classDiagram
+class OpenAIConfig {
+        +str base_url
+        +str model
+        +str api_key_env
+        +int max_steps
+        +int max_tool_calls
+        +int max_output_tokens
+        +int connect_timeout
+        +int request_timeout
+        +bool allow_remote_endpoint
+        +bool allow_insecure_remote_http
+        +chat_completions_url str
+        +is_loopback bool
+    }
+```
+
+### FileToolLimits and ToolResult (cve_agent/openai_tools.py)
+
+`FileToolLimits` is an immutable per-session set of size/count limits capped
+by module-level hard maxima. `ToolResult` is the bounded JSON-serializable
+outcome of a host-side tool call; `terminal` is always false until a later
+model-loop stage calls the host runtime's verified `finish` tool.
+
+```mermaid
+classDiagram
+    class ToolResult {
+        +bool success
+        +dict payload
+        +bool mutated
+        +bool terminal
+        +Optional~str~ error_kind
+        +ToolAudit audit
+    }
+    class ToolAudit {
+        +str tool
+        +bool success
+        +bool mutated
+        +int generation
+        +Optional~str~ error_kind
+        +Optional~str~ path
+        +tuple~str~ paths
+        +Optional~str~ revision
+    }
+    ToolResult --> ToolAudit
+```
+
+### GitToolLimits and RepositorySnapshot (cve_agent/openai_git_tools.py)
+
+`GitToolLimits` caps revisions, path counts, parsed log/status entries,
+subprocess output, diagnostics, resolution notes, and per-command duration.
+`RepositorySnapshot` retains the session-start commit and operation markers
+for later terminal-state checks without changing `guarded_session()`.
+
+```mermaid
+classDiagram
+    class RepositorySnapshot {
+        +str head
+        +Mapping~str,bool~ operations
+    }
+    class GitCommandResult {
+        +int returncode
+        +str stdout
+        +str stderr
+        +bool stdout_truncated
+        +bool stderr_truncated
+        +bool timed_out
+    }
+```
+
+### Native host runtime models (cve_agent/openai_deadline.py, openai_host_tools.py)
+
+`SessionDeadline` stores one absolute monotonic expiry shared by Git, build,
+approval, terminal checks, and the future HTTP loop. `BuildCommandResult`
+keeps only a bounded output tail in memory while naming the bounded trusted
+log. `ApprovalDecision` is closed to `approve_once`, `approve_class`, `deny`,
+and `timeout`.
+
+```mermaid
+classDiagram
+    class SessionDeadline {
+        +float expires_at
+        +remaining() float
+        +expired bool
+        +require(operation) float
+    }
+    class BuildCommandResult {
+        +int returncode
+        +float duration
+        +bool timed_out
+        +str tail
+        +bool truncated
+        +int total_output_bytes
+        +Path log_path
+        +bool log_truncated
+        +successful bool
+    }
+    class ApprovalRequest {
+        +str category
+        +str operation
+        +str summary
     }
 ```
 
@@ -220,17 +331,83 @@ Top-level dict keyed by CVE ID:
 }
 ```
 
+### Native Chat Completions models (cve_agent/openai_client.py)
+
+The single-exchange client returns only immutable validated response data.
+Function arguments remain bounded JSON text for the later dispatcher; an
+`arguments_were_object` flag records the Ollama-style object compatibility
+accommodation. `OpenAIClientLimits` caps 128 messages, 64 tools/calls, a 1 MiB
+request, a 1 MiB decoded response, 128/64 KiB response headers, depth 32, and
+20,000 JSON nodes by default.
+
+```mermaid
+classDiagram
+    class AssistantResponse {
+        +Optional~str~ content
+        +tuple~FunctionToolCall~ tool_calls
+        +Optional~str~ finish_reason
+        +Optional~TokenUsage~ usage
+    }
+    class FunctionToolCall {
+        +str id
+        +str name
+        +str arguments
+        +bool arguments_were_object
+    }
+    class TokenUsage {
+        +Optional~int~ prompt_tokens
+        +Optional~int~ completion_tokens
+        +Optional~int~ total_tokens
+    }
+    AssistantResponse --> FunctionToolCall
+    AssistantResponse --> TokenUsage
+```
+
+### Native agent loop models (cve_agent/openai_loop.py)
+
+`AgentLoopLimits` independently caps model turns, total calls, calls per
+assistant response (16 by default), and consecutive nonprogress responses
+(three by default). `JSONLTranscript` is a mandatory mode-`0600` audit stream;
+`TranscriptError` fails the session closed. The loop continues to return the
+existing `SessionResult`, setting `resolved` only from the trusted runtime's
+accepted terminal state and always returning the transcript path when it was
+created. Unresolved native results also return a stable, credential-free
+`failure_reason` suitable for CLI display; resolved results leave it empty.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ModelRequest
+    ModelRequest --> Unresolved: deadline / client / protocol / bounds
+    ModelRequest --> CorrectOnce: text only
+    CorrectOnce --> Unresolved: second text-only stop
+    CorrectOnce --> ModelRequest: typed calls
+    ModelRequest --> ToolBatch: validated calls
+    ToolBatch --> ModelRequest: nonterminal results
+    ToolBatch --> Resolved: host-verified finish
+    ToolBatch --> Unresolved: repeated nonprogress / call bounds
+```
+
 ### knowledge.json
 
 Array of `ResolutionPattern` objects (see dataclass above). File-locked with `fcntl.flock` for concurrent access safety.
 
-### conclusion.json (AI Output)
+### conclusion.json (Agent Outcome)
 
-Written by AI when CVE is not applicable:
+Legacy CLI backends write this outcome under their existing permissions. The
+native OpenAI host runtime denies generic file-tool access and writes the file
+atomically only after `finish` verifies a clean baseline state. The two exact
+orchestrator-compatible forms are:
 
 ```json
 {
   "not_applicable": true,
+  "reason": "string (specific explanation)"
+}
+```
+
+```json
+{
+  "needs_human": true,
   "reason": "string (specific explanation)"
 }
 ```
