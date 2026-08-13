@@ -10,10 +10,19 @@ from typing import Optional
 
 @dataclass
 class SessionResult:
-    """Outcome of an AI session."""
+    """Outcome of an AI session.
+
+    ``credits``/``credits_unit`` capture the backend's own end-of-session cost
+    report when it emits one (kiro-cli prints ``Credits: 5.86 • Time: …``).
+    They are backend-agnostic and default to ``None`` — only backends that
+    surface a parseable cost figure populate them. ``duration`` remains the
+    authoritative wall-clock time measured by the agent.
+    """
     resolved: bool
     duration: float
     transcript_path: Optional[Path] = None
+    credits: Optional[float] = None
+    credits_unit: Optional[str] = None
 
 
 class AIBackend:

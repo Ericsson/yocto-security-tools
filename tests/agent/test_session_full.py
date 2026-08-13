@@ -19,9 +19,31 @@ from cve_agent.session import (
     _write_audit_log,
     check_resolution_state,
     guarded_session,
+    sum_session_credits,
 )
 
 _kiro = KiroBackend()
+
+
+class _FakePopen:
+    """Minimal subprocess.Popen stand-in for the non-interactive tee path.
+
+    ``lines`` are yielded from ``stdout``; ``wait_exc`` (if set) is raised by
+    ``wait()`` to simulate a timeout.
+    """
+
+    def __init__(self, lines, wait_exc=None):
+        self.stdout = iter(lines)
+        self._wait_exc = wait_exc
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._wait_exc is not None:
+            raise self._wait_exc
+        return 0
+
+    def kill(self):
+        self.killed = True
 
 
 def _spawn_kiro_cli(context_file, workspace_path, model, timeout, interactive=False):
@@ -134,34 +156,50 @@ class TestBuildDeviationSection:
 
 
 class TestSpawnKiroCli:
-    @patch("subprocess.run")
-    def test_normal_run(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout='')
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.KiroBackend._check_resolution",
+           return_value=True)
+    @patch("cve_agent.kiro_backend.subprocess.Popen")
+    def test_normal_run(self, mock_popen, _resolve, _env):
+        mock_popen.return_value = _FakePopen([])
         result = _spawn_kiro_cli(Path("/ctx.md"), Path("/ws"), "model", 300)
         assert result is False
 
-    @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 300))
-    def test_timeout(self, _):
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.subprocess.Popen")
+    def test_timeout(self, mock_popen, _env):
+        mock_popen.return_value = _FakePopen([], wait_exc=subprocess.TimeoutExpired("cmd", 300))
         assert _spawn_kiro_cli(Path("/ctx.md"), Path("/ws"), "model", 300) is True
 
-    @patch("subprocess.run", side_effect=[FileNotFoundError, MagicMock(returncode=0, stdout="")])
-    def test_not_found(self, _):
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.KiroBackend._check_resolution",
+           return_value=True)
+    @patch("cve_agent.kiro_backend.subprocess.Popen", side_effect=FileNotFoundError)
+    def test_not_found(self, _popen, _resolve, _env):
         assert _spawn_kiro_cli(Path("/ctx.md"), Path("/ws"), "model", 300) is False
 
-    @patch("subprocess.run", side_effect=[KeyboardInterrupt, MagicMock(returncode=0, stdout="")])
-    def test_keyboard_interrupt(self, _):
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.KiroBackend._check_resolution",
+           return_value=True)
+    @patch("cve_agent.kiro_backend.subprocess.Popen", side_effect=KeyboardInterrupt)
+    def test_keyboard_interrupt(self, _popen, _resolve, _env):
         assert _spawn_kiro_cli(Path("/ctx.md"), Path("/ws"), "model", 300) is False
 
 
 class TestRunKiroSession:
-    @patch("subprocess.run")
-    def test_resolved(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout='')
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.KiroBackend._check_resolution",
+           return_value=True)
+    @patch("cve_agent.kiro_backend.subprocess.Popen")
+    def test_resolved(self, mock_popen, _resolve, _env):
+        mock_popen.return_value = _FakePopen([])
         result = run_kiro_session(Path("/ctx"), Path("/ws"), {"a.c"})
         assert result.resolved is True
 
-    @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 300))
-    def test_timed_out(self, _):
+    @patch("cve_agent.kiro_backend.build_git_env", return_value={})
+    @patch("cve_agent.kiro_backend.subprocess.Popen")
+    def test_timed_out(self, mock_popen, _env):
+        mock_popen.return_value = _FakePopen([], wait_exc=subprocess.TimeoutExpired("cmd", 300))
         result = run_kiro_session(Path("/ctx"), Path("/ws"), {"a.c"})
         assert result.resolved is False
 
@@ -264,12 +302,35 @@ class TestLogSessionStartEnd:
         assert "SESSION START" in log.read_text()
 
     def test_log_end(self, tmp_path):
-        _log_session_end(tmp_path, True, 5.0)
+        _log_session_end(tmp_path, SessionResult(resolved=True, duration=5.0))
         log = tmp_path / "sessions.log"
         content = log.read_text()
         assert "RESOLVED" in content
         assert "5.0s" in content
 
     def test_log_end_unresolved(self, tmp_path):
-        _log_session_end(tmp_path, False, 3.0)
+        _log_session_end(tmp_path, SessionResult(resolved=False, duration=3.0))
         assert "UNRESOLVED" in (tmp_path / "sessions.log").read_text()
+
+    def test_log_end_records_credits(self, tmp_path):
+        _log_session_end(tmp_path, SessionResult(
+            resolved=True, duration=5.0, credits=5.86, credits_unit="credits"))
+        content = (tmp_path / "sessions.log").read_text()
+        assert "credits=5.86" in content
+        assert "unit=credits" in content
+
+    def test_sum_session_credits_totals_across_sessions(self, tmp_path):
+        _log_session_end(tmp_path, SessionResult(
+            resolved=False, duration=1.0, credits=5.86, credits_unit="credits"))
+        _log_session_end(tmp_path, SessionResult(
+            resolved=True, duration=2.0, credits=2.14, credits_unit="credits"))
+        total, unit = sum_session_credits(tmp_path)
+        assert total == 8.0
+        assert unit == "credits"
+
+    def test_sum_session_credits_none_when_absent(self, tmp_path):
+        _log_session_end(tmp_path, SessionResult(resolved=True, duration=1.0))
+        assert sum_session_credits(tmp_path) == (None, None)
+
+    def test_sum_session_credits_missing_log(self, tmp_path):
+        assert sum_session_credits(tmp_path / "nope") == (None, None)

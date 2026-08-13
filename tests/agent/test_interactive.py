@@ -12,6 +12,25 @@ from cve_agent.kiro_backend import KiroBackend
 _kiro = KiroBackend()
 
 
+class _FakePopen:
+    """subprocess.Popen stand-in for the non-interactive tee path."""
+
+    def __init__(self, lines=(), wait_exc=None):
+        self.stdout = iter(lines)
+        self._wait_exc = wait_exc
+        self.wait_timeout = "unset"
+        self.killed = False
+
+    def wait(self, timeout=None):
+        self.wait_timeout = timeout
+        if self._wait_exc is not None:
+            raise self._wait_exc
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
 def _spawn_kiro_cli(context_file, workspace_path, model, timeout, interactive=False):
     result = _kiro.run_session(
         f"Read {context_file}", workspace_path, set(), model, timeout, interactive)
@@ -78,10 +97,12 @@ class TestInteractiveAgentSelection:
         cmd = mock_run.call_args_list[0][0][0]
         assert 'yocto-cve-backport-interactive' in cmd
 
-    @patch('subprocess.run')
-    def test_non_interactive_uses_correct_agent(self, mock_run):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_uses_correct_agent(self, mock_popen, _resolve):
+        mock_popen.return_value = _FakePopen()
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
-        cmd = mock_run.call_args_list[0][0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         assert 'yocto-cve-backport' in cmd
         # Should NOT be the interactive variant
         assert 'yocto-cve-backport-interactive' not in ' '.join(cmd).replace('yocto-cve-backport-interactive', '')
@@ -92,10 +113,12 @@ class TestInteractiveAgentSelection:
         cmd = mock_run.call_args_list[0][0][0]
         assert '--no-interactive' not in cmd
 
-    @patch('subprocess.run')
-    def test_non_interactive_includes_flag(self, mock_run):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_includes_flag(self, mock_popen, _resolve):
+        mock_popen.return_value = _FakePopen()
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
-        cmd = mock_run.call_args_list[0][0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         assert '--no-interactive' in cmd
         assert '--trust-tools' not in cmd
         assert '--trust-all-tools' not in cmd
@@ -108,11 +131,13 @@ class TestPromptCarriesNoInlinedInstructions:
     guard against re-introducing the AGENT_INSTRUCTIONS.md double-send that
     inlined the full manual into the query on every CI run."""
 
-    @patch('subprocess.run')
-    def test_non_interactive_prompt_is_just_context_pointer(self, mock_run):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_prompt_is_just_context_pointer(self, mock_popen, _resolve):
+        mock_popen.return_value = _FakePopen()
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
                         interactive=False)
-        cmd = mock_run.call_args_list[0][0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         assert cmd[-1] == 'Read /ctx.md'
         assert '--no-interactive' in cmd
 
@@ -142,26 +167,31 @@ class TestInteractiveTimeout:
         _, kwargs = mock_run.call_args_list[0]
         assert kwargs.get('timeout') is None
 
-    @patch('subprocess.run')
-    def test_non_interactive_passes_configured_timeout(self, mock_run):
-        """When interactive=False, the configured timeout is forwarded."""
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_passes_configured_timeout(self, mock_popen, _resolve):
+        """When interactive=False, the configured timeout is forwarded to wait()."""
+        fake = _FakePopen()
+        mock_popen.return_value = fake
         _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 600, interactive=False)
-        # First subprocess.run call is the kiro-cli session itself
-        _, kwargs = mock_run.call_args_list[0]
-        assert kwargs.get('timeout') == 600
+        assert fake.wait_timeout == 600
 
 
 class TestSessionErrorHandling:
-    @patch('subprocess.run', side_effect=subprocess.TimeoutExpired('cmd', 300))
-    def test_timeout_returns_true(self, _):
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_timeout_returns_true(self, mock_popen):
+        mock_popen.return_value = _FakePopen(
+            wait_exc=subprocess.TimeoutExpired('cmd', 300))
         assert _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300) is True
 
-    @patch('subprocess.run', side_effect=[KeyboardInterrupt, MagicMock(returncode=0, stdout='')])
-    def test_keyboard_interrupt_returns_false(self, _):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen', side_effect=KeyboardInterrupt)
+    def test_keyboard_interrupt_returns_false(self, _popen, _resolve):
         assert _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300) is False
 
-    @patch('subprocess.run', side_effect=[FileNotFoundError, MagicMock(returncode=0, stdout='')])
-    def test_kiro_not_found_returns_false(self, _):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen', side_effect=FileNotFoundError)
+    def test_kiro_not_found_returns_false(self, _popen, _resolve):
         assert _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300) is False
 
 
@@ -203,11 +233,12 @@ class TestTranscriptCapture:
         inner = cmd[cmd.index('-c') + 1]
         assert 'yocto-cve-backport-interactive' in inner
 
-    @patch('subprocess.run')
-    def test_non_interactive_session_never_wrapped(self, mock_run, tmp_path):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_session_never_wrapped(self, mock_popen, _resolve, tmp_path):
         """Non-interactive runs are unaffected by transcript capture."""
-        mock_run.return_value = MagicMock(returncode=0, stdout='')
+        mock_popen.return_value = _FakePopen()
         with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
             _spawn_kiro_cli(Path('/ctx.md'), tmp_path, 'model', 300, interactive=False)
-        cmd = mock_run.call_args_list[0][0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         assert cmd[0] == 'kiro-cli'

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from cve_agent import AgentConfig, CveResult, ResultStatus
 from cve_agent.__main__ import _log_result
+from cve_agent.backend import SessionResult
 from cve_agent.session import _log_session_end, _log_session_start, _write_audit_log
 
 
@@ -100,6 +101,17 @@ class TestLogResult:
         assert 'success' in content
         assert '2.5s' in content
 
+    def test_writes_credits(self, tmp_path):
+        log_dir = tmp_path / 'workspace' / 'cve_agent'
+        with patch.dict(os.environ, {'BBPATH': str(tmp_path)}):
+            with patch('cve_agent.__main__.load_cve_metadata',
+                       side_effect=FileNotFoundError('not found')):
+                _log_result(_cfg(), CveResult(
+                    'CVE-1', ResultStatus.SUCCESS, duration=2.5,
+                    total_credits=5.86, credits_unit='credits'))
+        content = (log_dir / 'cve_agent.log').read_text()
+        assert 'credits=5.86 credits' in content
+
 
 class TestSessionLogs:
     def test_log_start(self, tmp_path):
@@ -107,11 +119,11 @@ class TestSessionLogs:
         assert 'SESSION START' in (tmp_path / 'sessions.log').read_text()
 
     def test_log_end_resolved(self, tmp_path):
-        _log_session_end(tmp_path, True, 5.0)
+        _log_session_end(tmp_path, SessionResult(resolved=True, duration=5.0))
         content = (tmp_path / 'sessions.log').read_text()
         assert 'RESOLVED' in content
         assert '5.0s' in content
 
     def test_log_end_unresolved(self, tmp_path):
-        _log_session_end(tmp_path, False, 3.0)
+        _log_session_end(tmp_path, SessionResult(resolved=False, duration=3.0))
         assert 'UNRESOLVED' in (tmp_path / 'sessions.log').read_text()

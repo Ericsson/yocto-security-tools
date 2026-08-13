@@ -112,6 +112,11 @@ class CveResult:
     retries: int = 0
     duration: float = 0.0
     resolution_summary: str = ""
+    # Backend cost summed across all AI sessions run for this CVE (initial
+    # attempt + retries + any extended-chain re-runs). ``None`` when the
+    # backend reported no cost (e.g. claude, or an interrupted kiro session).
+    total_credits: Optional[float] = None
+    credits_unit: Optional[str] = None
 
 
 def get_build_dir(workspace_path: Path) -> Path:

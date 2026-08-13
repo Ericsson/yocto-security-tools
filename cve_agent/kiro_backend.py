@@ -10,6 +10,8 @@ import logging
 import shlex
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,7 @@ from shared.git_runner import run_capture
 
 from .backend import AIBackend, SessionResult
 from .git import has_in_progress_operation
+from .metrics import parse_kiro_credits
 
 
 class KiroBackend(AIBackend):
@@ -63,12 +66,17 @@ class KiroBackend(AIBackend):
 
         start = time.monotonic()
         timed_out = False
+        captured = ""
         # Interactive sessions have a human at the terminal — never kill them
         # with a timeout.  Non-interactive (CI) runs use the configured limit.
         effective_timeout: Optional[int] = None if interactive else timeout
         try:
-            subprocess.run(run_cmd, cwd=workspace_path, env=env,
-                         check=False, timeout=effective_timeout)
+            if interactive:
+                subprocess.run(run_cmd, cwd=workspace_path, env=env,
+                             check=False, timeout=effective_timeout)
+            else:
+                captured = self._run_capturing_tee(
+                    run_cmd, workspace_path, env, effective_timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
         except FileNotFoundError:
@@ -81,9 +89,67 @@ class KiroBackend(AIBackend):
             return SessionResult(resolved=False, duration=duration,
                                 transcript_path=transcript_path)
 
+        # Interactive output isn't captured inline (full-screen TUI needs the
+        # real TTY); read the tee'd transcript instead. Non-interactive runs
+        # already have the streamed stdout in ``captured``.
+        if interactive and transcript_path is not None:
+            try:
+                captured = transcript_path.read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logging.debug("Could not read transcript %s: %s",
+                              transcript_path, exc)
+
         resolved = self._check_resolution(workspace_path)
-        return SessionResult(resolved=resolved, duration=duration,
-                            transcript_path=transcript_path)
+        result = SessionResult(resolved=resolved, duration=duration,
+                              transcript_path=transcript_path)
+        credits = parse_kiro_credits(captured)
+        if credits is not None:
+            result.credits = credits
+            result.credits_unit = "credits"
+        return result
+
+    @staticmethod
+    def _run_capturing_tee(cmd: list, workspace_path: Path, env: dict,
+                           timeout: Optional[int]) -> str:
+        """Run ``cmd`` capturing combined stdout+stderr while streaming it live.
+
+        kiro-cli's ``--no-interactive`` output is plain text (no TUI), so it
+        can be piped without breaking the session. A reader thread echoes each
+        line to the real stdout as it arrives (preserving the live CI log) and
+        accumulates it so the trailing ``Credits: … • Time: …`` summary can be
+        parsed once the process exits.
+
+        Raises:
+            subprocess.TimeoutExpired: if the process outlives ``timeout``; the
+                process (group) is killed first so it can't keep mutating the
+                workspace while the caller inspects git state.
+            FileNotFoundError: if kiro-cli is not on PATH.
+        """
+        proc = subprocess.Popen(
+            cmd, cwd=workspace_path, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1)
+        chunks: list[str] = []
+
+        def _pump() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                chunks.append(line)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+
+        reader = threading.Thread(target=_pump, daemon=True)
+        reader.start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            reader.join(timeout=5)
+            raise
+        reader.join(timeout=5)
+        return "".join(chunks)
 
     @staticmethod
     def _build_kiro_cmd(prompt: str, agent_name: Optional[str], model: str,

@@ -13,6 +13,23 @@ _kiro = KiroBackend()
 _ALLOWED_ENV_VARS = GIT_ENV_ALLOWLIST
 
 
+class _FakePopen:
+    """subprocess.Popen stand-in for the non-interactive tee path."""
+
+    def __init__(self, lines=(), wait_exc=None):
+        self.stdout = iter(lines)
+        self._wait_exc = wait_exc
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._wait_exc is not None:
+            raise self._wait_exc
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
 def _build_session_env():
     return build_git_env()
 
@@ -318,18 +335,18 @@ class TestAgentConfig:
 
 
 class TestTrustToolsInNonInteractiveMode:
-    @patch('subprocess.run')
-    def test_non_interactive_does_not_pass_trust_flags(self, mock_run):
+    @patch('cve_agent.kiro_backend.KiroBackend._check_resolution', return_value=True)
+    @patch('cve_agent.kiro_backend.subprocess.Popen')
+    def test_non_interactive_does_not_pass_trust_flags(self, mock_popen, _resolve):
         """Non-interactive mode passes no --trust-tools/--trust-all-tools —
         permissions live entirely in the agent config JSON (allowedTools +
         toolsSettings.execute_bash.allowedCommands), so execute_bash relies
         on that allowlist instead of blanket tool trust (which would
         shadow it)."""
-        mock_run.return_value = MagicMock(returncode=0, stdout='')
+        mock_popen.return_value = _FakePopen()
         with patch('cve_agent.git.build_git_env', return_value={'PATH': '/usr/bin'}):
             _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300, interactive=False)
-        # First call is kiro-cli, second is git status --porcelain
-        cmd = mock_run.call_args_list[0][0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         cmd_str = ' '.join(cmd)
         assert '--agent' in cmd_str
         assert 'yocto-cve-backport' in cmd_str
