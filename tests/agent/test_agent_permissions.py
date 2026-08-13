@@ -64,7 +64,8 @@ MUST_ALLOW = [
     # Commit by hand (pre-commit hook still enforces file scope).
     'git commit -m "jq: fix CVE-2024-1234"',
     "git commit -F /ws/cve_agent/jq/msg.txt",
-    # Documented in AGENT_INSTRUCTIONS.md §3/§5 for build-failure iterations.
+    # Documented in the build.md fragment / AGENT_INSTRUCTIONS.md §5 for
+    # build-failure iterations.
     "git commit --amend --no-edit",
     'git commit --amend -m "reworded"',
     "git commit --amend -F /ws/msg.txt",

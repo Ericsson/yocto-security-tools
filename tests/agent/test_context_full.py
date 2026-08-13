@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from cve_agent import EXIT_BUILD_ERROR, EXIT_CONFLICT, EXIT_PTEST_ERROR
 from cve_agent.context import (
     _build_header,
-    _build_phase_instructions,
     _find_ptest_log,
     _find_state_file,
     _gather_analysis_context,
@@ -85,24 +84,6 @@ class TestBuildHeader:
         assert "bare" in result.lower()
 
 
-class TestBuildPhaseInstructions:
-    def test_file_exists(self, tmp_path):
-        """Returns a short pointer, not the full file content (already
-        delivered via the session's system prompt)."""
-        instructions = tmp_path / "AGENT_INSTRUCTIONS.md"
-        instructions.write_text("# Do stuff")
-        with patch("cve_agent.context.resolve_agent_instructions", return_value=instructions):
-            result = _build_phase_instructions()
-            assert "Do stuff" not in result
-            assert "AGENT_INSTRUCTIONS.md" in result
-
-    def test_file_missing(self, tmp_path):
-        with patch("cve_agent.context.resolve_agent_instructions",
-                  return_value=tmp_path / "nope"):
-            result = _build_phase_instructions()
-            assert "AGENT_INSTRUCTIONS.md" in result
-
-
 class TestGatherContextForExitCode:
     @patch("cve_agent.context._gather_conflict_context", return_value="conflict")
     def test_conflict(self, mock):
@@ -138,10 +119,10 @@ class TestGatherBuildErrorContext:
         result = _gather_build_error_context(Path("/ws"))
         assert "Build Error" in result
         assert "commit stat" in result
-        # Stale-sstate recovery must be surfaced so the agent recovers the
-        # .config.orig-class failure instead of escalating.
-        assert ".config.orig" in result
-        assert "cleansstate" in result
+        # The stale-sstate recovery guidance now lives in the build.md phase
+        # fragment (embedded alongside this section), not duplicated here.
+        assert ".config.orig" not in result
+        assert "cleansstate" not in result
 
 
 class TestGatherPtestErrorContext:
@@ -152,11 +133,12 @@ class TestGatherPtestErrorContext:
         result = _gather_ptest_error_context(Path("/ws"), {})
         assert "Test Failure" in result
         assert "ptest data" in result
-        # Guidance now steers toward upstream companion commits + suggested_commits.
-        assert "Never hand-edit test cases" in result
-        assert "suggested_commits" in result
-        assert "upstream/master" in result
+        # The concrete upstream SHA stays in the data section for `git show`.
         assert "3fb6b31c7166" in result
+        # The defect-vs-companion-commit triage prose now lives in the ptest.md
+        # phase fragment (embedded alongside this section), not duplicated here.
+        assert "Never hand-edit" not in result
+        assert "suggested_commits" not in result
 
 
 class TestGatherAnalysisContext:

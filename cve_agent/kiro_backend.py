@@ -106,36 +106,8 @@ class KiroBackend(AIBackend):
         cmd = ['kiro-cli', 'chat', '--agent', agent_name, '--model', model]
         if not interactive:
             cmd.append('--no-interactive')
-            prompt = KiroBackend._with_agent_instructions(prompt)
         cmd.append(prompt)
         return cmd
-
-    @staticmethod
-    def _with_agent_instructions(prompt: str) -> str:
-        """Prepend AGENT_INSTRUCTIONS.md content (with the kiro tool preamble)
-        to the prompt.
-
-        ``kiro-cli chat`` has no ``--append-system-prompt`` equivalent (unlike
-        the ``claude`` CLI backend, see :meth:`ClaudeBackend._build_command`),
-        so the agent's ``prompt: file://...`` field is normally the only way
-        instructions reach the model — and that static file is synced via
-        :func:`cve_agent.setup.sync_agent_instructions`, which also prepends
-        the same tool preamble. In ``--no-interactive`` (CI) runs there is no
-        human to notice if that file:// prompt failed to resolve, so inline
-        the instructions directly into the query text as a second, explicit
-        path — redundant with the agent config, but that redundancy is the
-        point for unattended runs.
-        """
-        from . import resolve_agent_instructions
-        instructions_path = resolve_agent_instructions()
-        if not instructions_path.is_file():
-            logging.warning(
-                "Agent instructions not found (%s); running with only the "
-                "agent config's file:// prompt.", instructions_path)
-            return prompt
-        instructions = instructions_path.read_text(encoding="utf-8")
-        preamble = KiroBackend().tool_preamble()
-        return f"{preamble}{instructions}\n\n---\n\n{prompt}"
 
     @staticmethod
     def _transcript_path(workspace_path: Path) -> Optional[Path]:

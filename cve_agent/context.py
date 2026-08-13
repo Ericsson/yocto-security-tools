@@ -23,10 +23,18 @@ from . import (
     EXIT_PTEST_ERROR,
     get_agent_dir,
     get_build_dir,
-    resolve_agent_instructions,
 )
 from .git import get_all_upstream_shas, get_upstream_sha, run_capture, run_git_stdout
 from .interdiff import generate_interdiff
+
+# Per-phase workflow fragments embedded into context.md by exit code. The
+# phase-independent core is delivered separately via the system prompt; exit 0
+# (analysis) has no fragment — the core's Analyse step covers it.
+_PHASE_INSTRUCTION_FILES = {
+    EXIT_CONFLICT: "conflict.md",
+    EXIT_BUILD_ERROR: "build.md",
+    EXIT_PTEST_ERROR: "ptest.md",
+}
 
 
 def build_context(workspace_path: Path, exit_code: int, cve_id: str,
@@ -53,7 +61,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
     sections = [
         _build_header(cve_id, recipe, exit_code, workspace_path, cve_info,
                       model, backend),
-        _build_phase_instructions(),
+        _build_phase_instructions(exit_code),
         _gather_context_for_exit_code(workspace_path, exit_code, cve_info),
     ]
 
@@ -80,7 +88,8 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
             )
         feedback_file.unlink()
 
-    context_file.write_text('\n\n'.join(sections), encoding='utf-8')
+    context_file.write_text('\n\n'.join(s for s in sections if s),
+                            encoding='utf-8')
     return context_file
 
 
@@ -176,24 +185,29 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     )
 
 
-def _build_phase_instructions() -> str:
-    """Reference agent instructions without re-embedding their full text.
+def _build_phase_instructions(exit_code: int) -> str:
+    """Return the phase-specific workflow instructions for this exit code.
 
-    The full AGENT_INSTRUCTIONS.md content already reaches the model via the
-    session's system prompt (the kiro-cli agent's ``prompt: file://...``
-    field, or the ``claude`` CLI's ``--append-system-prompt``; see
-    ``cve_agent.kiro_backend`` / ``cve_agent.claude_backend``). Embedding it
-    again here would just pay its token cost a second (or third) time on
-    every context.md this function contributes to, including retries, with
-    no new information. A short pointer is enough since the workflow steps
-    are already active in the model's system prompt.
+    The phase-independent core (tools, scope rules, analysis, build
+    verification, commit format) reaches the model via the session's system
+    prompt (kiro-cli's ``prompt: file://...`` / the ``claude`` CLI's
+    ``--append-system-prompt``; see ``cve_agent.kiro_backend`` /
+    ``cve_agent.claude_backend``). The per-phase steps live in small fragment
+    files under ``cve_agent/instructions/`` and are embedded here into
+    ``context.md`` for the matching exit code ONLY, so a session receives just
+    the workflow its phase needs instead of the whole manual.
+
+    Returns an empty string when there is no fragment for the exit code
+    (analysis / exit 0) or the file is missing, so ``build_context`` omits the
+    section entirely.
     """
-    instructions_path = resolve_agent_instructions()
-    if not instructions_path.exists():
-        return "## Instructions\n\nSee cve_agent/AGENT_INSTRUCTIONS.md for workflow details."
-    return ("## Instructions\n\nFollow the workflow, scope rules, and commit "
-            "message format from AGENT_INSTRUCTIONS.md (already provided as "
-            "your system prompt / agent instructions for this session).")
+    filename = _PHASE_INSTRUCTION_FILES.get(exit_code)
+    if not filename:
+        return ""
+    fragment = Path(__file__).parent / "instructions" / filename
+    if not fragment.is_file():
+        return ""
+    return f"## Instructions\n\n{fragment.read_text(encoding='utf-8').strip()}"
 
 
 def _gather_context_for_exit_code(workspace_path: Path, exit_code: int,
@@ -250,7 +264,11 @@ def _gather_conflict_context(workspace_path: Path, cve_info: dict) -> str:
 
 
 def _gather_build_error_context(workspace_path: Path) -> str:
-    """Gather context for build error resolution.
+    """Gather the dynamic build-error data (last commit; log pointers).
+
+    The static how-to-fix guidance (stale-sstate recovery, cross-recipe
+    aborts) lives in the ``build.md`` phase fragment embedded alongside this
+    section in ``context.md`` — it is not repeated here.
 
     Args:
         workspace_path: Path to workspace where build failed.
@@ -263,23 +281,21 @@ def _gather_build_error_context(workspace_path: Path) -> str:
     return (
         f"## Build Error Details\n\n"
         f"### Last Commit (stat)\n```\n{last_commit}\n```\n\n"
-        f"Run `git show HEAD` to see the full diff.\n\n"
-        f"Check build logs in the Yocto build directory for specific errors.\n"
-        f"Run `devtool build <recipe>` to reproduce.\n\n"
-        f"**Stale build state**: if the failure is a missing generated file "
-        f"from a skipped/sstate-restored task — e.g. "
-        f"`cp: cannot stat '.config.orig'`, or a log showing only `do_compile` "
-        f"ran while `do_configure` was skipped — the recipe's sstate is stale, "
-        f"not your patch. Recover with `bitbake -c cleansstate <recipe>` then "
-        f"rebuild; do NOT escalate for this (see §3 of the instructions)."
+        f"Run `git show HEAD` to see the full diff. Check the build logs in "
+        f"the Yocto build directory (paths in the context header) for the "
+        f"specific error, and `devtool build <recipe>` to reproduce."
     )
 
 
 def _gather_ptest_error_context(workspace_path: Path, cve_info: dict) -> str:
-    """Gather context for ptest failure resolution.
+    """Gather the dynamic ptest-failure data (results, last commit, SHAs).
 
     Reads the cve_corrector state file to extract before/after ptest results
-    and the ptest log files for detailed failure information.
+    and the ptest log files for detailed failure information. The static
+    how-to-fix guidance (defect-vs-companion-commit triage, upstream history
+    search, ``suggested_commits`` escalation, "never hand-edit tests") lives
+    in the ``ptest.md`` phase fragment embedded alongside this section in
+    ``context.md`` — it is not repeated here.
 
     Args:
         workspace_path: Path to workspace where ptest failed.
@@ -299,48 +315,7 @@ def _gather_ptest_error_context(workspace_path: Path, cve_info: dict) -> str:
         f"{ptest_section}\n\n"
         f"### Last Commit (stat)\n```\n{last_commit}\n```\n\n"
         f"Run `git show HEAD` for the current backport, and `git show {sha}` "
-        f"for the upstream fix you backported.\n\n"
-        f"### What to fix and what to look for\n\n"
-        f"Classify each failing case before changing anything — a ptest "
-        f"regression is almost always one of two things:\n\n"
-        f"1. **A defect in the backport.** Your adaptation changed behavior in "
-        f"a way the test correctly rejects (mis-resolved conflict, dropped "
-        f"hunk, wrong signature/sign). Re-read the failing test to see what it "
-        f"asserts, compare with the upstream intent (`git show {sha}`), and fix "
-        f"the C/source **in the allowed files only**.\n"
-        f"2. **An expected behavior change upstream shipped a companion commit "
-        f"for.** Some fixes deliberately change observable behavior and "
-        f"upstream updates the test suite (or adds a follow-up fix) in a "
-        f"*separate* commit. The failing test then needs that commit — not a "
-        f"hand-edit.\n\n"
-        f"To tell them apart, search upstream history for a follow-up. The full "
-        f"upstream history is fetched as the `upstream` remote:\n"
-        f"```\n"
-        f"git log --oneline {sha}..upstream/master -- <failing_test_file>   "
-        f"# later commits touching that test (try upstream/main if master is absent)\n"
-        f"git log --oneline {sha}..upstream/master -- <code_area_under_test>\n"
-        f"git show <candidate_sha>                                          "
-        f"# confirm it addresses the failing case\n"
-        f"```\n"
-        f"Derive `<failing_test_file>` from the failing-case names above "
-        f"(e.g. a `tar` case lives in `testsuite/tar.tests`).\n\n"
-        f"Then:\n"
-        f"- **Companion commit touches only Allowed Files** \u2192 cherry-pick it "
-        f"as a separate follow-up commit (Strategy A) and re-verify.\n"
-        f"- **Companion commit touches files OUTSIDE the Allowed Files** (a "
-        f"testsuite update almost always does) \u2192 do NOT hand-edit those "
-        f"files. Escalate naming that commit in `suggested_commits` (see "
-        f"\"Suggesting a commit for a scope extension\") so the run can be "
-        f"retried with it added to the fix chain and your scope widened. Give "
-        f"the exact SHA you confirmed with `git show`.\n"
-        f"- **No companion commit and it is a real backport defect** \u2192 fix "
-        f"the code in the allowed files.\n\n"
-        f"**Rule**: Never hand-edit test cases — only backported source files "
-        f"may be modified directly. A legitimate upstream test update must come "
-        f"in as its own commit via `suggested_commits`, not by editing tests.\n\n"
-        f"In the `Conflicts Resolved:` commit message section, document: which "
-        f"ptest cases failed, the cause, and either the code change that fixed "
-        f"them or the companion commit you suggested."
+        f"for the upstream fix you backported."
     )
 
 
