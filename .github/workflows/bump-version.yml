@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-name: Bump patch version
+name: Bump minor version
 
 on:
   release:
@@ -30,14 +30,14 @@ jobs:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump patch version
+      - name: Bump minor version
         run: |
           NEW=$(python3 -c "
           import re, sys
           text = open('pyproject.toml').read()
-          m = re.search(r'^version = \"(\d+\.\d+\.)(\d+)\"', text, re.M)
+          m = re.search(r'^version = \"(\d+)\.(\d+)(?:\.\d+)?\"', text, re.M)
           if not m: sys.exit('version not found in pyproject.toml')
-          new_ver = m.group(1) + str(int(m.group(2)) + 1)
+          new_ver = f'{m.group(1)}.{int(m.group(2)) + 1}'
           open('pyproject.toml', 'w').write(text.replace(m.group(0), f'version = \"{new_ver}\"'))
           print(new_ver)
           ")
@@ -59,7 +59,7 @@ jobs:
             2>/dev/null || true
           gh pr create \
             --title "chore: bump version to ${{ env.NEW_VERSION }}" \
-            --body "Automated patch version bump to ${{ env.NEW_VERSION }} after release ${{ github.event.release.tag_name }}." \
+            --body "Automated minor version bump to ${{ env.NEW_VERSION }} after release ${{ github.event.release.tag_name }}." \
             --base main \
             --label "automated"
           gh pr merge --auto --squash
