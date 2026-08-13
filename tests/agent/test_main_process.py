@@ -37,13 +37,18 @@ class TestReadEscalation:
         agent_dir = self._write(
             tmp_path, {"needs_human": True, "reason": "prereq touches out-of-scope files"})
         with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
-            assert _read_escalation(tmp_path) == "prereq touches out-of-scope files"
+            esc = _read_escalation(tmp_path)
+        assert esc is not None
+        assert esc.reason == "prereq touches out-of-scope files"
+        assert esc.suggested_commits == []
 
     def test_needs_human_without_reason_has_default(self, tmp_path):
         from cve_agent.orchestrator import _read_escalation
         agent_dir = self._write(tmp_path, {"needs_human": True})
         with patch("cve_agent.orchestrator.get_agent_dir", return_value=agent_dir):
-            assert "human review" in _read_escalation(tmp_path)
+            esc = _read_escalation(tmp_path)
+        assert esc is not None
+        assert "human review" in esc.reason
 
     def test_not_applicable_is_not_escalation(self, tmp_path):
         """A not_applicable conclusion must NOT read as an escalation."""
