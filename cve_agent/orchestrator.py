@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from shared.url_parser import HASH_RE, extract_commit_hash
+
 from . import (
     EXIT_ALREADY_APPLIED,
     EXIT_BUILD_ERROR,
@@ -31,12 +33,47 @@ from .knowledge import KnowledgeBase, gather_pattern_details, save_knowledge_pat
 from .review import build_change_summary, request_approval
 from .session import guarded_session
 
+# Safety cap on how many times a single CVE run may be re-launched with an
+# agent-suggested, human/trust-accepted commit appended to the chain. Prevents
+# a misbehaving session from suggesting an endless stream of commits.
+_MAX_CHAIN_EXTENSIONS = 3
+
 
 @dataclasses.dataclass
 class _AttemptOutcome:
     """Result of a single resolution attempt."""
     result: Optional[CveResult] = None
     next_step: Optional[int] = None
+
+
+@dataclasses.dataclass
+class _Escalation:
+    """A parsed ``needs_human`` conclusion.
+
+    ``suggested_commits`` holds any upstream commits the agent named as needed
+    to complete the backport but which reach files outside its current
+    allowed-files scope (a companion/prerequisite commit). Each entry is a
+    commit URL or a full SHA; empty when the agent asked for review without
+    proposing a concrete commit.
+    """
+    reason: str
+    suggested_commits: list[str] = dataclasses.field(default_factory=list)
+
+
+class _AcceptedSuggestion(Exception):
+    """Signals that a human (or ``--trust``) accepted agent-suggested commits.
+
+    Carries the full, ordered ``--fix-url`` chain (original fix first, then the
+    accepted commits) to re-run the corrector with. The corrector records the
+    whole chain in its ``series_state``, and ``get_all_upstream_shas`` feeds
+    that back into the next session's allowed files — so the guard extends to
+    the suggested commits' files automatically, no guard code changes needed.
+    """
+
+    def __init__(self, fix_urls: list[str], new_hashes: list[str]) -> None:
+        super().__init__()
+        self.fix_urls = fix_urls
+        self.new_hashes = new_hashes
 
 
 def _make_result(cve_id: str, status: ResultStatus, retries: int,
@@ -65,7 +102,7 @@ def _read_conclusion(workspace_path: Path) -> Optional[str]:
     return None
 
 
-def _read_escalation(workspace_path: Path) -> Optional[str]:
+def _read_escalation(workspace_path: Path) -> Optional[_Escalation]:
     """Read the agent conclusion file if it asked for human review.
 
     Distinct from :func:`_read_conclusion`: a ``needs_human`` conclusion means
@@ -73,6 +110,13 @@ def _read_escalation(workspace_path: Path) -> Optional[str]:
     prerequisite that reaches outside the allowed files, or a structural
     dependency). It must escalate to a human — NOT be marked not-applicable,
     which would wrongly report the vulnerability as a non-issue.
+
+    When the agent also names ``suggested_commits`` (a companion/prerequisite
+    commit whose files fall outside the current allowed scope), those are
+    returned so the caller can offer to re-run with an extended commit chain.
+
+    Returns:
+        An :class:`_Escalation` if the agent requested review, else ``None``.
     """
     try:
         conclusion_file = get_agent_dir(workspace_path) / 'conclusion.json'
@@ -80,10 +124,147 @@ def _read_escalation(workspace_path: Path) -> Optional[str]:
             return None
         data = json.loads(conclusion_file.read_text(encoding='utf-8'))
         if data.get('needs_human'):
-            return data.get('reason', 'Agent requested human review (no details)')
+            reason = data.get('reason', 'Agent requested human review (no details)')
+            raw = data.get('suggested_commits')
+            suggested: list[str] = []
+            if isinstance(raw, list):
+                suggested = [str(c).strip() for c in raw if str(c).strip()]
+            return _Escalation(reason=reason, suggested_commits=suggested)
     except (json.JSONDecodeError, OSError):
         pass
     return None
+
+
+def _original_fix_url(cve_info: dict) -> Optional[str]:
+    """Return the first fix-commit URL from the CVE metadata, if any.
+
+    Prefers ``patches`` (the human-facing fix URLs), falling back to
+    ``hash_details`` URLs. Only returns a URL that :func:`extract_commit_hash`
+    can resolve to a commit — otherwise it is useless as the head of a
+    ``--fix-url`` chain.
+    """
+    for url in cve_info.get('patches') or []:
+        if isinstance(url, str) and extract_commit_hash(url):
+            return url
+    for detail in cve_info.get('hash_details') or []:
+        url = detail.get('url')
+        if isinstance(url, str) and extract_commit_hash(url):
+            return url
+    return None
+
+
+def _normalize_suggestion(suggestion: str, ref_url: Optional[str],
+                          ref_hash: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve one agent suggestion to a ``(fix_url, hash)`` pair.
+
+    A suggestion is either a full commit URL or a bare commit SHA. A URL is
+    accepted as-is once :func:`extract_commit_hash` confirms it names a commit.
+    A bare SHA is turned into a fetchable URL by substituting it into the
+    original fix URL's template (``ref_url``) — the sibling commit lives in the
+    same repository and forge, so the proven URL shape carries over verbatim,
+    which keeps this forge-agnostic. Returns ``(None, None)`` when the
+    suggestion cannot be resolved.
+    """
+    if '://' in suggestion:
+        commit_hash = extract_commit_hash(suggestion)
+        return (suggestion, commit_hash) if commit_hash else (None, None)
+    if HASH_RE.fullmatch(suggestion) and ref_url and ref_hash and ref_hash in ref_url:
+        candidate = ref_url.replace(ref_hash, suggestion)
+        if extract_commit_hash(candidate) == suggestion:
+            return candidate, suggestion
+    return None, None
+
+
+def _build_extended_chain(cve_info: dict,
+                          suggested: list[str]) -> tuple[list[str], list[str]]:
+    """Build the ordered ``--fix-url`` chain for a re-run.
+
+    The chain is ``[original_fix_url, *accepted_suggestions]``. Suggestions
+    that cannot be resolved to a fetchable URL, or that duplicate a commit
+    already in the chain, are skipped.
+
+    Returns:
+        ``(fix_urls, new_hashes)``. Both are empty if there is no resolvable
+        original fix URL or no genuinely new commit to add.
+    """
+    original_url = _original_fix_url(cve_info)
+    if not original_url:
+        print("  \u26a0 No resolvable fix URL in metadata — cannot build an "
+              "extended chain; escalating")
+        return [], []
+
+    hashes = cve_info.get('hashes') or []
+    original_hash = hashes[0] if hashes else None
+    existing = set(hashes)
+
+    chain = [original_url]
+    new_hashes: list[str] = []
+    for suggestion in suggested:
+        url, commit_hash = _normalize_suggestion(
+            suggestion, original_url, original_hash)
+        if not url or not commit_hash:
+            print(f"  \u26a0 Could not resolve suggested commit '{suggestion}' "
+                  f"to a fetchable URL — skipping")
+            continue
+        if commit_hash in existing or commit_hash in new_hashes:
+            print(f"  Suggested commit {commit_hash[:12]} already in chain — "
+                  f"skipping")
+            continue
+        chain.append(url)
+        new_hashes.append(commit_hash)
+
+    if not new_hashes:
+        return [], []
+    return chain, new_hashes
+
+
+def _accept_suggestion(config: AgentConfig, new_hashes: list[str]) -> bool:
+    """Decide whether to accept agent-suggested commits.
+
+    ``--trust`` auto-accepts (the operator has already opted into unattended
+    operation). Interactive runs prompt the human. A non-interactive run
+    without ``--trust`` cannot safely widen scope on its own, so it declines
+    and the caller escalates.
+    """
+    joined = ', '.join(h[:12] for h in new_hashes)
+    if config.trust_mode:
+        print(f"  --trust: auto-accepting suggested commit(s) {joined}; "
+              f"re-running with extended scope")
+        return True
+    if config.interactive:
+        response = input(
+            f"  Accept suggested commit(s) {joined} and re-run with extended "
+            f"scope? [y/N]: "
+        ).strip().lower()
+        return response in ('y', 'yes')
+    print("  Non-interactive without --trust: cannot auto-accept a scope "
+          "extension — escalating")
+    return False
+
+
+def _handle_escalation(config: AgentConfig, cve_info: dict,
+                       escalation: _Escalation, attempt: int,
+                       start_time: float) -> CveResult:
+    """Report an escalation and, if commits were suggested and accepted,
+    signal a re-run with an extended chain.
+
+    Raises:
+        _AcceptedSuggestion: when suggested commits are accepted (interactive
+            approval or ``--trust``), carrying the new ``--fix-url`` chain.
+    """
+    print("\n\u26a0 Agent escalated to human review:")
+    print(f"  {escalation.reason}")
+    if escalation.suggested_commits:
+        print(f"  Agent suggested commit(s): "
+              f"{', '.join(escalation.suggested_commits)}")
+        chain, new_hashes = _build_extended_chain(
+            cve_info, escalation.suggested_commits)
+        if new_hashes and _accept_suggestion(config, new_hashes):
+            raise _AcceptedSuggestion(chain, new_hashes)
+    return _make_result(
+        config.cve_id, ResultStatus.ESCALATED, attempt, start_time,
+        escalation.reason
+    )
 
 
 def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
@@ -192,14 +373,10 @@ def _run_single_resolution_attempt(
             attempt, start_time, conclusion_reason
         ))
 
-    escalation_reason = _read_escalation(workspace_path)
-    if escalation_reason:
-        print("\n\u26a0 Agent escalated to human review:")
-        print(f"  {escalation_reason}")
-        return _AttemptOutcome(result=_make_result(
-            config.cve_id, ResultStatus.ESCALATED,
-            attempt, start_time, escalation_reason
-        ))
+    escalation = _read_escalation(workspace_path)
+    if escalation:
+        return _AttemptOutcome(result=_handle_escalation(
+            config, cve_info, escalation, attempt, start_time))
 
     if not workspace_path.exists():
         return _AttemptOutcome(result=_make_result(
@@ -344,6 +521,10 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
         return _make_result(config.cve_id, ResultStatus.SKIPPED, 0,
                             start_time, conclusion_reason)
 
+    escalation = _read_escalation(workspace_path)
+    if escalation:
+        return _handle_escalation(config, cve_info, escalation, 0, start_time)
+
     approval, _ = request_approval(workspace_path, upstream_sha, config)
 
     if approval == "rejected":
@@ -382,12 +563,55 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
 
 def process_single_cve(config: AgentConfig,
                        knowledge_base: KnowledgeBase) -> CveResult:
-    """Process a single CVE through the full agent workflow."""
+    """Process a single CVE through the full agent workflow.
+
+    Wraps :func:`_run_cve_pipeline` in a re-run loop: when the agent suggests a
+    companion/prerequisite commit and it is accepted (interactive approval or
+    ``--trust``), the pipeline raises :class:`_AcceptedSuggestion` and we
+    re-launch with the accepted commit appended to the ``--fix-url`` chain. The
+    corrector then cherry-picks the whole chain, which widens the session's
+    allowed-files guard to the suggested commit's files automatically.
+    """
     start_time = time.monotonic()
     print(f"\n{'=' * 60}")
     print(f"Processing {config.cve_id}")
     print(f"{'=' * 60}")
 
+    accepted_hashes: set[str] = set()
+    extensions = 0
+    while True:
+        try:
+            return _run_cve_pipeline(config, knowledge_base, start_time)
+        except _AcceptedSuggestion as accepted:
+            genuinely_new = [h for h in accepted.new_hashes
+                             if h not in accepted_hashes]
+            if not genuinely_new or extensions >= _MAX_CHAIN_EXTENSIONS:
+                return _make_result(
+                    config.cve_id, ResultStatus.ESCALATED, 0, start_time,
+                    "Suggested commits already tried or chain-extension cap "
+                    f"({_MAX_CHAIN_EXTENSIONS}) reached — escalating"
+                )
+            accepted_hashes.update(genuinely_new)
+            extensions += 1
+            # Keep --cve-info (version + recipe metadata); the fix-url chain is
+            # authoritative for which commits are applied, and clean=True forces
+            # a fresh cherry-pick of the whole chain.
+            config = dataclasses.replace(
+                config, fix_urls=accepted.fix_urls, clean=True)
+            print(f"\n{'=' * 60}")
+            print(f"Re-running {config.cve_id} with extended commit chain "
+                  f"({len(accepted.fix_urls)} commits, "
+                  f"+{len(genuinely_new)} accepted)")
+            print(f"{'=' * 60}")
+
+
+def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase,
+                      start_time: float) -> CveResult:
+    """Run the CVE pipeline once (corrector -> resolution loop).
+
+    May raise :class:`_AcceptedSuggestion`, which :func:`process_single_cve`
+    catches to re-run with an extended commit chain.
+    """
     try:
         if config.cve_info_path:
             cve_data = load_cve_metadata(config.cve_info_path)
