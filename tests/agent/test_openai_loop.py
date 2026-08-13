@@ -77,6 +77,8 @@ class FakeRuntime:
         if tool_name in {"write_file", "git_stage", "git_cherry_pick_continue"}:
             self.mutation_generation += 1
             return self.result(tool_name, mutated=True)
+        if tool_name in {"git_commit", "git_amend"}:
+            return self.result(tool_name, mutated=True)
         if tool_name == "build_recipe":
             self.validated_generation = self.mutation_generation
             return self.result(tool_name, payload={"exit_status": 0})

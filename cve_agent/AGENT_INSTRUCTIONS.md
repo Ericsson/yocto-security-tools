@@ -425,9 +425,11 @@ the exact format below. Do not use shell redirection. For a native backend,
 do not edit Git-internal files: supply a concise resolution note to the
 advertised typed continuation operation. Trusted host code preserves the
 original message and appends one `Backport-resolution:` line plus one
-`Assisted-by: openai:<model>` trailer. If the preamble advertises no permitted
-way to create or amend the required commit, stop for human review rather than
-leave uncommitted changes.
+`Assisted-by: openai:<model>` trailer. If a later repair is needed after that
+commit, build the repaired source and use the typed `git_amend` operation with
+the exact repair paths and `message_mode=no_edit`. Use typed `git_commit` only
+for an intentionally separate follow-up commit; its bounded message receives
+trusted provenance. Never leave a completed repair only in the working tree.
 
 For a CLI backend retry (e.g. a build or ptest failure triggered another
 session after conflicts were already resolved), run `git log -1 --format=%B`
@@ -436,9 +438,11 @@ attempt, **update that existing block in place** — amend it to reflect the
 current state of the resolution — rather than appending a second block. The
 final CLI-created commit message must contain exactly one
 `Conflicts Resolved:` block and one `Assisted-by:` trailer. For a native retry,
-inspect the current commit through the advertised typed Git inspection and
-supply an updated concise resolution note through the permitted continuation;
-trusted host code keeps exactly one native provenance line and trailer.
+inspect the current commit through typed Git inspection, make and build the
+repair, then use typed amend with `message_mode=no_edit`. A bounded replacement
+message is available only when preserving the current message is inappropriate;
+trusted host code removes spoofed native provenance and adds exactly one native
+trailer.
 The length budget below applies to an updated CLI block exactly as it does to a
 fresh one — an amend is re-checked by the hook.
 

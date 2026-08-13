@@ -8,7 +8,7 @@ import json
 import os
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -114,10 +114,16 @@ def real_workspace(tmp_path: Path) -> RealWorkspace:
 
 class RecordingBuildRunner:
     def __init__(
-        self, workspace: RealWorkspace, *, returncode: int = 0, timed_out: bool = False
+        self,
+        workspace: RealWorkspace,
+        *,
+        returncode: int = 0,
+        returncodes: list[int] | None = None,
+        timed_out: bool = False,
     ) -> None:
         self.workspace = workspace
         self.returncode = returncode
+        self.returncodes = list(returncodes or [])
         self.timed_out = timed_out
         self.calls: list[dict[str, object]] = []
 
@@ -132,7 +138,7 @@ class RecordingBuildRunner:
             }
         )
         return BuildCommandResult(
-            returncode=self.returncode,
+            returncode=self.returncodes.pop(0) if self.returncodes else self.returncode,
             duration=0.01,
             timed_out=self.timed_out,
             tail="deterministic build output",
@@ -175,7 +181,10 @@ def _request_contract(body: dict[str, object]) -> None:
     tools = body["tools"]
     assert isinstance(tools, list)
     names = {tool["function"]["name"] for tool in tools}
-    assert {"read_file", "replace_in_file", "git_stage", "build_recipe", "finish"} <= names
+    assert {
+        "read_file", "replace_in_file", "git_stage", "git_commit", "git_amend",
+        "build_recipe", "finish",
+    } <= names
     assert all(tool["type"] == "function" for tool in tools)
     assert all(tool["function"]["parameters"]["additionalProperties"] is False for tool in tools)
 
@@ -464,6 +473,106 @@ def test_socket_cherry_pick_conflict_resolution_has_trusted_provenance(
         for call in message.get("tool_calls", [])
     ]
     assert not ({"shell", "git_reset", "git_add_all"} & set(all_calls))
+
+
+def test_socket_clean_pick_failed_build_repair_amend_and_finish(
+    real_workspace: RealWorkspace,
+) -> None:
+    """Record an already-built post-pick repair in HEAD before trusted finish."""
+    branch = _git(real_workspace.repo, "branch", "--show-current")
+    original = real_workspace.target.read_text(encoding="utf-8")
+    _git(real_workspace.repo, "switch", "-q", "-c", "clean-upstream")
+    picked_content = original + "security = upstream;\n"
+    real_workspace.target.write_text(picked_content, encoding="utf-8")
+    _git(real_workspace.repo, "add", "--", real_workspace.target.name)
+    _git(real_workspace.repo, "commit", "-m", "clean upstream security fix")
+    upstream = _git(real_workspace.repo, "rev-parse", "HEAD")
+    _git(real_workspace.repo, "switch", "-q", branch)
+    workspace = replace(real_workspace, upstream=upstream)
+    repaired = original + "security = portable;\n"
+    runner = RecordingBuildRunner(workspace, returncodes=[1, 0])
+    actions = [
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call("context", "read_file", {"path": str(workspace.context)}),
+                tool_call(
+                    "pick", "git_cherry_pick_start", {"revision": workspace.upstream}),
+            )
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call("failed-build", "build_recipe", {}),
+            )
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call(
+                    "repair",
+                    "replace_in_file",
+                    {
+                        "path": workspace.target.name,
+                        "old_text": "security = upstream;\n",
+                        "new_text": "security = portable;\n",
+                        "expected_count": 1,
+                    },
+                ),
+            ),
+            check=_request_has_tool_results("failed-build"),
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call("successful-build", "build_recipe", {}),
+            )
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call(
+                    "amend",
+                    "git_amend",
+                    {"paths": [workspace.target.name], "message_mode": "no_edit"},
+                ),
+            ),
+            check=_request_has_tool_results("successful-build"),
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call(
+                    "finish",
+                    "finish",
+                    {
+                        "status": "done",
+                        "reason": "post-cherry-pick repair is built and amended",
+                        "summary": "portable security fix",
+                    },
+                ),
+            ),
+            check=_request_has_tool_results("amend"),
+        ),
+    ]
+
+    with ScriptedOpenAIServer(actions) as server:
+        backend, holder = _backend(server, workspace, runner)
+        result = _guarded(workspace, backend)
+
+    assert result.resolved and result.transcript_path is not None
+    assert [call["content"] for call in runner.calls] == [picked_content, repaired]
+    assert runner.calls[0]["head"] == runner.calls[1]["head"]
+    assert _git(workspace.repo, "rev-parse", "HEAD") != runner.calls[1]["head"]
+    assert _git(workspace.repo, "show", "HEAD:recipe.c") == repaired.rstrip("\n")
+    assert _git(workspace.repo, "status", "--porcelain") == ""
+    assert not (workspace.agent / "conclusion.json").exists()
+    events = [
+        json.loads(line)
+        for line in result.transcript_path.read_text(encoding="utf-8").splitlines()
+    ]
+    amend_event = next(
+        event for event in events
+        if event["event"] == "tool_result" and event.get("tool") == "git_amend")
+    assert amend_event["success"] is True
+    assert amend_event["mutation_generation"] == amend_event["validated_generation"]
+    runtime = holder["runtime"]
+    assert isinstance(runtime, OpenAIHostToolRuntime)
+    assert runtime.terminal_status == "done"
 
 
 @pytest.mark.parametrize(

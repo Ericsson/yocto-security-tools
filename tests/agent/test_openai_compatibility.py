@@ -200,6 +200,8 @@ def test_backend_instruction_assembly_has_one_matching_tool_preamble():
     assert native.count("Only the advertised native typed tools exist") == 1
     assert "`read_file`" in native
     assert "`build_recipe`" in native
+    assert "`git_commit`" in native
+    assert "`git_amend`" in native
     assert "`finish`" in native
     assert "There is no shell" in native
     assert "execute_bash" not in native

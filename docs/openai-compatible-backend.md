@@ -26,6 +26,25 @@ The backend does not require `/models`, Responses API conversation state,
 streaming, provider-specific reasoning controls, image/audio input, or
 arbitrary custom tools. Compatibility with those features is not claimed.
 
+## Typed commit recording
+
+Native Git operations are closed capabilities: revisions and exact paths are
+data, never arbitrary options. Cherry-pick start/continue/abort/skip are
+separate tools. `git_commit(paths, message)` stages only the named authorized
+paths and creates a bounded follow-up commit.
+`git_amend(paths, message_mode, message?)` uses either fixed
+`message_mode=no_edit` or a bounded replacement message. The host checks the
+repository state, NUL-delimited staged set, regular-file modes, and allowed-file
+scope before execution and verifies the resulting commit afterward.
+
+Replacement and follow-up messages receive one trusted native provenance
+trailer. Message text is carried in a mode-`0600` Git-internal temporary file,
+not as model-selected argv. A commit or amend records source content without
+changing it, so it does not invalidate a successful build of that same content.
+File and index/source mutations remain the build-validity boundary. This
+supports the normal sequence: repair an allowed file, build successfully,
+amend the exact repair paths, then request `finish(done)` with a clean tree.
+
 ## Local Ollama quick start
 
 Choose an Ollama model that advertises tool/function calling and has enough
@@ -134,8 +153,8 @@ disabled in both cases and credentials never follow a redirect.
 
 ## Approval, logs, and transcripts
 
-Pass `--interactive` (or `-i`) to approve native file/Git mutations, builds,
-and terminal outcomes. Inspection calls do not prompt. The prompt offers a
+Pass `--interactive` (or `-i`) to approve native file/Git mutations—including
+commit and amend—builds, and terminal outcomes. Inspection calls do not prompt. The prompt offers a
 one-time approval, approval for the operation class, or denial; EOF and
 non-TTY input deny. A denial is returned to the model as a structured tool
 error and is recorded in the transcript. Without `--interactive`, these

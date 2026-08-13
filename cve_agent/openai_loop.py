@@ -62,7 +62,7 @@ class HostToolRuntime(Protocol):
 
     @property
     def mutation_generation(self) -> int:
-        """Return the current durable mutation generation."""
+        """Return the current build-relevant mutation generation."""
 
     @property
     def validated_generation(self) -> Optional[int]:

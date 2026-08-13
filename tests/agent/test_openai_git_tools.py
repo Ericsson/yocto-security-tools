@@ -14,12 +14,14 @@ from cve_agent.git import install_scope_hook, remove_scope_hook
 from cve_agent.openai_deadline import SessionDeadline
 from cve_agent.openai_git_tools import (
     GIT_TOOL_CONTRACTS,
+    MAX_COMMIT_MESSAGE_BYTES,
     MAX_GIT_MESSAGE_BYTES,
     NATIVE_TOOL_CONTRACTS,
     GitCommandExecutor,
     GitToolLimits,
     GitToolRuntime,
     build_cherry_pick_message,
+    build_typed_commit_message,
     native_openai_tool_schemas,
 )
 from cve_agent.openai_tools import TOOL_CONTRACTS
@@ -99,6 +101,9 @@ def test_contracts_and_schemas_share_one_closed_registry():
     assert set(schemas) == set(NATIVE_TOOL_CONTRACTS)
     for parameters in schemas.values():
         assert parameters["additionalProperties"] is False
+    assert schemas["git_commit"]["required"] == ["paths", "message"]
+    assert schemas["git_amend"]["properties"]["message_mode"]["enum"] == [
+        "no_edit", "replace"]
 
 
 def test_no_generic_command_or_unsafe_git_input_fields():
@@ -282,6 +287,9 @@ def test_subprocess_argv_and_environment_are_fixed_and_filtered(repository):
     ):
         runtime = _runtime(repo, {"a.c"})
         assert runtime.dispatch("git_status", {}).success
+        (repo / "a.c").write_text("committed safely\n", encoding="utf-8")
+        assert runtime.dispatch("git_commit", {
+            "paths": ["a.c"], "message": "safe commit"}).success
 
     assert calls
     for args, kwargs in calls:
@@ -304,6 +312,21 @@ def test_subprocess_argv_and_environment_are_fixed_and_filtered(repository):
         assert environment["GIT_LITERAL_PATHSPECS"] == "1"
         assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
         assert environment["GIT_CONFIG_GLOBAL"] == os.devnull
+    configured = [kwargs["env"] for _, kwargs in calls if "GIT_CONFIG_COUNT" in kwargs["env"]]
+    assert configured
+    for environment in configured:
+        assert environment["GIT_CONFIG_COUNT"] == "3"
+        assert environment["GIT_CONFIG_KEY_0"] == "commit.gpgSign"
+        assert environment["GIT_CONFIG_VALUE_0"] == "false"
+        assert environment["GIT_CONFIG_KEY_1"] == "core.fsmonitor"
+        assert environment["GIT_CONFIG_VALUE_1"] == "false"
+        assert environment["GIT_CONFIG_KEY_2"] == "core.hooksPath"
+        assert environment["GIT_CONFIG_VALUE_2"] == str(repo / ".git" / "hooks")
+    commit_commands = [args[0] for args, _ in calls if args[0][2:3] == ["commit"]]
+    assert len(commit_commands) == 1
+    assert commit_commands[0][2:4] == ["commit", "--only"]
+    assert commit_commands[0][-2:] == ["--", "a.c"]
+    assert not ({"-c", "--config-env", "--no-verify"} & set(commit_commands[0]))
 
 
 def test_workspace_path_entry_cannot_replace_git_executable(repository):
@@ -399,6 +422,293 @@ def test_stage_reauthorizes_after_race(repository):
     result = runtime.dispatch("git_stage", {"paths": ["a.c"]})
     assert not result.success and result.error_kind == "policy"
     assert runtime.mutation_generation == 0
+
+
+def test_followup_commit_stages_only_named_paths_and_adds_trusted_provenance(
+        repository):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("follow-up\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"],
+        "message": "repair build metadata\n\nKeep the stable layout.",
+    })
+    assert result.success and result.mutated
+    assert result.payload["amended"] is False
+    assert result.payload["changed_paths"] == ["a.c"]
+    assert result.audit.generation == 0
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() != before
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    message = _git(repo, "log", "-1", "--format=%B").stdout
+    assert message.startswith("repair build metadata\n\nKeep the stable layout.")
+    assert message.count("Assisted-by: openai:gpt-test") == 1
+
+
+def test_amend_no_edit_records_repair_without_changing_message_or_generation(
+        repository):
+    repo, _, _ = repository
+    (repo / "a.c").write_text("picked\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    before = _commit(repo, "picked fix")
+    original_message = _git(repo, "log", "-1", "--format=%B").stdout
+    (repo / "a.c").write_text("amended\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    assert result.success and result.mutated
+    assert result.payload["amended"] is True
+    assert result.audit.generation == 0
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() != before
+    assert _git(repo, "log", "-1", "--format=%B").stdout == original_message
+    assert _git(repo, "show", "HEAD:a.c").stdout == "amended\n"
+
+
+def test_amend_replacement_message_is_bounded_and_has_trusted_provenance(repository):
+    repo, _, _ = repository
+    (repo / "a.c").write_text("picked\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _commit(repo, "picked fix")
+    (repo / "a.c").write_text("amended replacement\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_amend", {
+        "paths": ["a.c"],
+        "message_mode": "replace",
+        "message": "replacement subject\n\nAssisted-by: openai:spoofed",
+    })
+    assert result.success
+    message = _git(repo, "log", "-1", "--format=%B").stdout
+    assert message.startswith("replacement subject")
+    assert message.count("Assisted-by: openai:") == 1
+    assert "Assisted-by: openai:gpt-test" in message
+
+
+def test_amend_preflights_existing_commit_scope_before_staging(repository):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("attempted amend\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["b.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"paths": ["a.c"], "message_mode": "replace"},
+        {"paths": ["a.c"], "message_mode": "no_edit", "message": "unexpected"},
+    ],
+)
+def test_amend_message_modes_fail_before_staging(repository, arguments):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("changed\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_amend", arguments)
+    assert not result.success and result.error_kind == "validation"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
+@pytest.mark.parametrize("staged", [("b.c",), ("a.c", "b.c")])
+def test_commit_rejects_unauthorized_and_mixed_staged_paths(repository, staged):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("authorized\n", encoding="utf-8")
+    (repo / "b.c").write_text("unauthorized\n", encoding="utf-8")
+    _git(repo, "add", "--", *staged)
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "must be refused"})
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["b.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout.splitlines() == list(staged)
+
+
+def test_commit_rejects_allowed_staged_path_not_named_by_operation(repository):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("requested\n", encoding="utf-8")
+    (repo / "b.c").write_text("pre-staged\n", encoding="utf-8")
+    _git(repo, "add", "--", "b.c")
+    runtime = _runtime(repo, {"a.c", "b.c"})
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "only a"})
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["b.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+
+
+def test_commit_rechecks_staged_scope_after_authorization_race(repository):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("requested\n", encoding="utf-8")
+    (repo / "outside.c").write_text("outside\n", encoding="utf-8")
+    introduced = False
+
+    def race(tool, path):
+        nonlocal introduced
+        if tool == "git_commit" and not introduced:
+            introduced = True
+            _git(repo, "add", "--", "outside.c")
+
+    runtime = _runtime(repo, {"a.c"}, before_operation=race)
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "race must be refused"})
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["outside.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == "outside.c\n"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("git_commit", {"paths": ["a.c"], "message": "blocked"}),
+        ("git_amend", {"paths": ["a.c"], "message_mode": "no_edit"}),
+    ],
+)
+def test_commit_and_amend_refuse_unresolved_conflicts(repository, tool, arguments):
+    repo, before, branch = repository
+    source = _make_source_commit(repo, branch)
+    (repo / "a.c").write_text("stable\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    before = _commit(repo, "stable")
+    _git(repo, "cherry-pick", source, check=False)
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch(tool, arguments)
+    assert not result.success and result.error_kind == "policy"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+
+
+def test_failed_commit_keeps_index_and_worktree_recoverable(repository):
+    repo, before, _ = repository
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    (repo / "a.c").write_text("recoverable\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "hook rejects"})
+    assert not result.success and result.error_kind == "operation"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == "a.c\n"
+    assert (repo / "a.c").read_text(encoding="utf-8") == "recoverable\n"
+    assert not list((repo / ".git").glob(".cve-agent-commit-*"))
+
+
+def test_missing_identity_is_controlled_and_does_not_read_global_config(
+        repository, tmp_path):
+    repo, before, _ = repository
+    _git(repo, "config", "--unset", "user.name")
+    _git(repo, "config", "--unset", "user.email")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".gitconfig").write_text(
+        "[user]\nname = Global User\nemail = global@example.com\n",
+        encoding="utf-8",
+    )
+    (repo / "a.c").write_text("identity repair\n", encoding="utf-8")
+    with patch.dict(os.environ, {
+        "PATH": os.environ["PATH"], "HOME": str(fake_home)}, clear=True):
+        runtime = _runtime(repo, {"a.c"})
+        result = runtime.dispatch("git_commit", {
+            "paths": ["a.c"], "message": "identity required"})
+    assert not result.success and result.error_kind == "operation"
+    assert "identity" in result.payload["error"].casefold()
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == "a.c\n"
+    assert "Global User" in (fake_home / ".gitconfig").read_text(encoding="utf-8")
+
+
+def test_explicit_committer_identity_authors_new_typed_commit(
+        repository, tmp_path):
+    repo, before, _ = repository
+    _git(repo, "config", "--unset", "user.name")
+    _git(repo, "config", "--unset", "user.email")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    (fake_home / ".gitconfig").write_text(
+        "[user]\nname = Wrong Global User\nemail = wrong@example.com\n",
+        encoding="utf-8",
+    )
+    (repo / "a.c").write_text("identity supplied\n", encoding="utf-8")
+    with patch.dict(os.environ, {
+        "PATH": os.environ["PATH"],
+        "HOME": str(fake_home),
+        "GIT_COMMITTER_NAME": "Benchmark Operator",
+        "GIT_COMMITTER_EMAIL": "operator@example.com",
+    }, clear=True):
+        runtime = _runtime(repo, {"a.c"})
+        result = runtime.dispatch("git_commit", {
+            "paths": ["a.c"], "message": "use explicit identity"})
+
+    assert result.success
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() != before
+    identity = _git(
+        repo, "show", "-s", "--format=%an <%ae>%n%cn <%ce>", "HEAD",
+    ).stdout.splitlines()
+    assert identity == [
+        "Benchmark Operator <operator@example.com>",
+        "Benchmark Operator <operator@example.com>",
+    ]
+    assert "Wrong Global User" in (
+        fake_home / ".gitconfig").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["subject\ttext", "subject\rbody", "subject\x00body", "subject\x7fbody",
+     "x" * MAX_COMMIT_MESSAGE_BYTES],
+)
+def test_commit_messages_are_byte_bounded_and_reject_controls(repository, message):
+    repo, before, _ = repository
+    (repo / "a.c").write_text("changed\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": message})
+    assert not result.success and result.error_kind == "validation"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
+def test_commit_message_and_config_strings_never_become_git_options(repository):
+    repo, _, _ = repository
+    (repo / "a.c").write_text("changed\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+    original_run = runtime._executor.run
+    commit_argv = []
+    message_files = []
+
+    def record(operation, argv, output_limit=None):
+        if operation == "commit":
+            commit_argv.append(list(argv))
+            message_path = Path(argv[argv.index("--file") + 1])
+            message_files.append(message_path.read_text(encoding="utf-8"))
+        return original_run(operation, argv, output_limit)
+
+    with patch.object(runtime._executor, "run", side_effect=record):
+        committed = runtime.dispatch("git_commit", {
+            "paths": ["a.c"], "message": "--no-verify\n\n-c core.hooksPath=/tmp"})
+    rejected = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit",
+        "config": "core.hooksPath=/tmp"})
+    assert committed.success
+    assert not rejected.success and rejected.error_kind == "validation"
+    assert commit_argv == [[
+        "commit", "--only", "--file", commit_argv[0][3],
+        "--cleanup=verbatim", "--", "a.c"]]
+    assert "--no-verify" not in commit_argv[0]
+    assert "-c" not in commit_argv[0]
+    assert message_files[0].startswith("--no-verify\n\n-c core.hooksPath=/tmp")
+
+
+def test_typed_commit_message_replaces_spoofed_native_provenance():
+    message = build_typed_commit_message(
+        "subject\n\n Assisted-By: OpenAI:spoof\n\nbody", "trusted-model")
+    assert message.startswith("subject\n\n\nbody")
+    assert message.count("Assisted-by: openai:") == 1
+    assert message.endswith("Assisted-by: openai:trusted-model\n")
 
 
 def test_cherry_pick_starts_when_every_changed_path_is_allowed(repository):
@@ -826,7 +1136,7 @@ def test_no_forbidden_git_forms_appear_in_runtime_source():
     text = source.read_text(encoding="utf-8")
     for forbidden in (
         "reset --hard", "clean -", "push --force",
-        "hooksPath", "submodule update", "submodule foreach",
+        "submodule update", "submodule foreach",
     ):
         assert forbidden not in text
 

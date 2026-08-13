@@ -122,7 +122,8 @@ rejection, single-link enforcement, and atomic same-directory replacement. The e
 scope hook remains an independent later defense; the file tools do not rely
 on it and expose no shell or subprocess surface.
 
-The native typed Git runtime shares that dispatcher and mutation generation.
+The native typed Git runtime shares that dispatcher and build-relevant mutation
+generation.
 It maps named operations to host-built argv, runs a fixed `git` executable
 with `shell=False`, removes proxy/SSH credentials and unsafe workspace PATH
 entries from the filtered environment, disables pagers/editors/external diff,
@@ -133,6 +134,12 @@ tracked state, enumerates root/rename/copy/add/delete paths, and rejects
 out-of-scope, symlink, or gitlink changes before the first mutation. Continue
 also refuses staged paths not changed by the active commit; the existing scope
 hook and post-session check remain defense in depth.
+Typed commit and amend operations stage only explicitly named authorized paths,
+refuse any other staged content or unresolved operation, and constrain the Git
+commit itself with literal `--only -- <paths>` operands. Follow-up messages are
+bounded and carried through a protected Git-internal file; amend defaults to
+fixed `--no-edit`. Host checks verify that every resulting commit path and mode
+remains permitted.
 
 `OpenAIHostToolRuntime` composes those file and Git boundaries with a single
 injectable monotonic `SessionDeadline`. The build operation has no model
@@ -141,8 +148,11 @@ arguments: host code derives the validated recipe and runs exactly
 Output is drained while at most 16 MiB is streamed to an atomically replaced,
 single-link mode-`0600` trusted log; only a bounded tail is returned. Timeout
 sends `SIGTERM`, then bounded-grace `SIGKILL`, to the whole process group and
-always reaps the leader. A successful build records the current mutation
-generation; every later successful mutation makes that validation stale.
+always reaps the leader. A successful build records the current build-relevant
+mutation generation; every later file edit or standalone stage/unstage/remove
+or cherry-pick mutation makes that validation stale. Commit and amend only
+record already-built content and therefore report a durable mutation without
+advancing that generation.
 
 Terminal state is likewise host-owned. `finish(done)` requires no active Git
 operation or conflicts, a clean index/worktree, in-scope durable changes, and

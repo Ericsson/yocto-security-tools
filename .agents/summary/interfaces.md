@@ -88,6 +88,8 @@ The Git tools are:
   `git_unmerged_files`, and `git_submodule_status`;
 - exact-path mutation: `git_stage`, `git_unstage`, `git_remove`, and
   `git_restore_conflict`;
+- commit recording: `git_commit(paths, message)` and
+  `git_amend(paths, message_mode, message?)`;
 - lifecycle: `git_cherry_pick_start`, `git_cherry_pick_continue`,
   `git_cherry_pick_abort`, and `git_cherry_pick_skip`.
 
@@ -95,6 +97,9 @@ The dispatcher has no generic `git`, command, flags, config, environment,
 executable, hook, shell, or pathspec field. Revisions resolve to immutable
 commits before use. Cherry-pick start examines a raw root-aware tree diff and
 refuses out-of-scope paths, gitlinks, and merge commits before mutation.
+Commit/amend reject active operations, conflicts, unauthorized or unexpected
+staged paths, stage only exact named paths, and verify the resulting tree diff.
+Messages are byte-bounded and never become model-controlled Git options.
 
 ### Native OpenAI host tools
 

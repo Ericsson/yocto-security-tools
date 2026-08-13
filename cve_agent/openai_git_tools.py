@@ -14,7 +14,7 @@ import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, Optional
@@ -45,6 +45,7 @@ MAX_GIT_OUTPUT_BYTES = 256 * 1024
 MAX_GIT_DIFF_BYTES = 48 * 1024
 MAX_GIT_DIAGNOSTIC_BYTES = 2048
 MAX_RESOLUTION_NOTE_BYTES = 2048
+MAX_COMMIT_MESSAGE_BYTES = 16 * 1024
 MAX_GIT_COMMAND_SECONDS = 30
 MAX_GIT_MESSAGE_BYTES = 256 * 1024
 MAX_GIT_SEQUENCE_BYTES = 64 * 1024
@@ -128,6 +129,8 @@ _OPERATION_VERBS: Mapping[str, str] = {
     "tracked_path": "ls-files",
     "staged_paths": "diff",
     "baseline_ancestor": "merge-base",
+    "commit": "commit",
+    "amend": "commit",
     "stage": "add",
     "unstage": "restore",
     "remove": "rm",
@@ -243,6 +246,7 @@ class GitCommandExecutor:
         self.workspace = workspace
         self.deadline = deadline
         self.limits = limits
+        self.git_directory: Optional[Path] = None
 
     def run(self, operation: str, argv: Sequence[str],
             output_limit: Optional[int] = None) -> GitCommandResult:
@@ -257,7 +261,7 @@ class GitCommandExecutor:
         limit = self.limits.max_output_bytes if output_limit is None else output_limit
         limit = min(limit, self.limits.max_output_bytes)
         command = [GIT_EXECUTABLE, "--no-pager", *argv]
-        environment = self._environment(operation in _READ_ONLY_OPERATIONS)
+        environment = self._environment(operation)
 
         try:
             process = subprocess.Popen(
@@ -276,7 +280,7 @@ class GitCommandExecutor:
             self.deadline.remaining(), float(self.limits.max_command_seconds))
         return self._collect(process, timeout, limit)
 
-    def _environment(self, read_only: bool) -> dict[str, str]:
+    def _environment(self, operation: str) -> dict[str, str]:
         environment = native_subprocess_environment((self.workspace,))
         environment.update({
             "GIT_ASKPASS": "true",
@@ -290,9 +294,33 @@ class GitCommandExecutor:
             "GIT_TERMINAL_PROMPT": "0",
             "SSH_ASKPASS": "true",
         })
+        if self.git_directory is not None:
+            overrides = (
+                ("commit.gpgSign", "false"),
+                ("core.fsmonitor", "false"),
+                ("core.hooksPath", str(self.git_directory / "hooks")),
+            )
+            environment["GIT_CONFIG_COUNT"] = str(len(overrides))
+            for index, (key, value) in enumerate(overrides):
+                environment[f"GIT_CONFIG_KEY_{index}"] = key
+                environment[f"GIT_CONFIG_VALUE_{index}"] = value
         environment.pop("GIT_EXTERNAL_DIFF", None)
         environment.pop("GIT_DIFF_OPTS", None)
-        if read_only:
+        # A benchmark or other trusted launcher may provide only the operator's
+        # committer identity.  A new typed follow-up commit also needs an
+        # author, so use that explicit identity rather than consulting the
+        # disabled global configuration.  Do not do this for cherry-picks or
+        # amends: those operations must preserve the existing upstream author.
+        if operation == "commit":
+            if "GIT_AUTHOR_NAME" not in environment:
+                name = environment.get("GIT_COMMITTER_NAME")
+                if name:
+                    environment["GIT_AUTHOR_NAME"] = name
+            if "GIT_AUTHOR_EMAIL" not in environment:
+                email = environment.get("GIT_COMMITTER_EMAIL")
+                if email:
+                    environment["GIT_AUTHOR_EMAIL"] = email
+        if operation in _READ_ONLY_OPERATIONS:
             environment["GIT_OPTIONAL_LOCKS"] = "0"
         else:
             environment.pop("GIT_OPTIONAL_LOCKS", None)
@@ -492,6 +520,35 @@ GIT_TOOL_CONTRACTS: dict[str, ToolContract] = {
         },
         "_git_restore_conflict",
     ),
+    "git_commit": ToolContract(
+        "git_commit",
+        "Stage exact authorized paths and create one bounded follow-up commit.",
+        {
+            "paths": FieldContract(
+                "array", "Exact session-authorized files.", required=True,
+                min_items=1, max_items=MAX_GIT_PATHS, item_type="string"),
+            "message": FieldContract(
+                "string", "Bounded commit subject and optional body.", required=True,
+                min_length=1, max_length=MAX_COMMIT_MESSAGE_BYTES),
+        },
+        "_git_commit",
+    ),
+    "git_amend": ToolContract(
+        "git_amend",
+        "Stage exact authorized repair paths and amend HEAD with a fixed message mode.",
+        {
+            "paths": FieldContract(
+                "array", "Exact session-authorized repair files.", required=True,
+                min_items=1, max_items=MAX_GIT_PATHS, item_type="string"),
+            "message_mode": FieldContract(
+                "string", "Keep the current message or replace it with bounded text.",
+                required=True, enum=("no_edit", "replace")),
+            "message": FieldContract(
+                "string", "Required only when message_mode is replace.",
+                max_length=MAX_COMMIT_MESSAGE_BYTES),
+        },
+        "_git_amend",
+    ),
     "git_cherry_pick_start": ToolContract(
         "git_cherry_pick_start",
         "Preflight and start exactly one fully in-scope non-merge commit.",
@@ -556,6 +613,26 @@ def build_cherry_pick_message(original: str, resolution_note: Optional[str],
     return "\n\n".join(part for part in (body, *additions) if part) + "\n"
 
 
+def build_typed_commit_message(message: str, model: str) -> str:
+    """Return bounded model text with exactly one trusted provenance trailer."""
+    if any(character != "\n" and (ord(character) < 32 or ord(character) == 127)
+           for character in message):
+        raise ToolValidationError("commit message contains a control character")
+    if len(message.encode("utf-8")) > MAX_COMMIT_MESSAGE_BYTES:
+        raise ToolValidationError("commit message exceeds its byte limit")
+    retained = [
+        line for line in message.rstrip().splitlines()
+        if not line.lstrip().casefold().startswith("assisted-by: openai:")
+    ]
+    body = "\n".join(retained).rstrip()
+    if not body.strip():
+        raise ToolValidationError("commit message must not be empty")
+    result = f"{body}\n\nAssisted-by: openai:{model}\n"
+    if len(result.encode("utf-8")) > MAX_COMMIT_MESSAGE_BYTES:
+        raise ToolValidationError("commit message exceeds its byte limit")
+    return result
+
+
 def _normalize_resolution_note(note: Optional[str]) -> Optional[str]:
     if note is None:
         return None
@@ -607,6 +684,7 @@ class GitToolRuntime(FileToolRuntime):
         self._executor = GitCommandExecutor(
             self.workspace, self.deadline, self.git_limits)
         self._git_directory = self._discover_git_directory()
+        self._executor.git_directory = self._git_directory
         head = self._resolve_initial_head()
         self.repository_snapshot = RepositorySnapshot(
             head=head,
@@ -828,6 +906,55 @@ class GitToolRuntime(FileToolRuntime):
         self._require_returncode(result, "Git conflict restoration")
         return _ExecutionResult({"path": paths[0], "side": side}, mutated=True)
 
+    def _git_commit(self, arguments: dict[str, object]) -> _ExecutionResult:
+        message = build_typed_commit_message(
+            self._required_string(arguments, "message"), self._model)
+        paths, staged = self._stage_commit_paths(arguments, "git_commit")
+        with self._temporary_commit_message(message) as message_path:
+            return self._record_commit(
+                "commit",
+                ["commit", "--only", "--file", str(message_path),
+                 "--cleanup=verbatim", "--", *paths],
+                paths,
+                staged,
+                exact_commit_paths=True,
+            )
+
+    def _git_amend(self, arguments: dict[str, object]) -> _ExecutionResult:
+        mode = self._required_string(arguments, "message_mode")
+        message_value = arguments.get("message")
+        if mode == "no_edit":
+            if message_value is not None:
+                raise ToolValidationError(
+                    "message is accepted only when message_mode is replace")
+            argv = ["commit", "--amend", "--only", "--no-edit", "--"]
+            message: Optional[str] = None
+        else:
+            if not isinstance(message_value, str):
+                raise ToolValidationError(
+                    "message is required when message_mode is replace")
+            message = build_typed_commit_message(message_value, self._model)
+            argv = []
+
+        amend_head = self._preflight_amend_scope()
+        paths, staged = self._stage_commit_paths(arguments, "git_amend")
+        if self._preflight_amend_scope() != amend_head:
+            raise GitStateError("HEAD changed while preparing the amend", {})
+        if message is None:
+            return self._record_commit(
+                "amend", [*argv, *paths], paths, staged, exact_commit_paths=False,
+                expected_head=amend_head)
+        with self._temporary_commit_message(message) as message_path:
+            return self._record_commit(
+                "amend",
+                ["commit", "--amend", "--only", "--file", str(message_path),
+                 "--cleanup=verbatim", "--", *paths],
+                paths,
+                staged,
+                exact_commit_paths=False,
+                expected_head=amend_head,
+            )
+
     def _git_cherry_pick_start(self, arguments: dict[str, object]) -> _ExecutionResult:
         if any(self._operation_state().values()):
             raise ToolPolicyError("another Git operation is already in progress")
@@ -949,24 +1076,7 @@ class GitToolRuntime(FileToolRuntime):
                 "staged paths were not changed by the active cherry-pick",
                 unexpected,
             )
-        result = self._executor.run(
-            "tracked_path", ["ls-files", "--stage", "-z", "--", *staged])
-        self._require_complete(result, "Git staged-mode inspection")
-        unsupported = []
-        for record in result.stdout.split("\x00"):
-            if not record:
-                continue
-            header, separator, path = record.partition("\t")
-            parts = header.split()
-            if not separator or len(parts) != 3:
-                raise ToolOperationalError("Git returned malformed staged-mode data")
-            if parts[0] in {"120000", "160000"}:
-                unsupported.append(path)
-        if unsupported:
-            raise GitScopeError(
-                "staged symlink or gitlink paths are not supported",
-                sorted(set(unsupported)),
-            )
+        self._validate_staged_modes(staged)
         return staged
 
     def _git_cherry_pick_abort(self, arguments: dict[str, object]) -> _ExecutionResult:
@@ -998,6 +1108,187 @@ class GitToolRuntime(FileToolRuntime):
             "skipped": True,
             "head": self._current_head(),
         }, mutated=True)
+
+    def _stage_commit_paths(
+        self,
+        arguments: dict[str, object],
+        tool: str,
+    ) -> tuple[list[str], list[str]]:
+        self._require_idle_commit_state()
+        paths = self._mutation_paths(arguments, tool, allow_missing=True)
+        self._validate_commit_index(paths, require_changes=False)
+        result = self._executor.run("stage", ["add", "--", *paths])
+        self._require_returncode(result, "Git commit staging")
+        staged = self._validate_commit_index(paths, require_changes=True)
+        return paths, staged
+
+    def _require_idle_commit_state(self) -> None:
+        operations = self._operation_state()
+        active = sorted(name for name, present in operations.items() if present)
+        if active:
+            raise GitStateError(
+                "commit operations require no active Git operation",
+                {"operations": active},
+            )
+        unmerged = self._unmerged_entries()
+        if unmerged:
+            raise GitStateError(
+                "commit operations require a fully resolved index",
+                {"paths": [item["path"] for item in unmerged[:MAX_GIT_PATHS]]},
+            )
+
+    def _validate_commit_index(
+        self,
+        paths: Sequence[str],
+        *,
+        require_changes: bool,
+    ) -> list[str]:
+        self._require_idle_commit_state()
+        staged = self._staged_paths()
+        rejected = self._unauthorized_repository_paths(staged)
+        if rejected:
+            raise GitScopeError("staged paths are outside allowed_files", rejected)
+        unexpected = sorted(set(staged) - set(paths))
+        if unexpected:
+            raise GitScopeError(
+                "staged paths were not named by the commit operation",
+                unexpected,
+            )
+        if require_changes and not staged:
+            raise GitStateError("commit operation has no staged changes", {})
+        self._validate_staged_modes(staged)
+        return staged
+
+    def _validate_staged_modes(self, staged: Sequence[str]) -> None:
+        if not staged:
+            return
+        result = self._executor.run(
+            "tracked_path", ["ls-files", "--stage", "-z", "--", *staged])
+        self._require_complete(result, "Git staged-mode inspection")
+        unsupported = []
+        for record in result.stdout.split("\x00"):
+            if not record:
+                continue
+            header, separator, path = record.partition("\t")
+            parts = header.split()
+            if not separator or len(parts) != 3:
+                raise ToolOperationalError("Git returned malformed staged-mode data")
+            if parts[0] in {"120000", "160000"}:
+                unsupported.append(path)
+        if unsupported:
+            raise GitScopeError(
+                "staged symlink or gitlink paths are not supported",
+                sorted(set(unsupported)),
+            )
+
+    def _record_commit(
+        self,
+        operation: str,
+        argv: Sequence[str],
+        paths: Sequence[str],
+        staged: Sequence[str],
+        *,
+        exact_commit_paths: bool,
+        expected_head: Optional[str] = None,
+    ) -> _ExecutionResult:
+        before_head = self._current_head()
+        if expected_head is not None and before_head != expected_head:
+            raise GitStateError("HEAD changed before the commit operation", {})
+        result = self._executor.run(operation, argv)
+        after_head = self._current_head()
+        if after_head == before_head:
+            self._raise_git_failure(f"Git {operation}", result)
+
+        changed = self._changed_paths(after_head)
+        changed_paths = sorted({item.path for item in changed})
+        unsupported = sorted({
+            item.path for item in changed
+            if item.old_mode in {"120000", "160000"}
+            or item.new_mode in {"120000", "160000"}
+        })
+        rejected = sorted(
+            set(unsupported) | set(self._preflight_changed_paths(changed)))
+        if rejected:
+            raise GitScopeError(
+                "resulting commit reaches unsupported or unauthorized paths",
+                rejected,
+            )
+        if exact_commit_paths:
+            expected = set(staged)
+            unexpected = sorted(set(changed_paths) - expected)
+            missing = sorted(expected - set(changed_paths))
+            if unexpected or missing:
+                raise GitStateError(
+                    "resulting commit does not match the validated staged paths",
+                    {"unexpected_paths": unexpected, "missing_paths": missing},
+                )
+        return _ExecutionResult(
+            {
+                "commit": after_head,
+                "amended": operation == "amend",
+                "staged_paths": list(staged),
+                "changed_paths": changed_paths,
+            },
+            mutated=True,
+            advances_generation=False,
+        )
+
+    def _preflight_amend_scope(self) -> str:
+        head = self._current_head()
+        if len(self._commit_parents(head)) > 1:
+            raise ToolPolicyError("amending merge commits is not supported")
+        changed = self._changed_paths(head)
+        unsupported = sorted({
+            item.path for item in changed
+            if item.old_mode in {"120000", "160000"}
+            or item.new_mode in {"120000", "160000"}
+        })
+        rejected = sorted(
+            set(unsupported) | set(self._preflight_changed_paths(changed)))
+        if rejected:
+            raise GitScopeError(
+                "current commit reaches unsupported or unauthorized paths",
+                rejected,
+            )
+        return head
+
+    @contextlib.contextmanager
+    def _temporary_commit_message(self, message: str) -> Iterator[Path]:
+        content = message.encode("utf-8")
+        if len(content) > MAX_COMMIT_MESSAGE_BYTES:
+            raise ToolValidationError("commit message exceeds its byte limit")
+        root_fd = self._open_git_directory()
+        name = f".cve-agent-commit-{uuid.uuid4().hex}"
+        created = False
+        try:
+            try:
+                fd = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _CLOEXEC | _NOFOLLOW,
+                    0o600,
+                    dir_fd=root_fd,
+                )
+                created = True
+                try:
+                    self._write_all(fd, content)
+                    os.fsync(fd)
+                    info = os.fstat(fd)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ToolPolicyError(
+                            "temporary Git message is not a single-link regular file")
+                finally:
+                    os.close(fd)
+            except (ToolOperationalError, ToolPolicyError):
+                raise
+            except OSError as exc:
+                raise ToolOperationalError(
+                    "unable to create a trusted Git commit message") from exc
+            yield self._git_directory / name
+        finally:
+            if created:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(name, dir_fd=root_fd)
+            os.close(root_fd)
 
     def _parse_status(self, output: str) -> dict[str, object]:
         branch: dict[str, object] = {}
