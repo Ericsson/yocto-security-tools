@@ -110,8 +110,8 @@ graph TB
 | `openai_client.py` | Bounded non-streaming Chat Completions transport, retries, redaction, and protocol response types |
 | `openai_loop.py` | Multi-turn message/tool-call state machine, independent bounds, progress policy, and protected JSONL transcript |
 | `openai_redaction.py` | Shared bearer/configured-secret redaction for diagnostics, transcripts, and trusted terminal text |
-| `openai_tools.py` | Typed schemas, path policy, bounded file inspection/mutation tools, and mutation generation |
-| `openai_git_tools.py` | Closed Git schemas, bounded executor, parsed inspection, exact mutations, cherry-pick preflight, and trusted provenance |
+| `openai_tools.py` | Typed schemas, path policy, bounded file inspection/mutation tools, and build-relevant mutation generation |
+| `openai_git_tools.py` | Closed Git schemas, bounded executor, parsed inspection, exact staging/commit/amend, cherry-pick preflight, and trusted provenance |
 | `openai_deadline.py` | Injectable monotonic session deadline and distinct runtime timeout error |
 | `openai_host_tools.py` | Interactive approval, controlled `devtool build`, protected artifacts, and host-verified `finish` outcomes |
 | `context.py` | Build AI prompt context: conflict details, build logs, ptest results, knowledge |

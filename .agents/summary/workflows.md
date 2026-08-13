@@ -165,6 +165,9 @@ sequenceDiagram
 
 The native branch creates a mandatory mode-`0600` JSONL transcript and shares
 one deadline across HTTP, typed Git, approvals, build, and terminal checks.
+After a successful build of repaired content, typed commit/amend may record
+exact authorized paths without staling that build generation; the operation
+still runs the scope hook and the host verifies the resulting commit tree.
 Only host-verified `finish` resolves the session. Unresolved results carry safe
 operator guidance plus the transcript path; the outer guard still reverts
 out-of-scope changes and writes its independent audit. The orchestrator does

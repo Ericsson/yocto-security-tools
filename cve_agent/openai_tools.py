@@ -603,6 +603,7 @@ class _ExecutionResult:
     payload: dict[str, object]
     mutated: bool = False
     terminal: bool = False
+    advances_generation: bool = True
 
 
 class FileToolRuntime:
@@ -629,7 +630,7 @@ class FileToolRuntime:
 
     @property
     def mutation_generation(self) -> int:
-        """Return the monotonic generation of successful durable mutations."""
+        """Return the monotonic generation of build-relevant mutations."""
         return self._mutation_generation
 
     def dispatch(self, tool_name: object, arguments: object) -> ToolResult:
@@ -649,7 +650,7 @@ class FileToolRuntime:
             self._authorize_tool_call(tool_name, validated)
             handler = getattr(self, contract.handler)
             execution: _ExecutionResult = handler(validated)
-            if execution.mutated:
+            if execution.mutated and execution.advances_generation:
                 self._mutation_generation += 1
             result = ToolResult(
                 success=True,

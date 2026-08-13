@@ -617,6 +617,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
                 "file_mutation", tool, self._file_approval_summary(tool, arguments))
         elif tool in {
             "git_stage", "git_unstage", "git_remove", "git_restore_conflict",
+            "git_commit", "git_amend",
             "git_cherry_pick_start", "git_cherry_pick_continue",
             "git_cherry_pick_abort", "git_cherry_pick_skip",
         }:

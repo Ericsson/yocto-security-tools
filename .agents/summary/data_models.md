@@ -171,10 +171,16 @@ classDiagram
     ToolResult --> ToolAudit
 ```
 
+The internal `_ExecutionResult.advances_generation` flag defaults true for
+durable source/index mutations. Typed commit/amend results remain
+`mutated=True` for audit and loop-progress purposes but set it false because
+they only record source content validated by the preceding build.
+
 ### GitToolLimits and RepositorySnapshot (cve_agent/openai_git_tools.py)
 
 `GitToolLimits` caps revisions, path counts, parsed log/status entries,
-subprocess output, diagnostics, resolution notes, and per-command duration.
+subprocess output, diagnostics, resolution notes, and per-command duration;
+typed replacement/follow-up commit messages have a separate 16 KiB byte cap.
 `RepositorySnapshot` retains the session-start commit and operation markers
 for later terminal-state checks without changing `guarded_session()`.
 

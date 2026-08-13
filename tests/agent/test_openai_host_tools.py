@@ -376,6 +376,24 @@ def test_interactive_denial_is_structured_and_prevents_side_effect(host_reposito
     assert runner.calls == []
 
 
+def test_interactive_commit_denial_is_structured_and_does_not_stage(host_repository):
+    repo, agent = host_repository
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "a.c").write_text("repair\n", encoding="utf-8")
+    approval = FakeApproval(ApprovalDecision.DENY)
+    runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=approval)
+    result = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "repair"})
+    serialized = result.to_dict()
+    assert not result.success and serialized["error_kind"] == "approval"
+    assert serialized["mutated"] is False
+    assert approval.requests[0].category == "git_mutation"
+    assert "a.c" in approval.requests[0].summary
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
 def test_approve_class_suppresses_later_prompts(host_repository):
     repo, agent = host_repository
     approval = FakeApproval(ApprovalDecision.APPROVE_CLASS)
@@ -468,6 +486,60 @@ def test_build_is_invalidated_by_later_git_mutation(host_repository):
         "status": "done", "reason": "complete", "summary": "built"})
     assert not result.success
     assert "predates" in result.payload["error"]
+
+
+def test_amend_after_successful_build_records_built_source_without_staling_it(
+        host_repository):
+    repo, agent = host_repository
+    branch = _git(repo, "branch", "--show-current").stdout.strip()
+    _git(repo, "switch", "-q", "-c", "source")
+    (repo / "a.c").write_text("upstream\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _git(repo, "commit", "-m", "upstream")
+    source = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "switch", "-q", branch)
+
+    runtime = _runtime(repo, agent)
+    picked = runtime.dispatch("git_cherry_pick_start", {"revision": source})
+    assert picked.success and picked.payload["conflicted"] is False
+    edited = runtime.dispatch("write_file", {
+        "path": "a.c", "content": "portable upstream\n", "mode": "replace_only"})
+    assert edited.success
+    built = runtime.dispatch("build_recipe", {})
+    generation = runtime.mutation_generation
+    assert built.success and runtime.validated_generation == generation
+    amended = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    assert amended.success and amended.mutated
+    assert runtime.mutation_generation == generation
+    assert runtime.validated_generation == generation
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "built repair committed",
+        "summary": "portable fix"})
+    assert finished.success and finished.terminal
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert _git(repo, "show", "HEAD:a.c").stdout == "portable upstream\n"
+
+
+def test_followup_commit_after_successful_build_does_not_stale_validation(
+        host_repository):
+    repo, agent = host_repository
+    runtime = _runtime(repo, agent)
+    edited = runtime.dispatch("write_file", {
+        "path": "a.c", "content": "follow-up repair\n", "mode": "replace_only"})
+    assert edited.success
+    built = runtime.dispatch("build_recipe", {})
+    generation = runtime.mutation_generation
+    assert built.success and runtime.validated_generation == generation
+    committed = runtime.dispatch("git_commit", {
+        "paths": ["a.c"], "message": "record follow-up repair"})
+    assert committed.success and runtime.mutation_generation == generation
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "built follow-up committed",
+        "summary": "follow-up fix"})
+    assert finished.success and finished.terminal
+    assert _git(repo, "show", "HEAD:a.c").stdout == "follow-up repair\n"
+    assert _git(repo, "status", "--porcelain").stdout == ""
 
 
 def test_done_accepted_after_current_generation_build(host_repository):

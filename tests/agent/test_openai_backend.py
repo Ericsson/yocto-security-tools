@@ -79,6 +79,9 @@ def test_native_tool_preamble_requires_host_verified_finish():
     assert "host alone verifies terminal state" in preamble
     assert "There is no shell" in preamble
     assert "matching tool result" in preamble
+    assert "`git_commit`" in preamble
+    assert "`git_amend`" in preamble
+    assert "message_mode=no_edit" in preamble
 
 
 def test_parser_accepts_openai_options(monkeypatch):
