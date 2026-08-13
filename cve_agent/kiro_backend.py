@@ -36,7 +36,11 @@ class KiroBackend(AIBackend):
         """
         return (
             "Your file/directory inspection tool is `fs_read`; your "
-            "bash-equivalent command runner is `execute_bash`.\n\n"
+            "file-writing/editing tool is `fs_write`; your "
+            "bash-equivalent command runner is `execute_bash`. Use `fs_write` "
+            "to create or edit files — source-file edits, `conclusion.json`, "
+            "and appending to `.git/MERGE_MSG` — never shell redirection "
+            "(`>`/`>>`) or heredocs, which the command guard rejects.\n\n"
         )
 
     def run_session(self, prompt: str, workspace_path: Path,

@@ -28,6 +28,15 @@ of tool names:
   what the allow-list says. To capture output to a file, pipe into `tee`
   instead: `<cmd> 2>&1 | tee <agent_dir>/<name>.log`. Merging stderr with
   `2>&1` is fine; only the `>`/`>>` file-write form is refused.
+- **Creating or editing any file goes through your file-writing/editing
+  tool — never the shell.** The command runner's only file-writing power is
+  capturing build output to a `.log` file via `tee` (above). Everything else
+  you need to write or change — `conclusion.json`, source-file edits, and
+  appending your notes to `.git/MERGE_MSG` — must use your file-writing/editing
+  tool (its name is in the preamble that precedes these instructions). Do NOT
+  use `cat > file`, a heredoc (`<< 'EOF'`), or `tee` to write these: `>`/`>>`
+  are refused outright and `tee` is limited to `.log` capture, so those forms
+  will fail and leave the file unwritten.
 - **Never write files outside the agent dir or the Yocto build dir** — the
   only two locations you have any reason to write to are `<agent_dir>`
   (given in the context header, for logs like `build.log`) and paths under
@@ -61,6 +70,10 @@ Bash commands you CAN run:
 - Commit: `git commit -m "<msg>"`, `git commit -F <file>`, `git commit --amend
   --no-edit`, `git commit --amend -m "<msg>"`, `git commit --amend -F <file>`.
 - Build: `devtool build *`.
+- Recover stale build state (see §3): `bitbake -c cleansstate <recipe>` — a
+  single recipe name, no chaining. Forces the recipe's tasks to re-run from
+  scratch (e.g. so `do_configure` regenerates files a stale sstate restore
+  left missing). No other `bitbake` subcommand is permitted.
 - Capture build output: `tee <agent_dir>/<name>.log` (only paths under a
   `cve_agent/` directory ending in `.log`), and
   `echo "Exit code: ${PIPESTATUS[0]}"` / `echo "Exit code: $?"` verbatim.
@@ -151,13 +164,34 @@ branch in any form is it a real prerequisite.** Then choose one of:
   - it itself depends on further prerequisites (a dependency chain).
 
   Write an escalation conclusion and stop — do not mark the CVE not-applicable,
-  because it *is* applicable, just not safe to automate:
-  ```bash
-  cat > "<agent_dir>/conclusion.json" <<'EOF'
+  because it *is* applicable, just not safe to automate. Create
+  `<agent_dir>/conclusion.json` **with your file-writing tool** (not the shell —
+  see Available Tools) with these contents:
+  ```json
   {"needs_human": true, "reason": "<why this prerequisite can't be safely automated, naming the prerequisite SHA and what it changes>"}
-  EOF
   ```
   Replace `<agent_dir>` with the actual agent dir path from the context header.
+  After writing the file, **stop — make no other changes.**
+
+  **Suggesting a commit for a scope extension.** When the blocker is a specific
+  companion or prerequisite commit that touches files **outside** your Allowed
+  Files list — for example, a follow-up that updates a testsuite/ file to match
+  new behavior, or a prerequisite you may not cherry-pick because its files are
+  out of scope — name it in a `suggested_commits` array. A human (or `--trust`)
+  can then accept it, and the backport re-runs with that commit added to the
+  fix chain and your allowed-files scope widened to include its files. Create
+  `<agent_dir>/conclusion.json` **with your file-writing tool** with these
+  contents:
+  ```json
+  {"needs_human": true,
+   "reason": "ptest regresses because upstream <sha> updates testsuite/tar.tests to match the new hardlink-stripping behavior, but that file is outside my Allowed Files",
+   "suggested_commits": ["<sha>"]}
+  ```
+  Each entry is a **full commit SHA** (preferred) or a full commit **URL** in
+  the same repository as the fix. List them in application order (earliest
+  prerequisite first). Only suggest commits you have confirmed exist and are
+  relevant — verify with `git show <sha>` first. If you cannot name a concrete
+  commit, omit `suggested_commits` and escalate with the reason alone.
   After writing the file, **stop — make no other changes.**
 
 **Files not in the baseline**: If the upstream commit adds a NEW file that is
@@ -180,12 +214,12 @@ If the patch is incompatible with the stable base, adapt it.
 
 If the CVE fix is **not applicable** to this version (e.g. the vulnerable code
 path, function, struct, or feature does not exist in the stable branch), do NOT
-make any code changes. Instead, write a conclusion file:
+make any code changes. Instead, write a conclusion file **with your
+file-writing tool** (not the shell — see Available Tools) at
+`<agent_dir>/conclusion.json` with these contents:
 
-```bash
-cat > "<agent_dir>/conclusion.json" <<'EOF'
+```json
 {"not_applicable": true, "reason": "<one-line explanation of why the CVE does not apply>"}
-EOF
 ```
 
 Replace `<agent_dir>` with the actual agent dir path from the context header.
@@ -241,20 +275,78 @@ git cherry-pick --no-edit --continue
 ### 3. Fix Build Errors (exit code 4)
 Run the build to reproduce the failure:
 ```bash
-devtool build <recipe> 2>&1 > <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
+devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
 ```
 Only read log output on failure (`Exit code:` is non-zero). On failure, read
 the **last 50 lines** of `<agent_dir>/build.log` to identify the error.
+
+**Stale build state — recover, do NOT escalate.** If the build fails because a
+task was restored from sstate/skipped and a file it should have generated is
+missing, the recipe's cached build state is stale — this is **not** a defect in
+your patch and **not** grounds for escalation. The classic signatures are:
+- `cp: cannot stat '.config.orig'` (busybox), or any "No such file or
+  directory" for a file a configure/prepare step produces; and/or
+- a task log showing only `do_compile` ran while `do_configure` was skipped.
+
+Recover by forcing this recipe to rebuild from scratch, then re-verify:
+```bash
+bitbake -c cleansstate <recipe>
+devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
+```
+`cleansstate` drops the recipe's stale sstate so `do_configure` actually
+re-executes and regenerates the missing files. Do this before concluding a
+build failure is environmental.
+
 If the failing task belongs to a **different recipe** than the one being
 patched, **abort immediately** — do not attempt to fix it. This indicates a
 pre-existing or environmental issue.
 Otherwise, fix the code, amend the commit, and re-run the build to verify.
 
 ### 4. Fix Test Failures (exit code 3)
-Fix the **backported code in the allowed files only**.
-If the fix requires changing a file not in the allowed list, stop and
-flag for human review. Document which tests failed and what code change
-fixed them in the commit message.
+
+The context file lists the **failing test cases** and the **before/after** pass
+counts. Understand *why* the backport made them fail before changing anything —
+a ptest regression is almost always one of two things:
+
+**(a) A defect in the backport.** Your adaptation changed behavior in a way the
+test correctly rejects (a mis-resolved conflict, a dropped hunk, a wrong
+signature or sign). Re-read the failing test to see what behavior it asserts,
+compare against the upstream fix intent (`git show <upstream_sha>`), and correct
+the C/source **in the allowed files only**. Amend and re-verify.
+
+**(b) An expected behavior change upstream shipped a companion commit for.**
+Some fixes deliberately change observable behavior, and upstream updates the
+test suite (or adds a follow-up fix) in a *separate* commit. The failing test
+then needs that companion commit — not a hand-edit. **Never hand-edit test
+files**; test cases must not be changed by you.
+
+To tell (a) from (b), look for a follow-up in upstream history. The workspace
+has the full upstream history fetched as the `upstream` remote, so search it
+directly:
+```bash
+git show <upstream_sha>                                                  # the fix you backported
+git log --oneline <upstream_sha>..upstream/master -- <failing_test_file> # later commits touching that test
+git log --oneline <upstream_sha>..upstream/master -- <code_area>         # or the code area under test
+git show <candidate_sha>                                                 # confirm it addresses the failing case
+```
+Derive `<failing_test_file>` from the failing-case names in the context (e.g. a
+`tar` case lives in `testsuite/tar.tests`). If `upstream/master` does not exist,
+try `upstream/main`.
+
+Then choose:
+- **Companion commit touches only Allowed Files** → cherry-pick it as a
+  separate follow-up commit (Strategy A) and re-verify.
+- **Companion commit touches files OUTSIDE the Allowed Files** (a test-suite
+  update almost always does) → do NOT edit those files. Escalate with a
+  `suggested_commits` entry naming the exact SHA you confirmed (see "Suggesting
+  a commit for a scope extension"), so a human or `--trust` can re-run with it
+  added to the fix chain and your scope widened.
+- **No companion commit exists and it is a real backport defect** → fix the code
+  in the allowed files.
+
+Document in the `Conflicts Resolved:` commit-message block: which ptest cases
+failed, the cause, and either the code change that fixed them or the companion
+commit you suggested.
 
 ### 5. Build Verification (mandatory after every change)
 **You MUST verify the build passes before finishing.** Do not declare success
@@ -357,6 +449,10 @@ Rules:
   types, APIs, and why the stable branch differs
 - **No duplication**: each fact (what changed, in which function, why) must
   appear exactly once
+- **Be succinct**: use as few sentences and lines as possible while still
+  covering what/why/how. Cut restatements, filler, and any detail a reviewer
+  wouldn't need (e.g. exact test-run counts, step-by-step narration). One
+  short paragraph per conflicted file is usually enough.
 - Omitted files: `<file>: omitted (not in branch)`
 - Do NOT add a "Changes from upstream" section (the agent generates that)
 - If you adapted the patch (not a verbatim cherry-pick), add a trailer line
