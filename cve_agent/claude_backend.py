@@ -81,6 +81,7 @@ _ALLOWED_TOOLS = (
     "Bash(git rev-parse:*)",
     "Bash(git merge-base:*)",
     "Bash(devtool build:*)",
+    "Bash(bitbake -c cleansstate:*)",
     "Bash(tee:*)",
     "Bash(echo:*)",
     "Bash(cat:*)",

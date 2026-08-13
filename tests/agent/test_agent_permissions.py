@@ -76,6 +76,10 @@ MUST_ALLOW = [
     "git ls-files -s tests/jq.test",
     "git submodule status",
     "git submodule status modules/oniguruma",
+    # Recover stale build state (busybox .config.orig etc.) — a single recipe,
+    # forces do_configure to re-run. Recipe names may contain '.', '-', digits.
+    "bitbake -c cleansstate busybox",
+    "bitbake -c cleansstate gstreamer1.0-plugins-good",
 ]
 
 # Forms that must stay rejected: destructive variants of the newly allowed
@@ -113,6 +117,15 @@ MUST_DENY = [
     "git stash pop",
     "git submodule update --init",
     "git submodule foreach rm -rf .",
+    # bitbake is allowed ONLY as `-c cleansstate <recipe>`; nothing else.
+    "bitbake core-image-minimal",
+    "bitbake busybox",
+    "bitbake -c clean busybox",
+    "bitbake -c cleanall busybox",
+    "bitbake -c cleansstate -rf",
+    "bitbake -c cleansstate busybox; rm -rf /",
+    "bitbake -c cleansstate busybox && rm -rf /",
+    "bitbake -c cleansstate $(echo busybox)",
     # Chaining and command substitution.
     "git rm x; rm -rf /",
     "git rm $(echo x)",
