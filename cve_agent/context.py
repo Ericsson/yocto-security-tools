@@ -213,7 +213,7 @@ def _gather_context_for_exit_code(workspace_path: Path, exit_code: int,
     if exit_code == EXIT_BUILD_ERROR:
         return _gather_build_error_context(workspace_path)
     if exit_code == EXIT_PTEST_ERROR:
-        return _gather_ptest_error_context(workspace_path)
+        return _gather_ptest_error_context(workspace_path, cve_info)
     return _gather_analysis_context(workspace_path, cve_info)
 
 
@@ -265,11 +265,17 @@ def _gather_build_error_context(workspace_path: Path) -> str:
         f"### Last Commit (stat)\n```\n{last_commit}\n```\n\n"
         f"Run `git show HEAD` to see the full diff.\n\n"
         f"Check build logs in the Yocto build directory for specific errors.\n"
-        f"Run `devtool build <recipe>` to reproduce."
+        f"Run `devtool build <recipe>` to reproduce.\n\n"
+        f"**Stale build state**: if the failure is a missing generated file "
+        f"from a skipped/sstate-restored task — e.g. "
+        f"`cp: cannot stat '.config.orig'`, or a log showing only `do_compile` "
+        f"ran while `do_configure` was skipped — the recipe's sstate is stale, "
+        f"not your patch. Recover with `bitbake -c cleansstate <recipe>` then "
+        f"rebuild; do NOT escalate for this (see §3 of the instructions)."
     )
 
 
-def _gather_ptest_error_context(workspace_path: Path) -> str:
+def _gather_ptest_error_context(workspace_path: Path, cve_info: dict) -> str:
     """Gather context for ptest failure resolution.
 
     Reads the cve_corrector state file to extract before/after ptest results
@@ -277,25 +283,64 @@ def _gather_ptest_error_context(workspace_path: Path) -> str:
 
     Args:
         workspace_path: Path to workspace where ptest failed.
+        cve_info: CVE metadata dict (used to resolve the upstream SHA so the
+            agent can search upstream history for a companion fix).
 
     Returns:
         Formatted ptest error context string.
     """
     last_commit = run_git_stdout(['show', '--stat', 'HEAD'], cwd=workspace_path)
     ptest_section = _read_ptest_results(workspace_path)
+    upstream_sha = get_upstream_sha(cve_info, workspace_path)
+    sha = upstream_sha if upstream_sha and upstream_sha != "unknown" else "<upstream_sha>"
 
     return (
         f"## Test Failure Details\n\n"
         f"{ptest_section}\n\n"
         f"### Last Commit (stat)\n```\n{last_commit}\n```\n\n"
-        f"Run `git show HEAD` to see the full diff.\n\n"
-        f"**Rule**: Test cases must NEVER change. Only backported files may be "
-        f"modified.\nAnalyse the backport commit intent and adjust it to pass "
-        f"tests while preserving the fix.\n\n"
-        f"In the `### Conflicts Resolved` commit message section, document:\n"
-        f"- Which ptest cases failed\n"
-        f"- What code change caused the failure\n"
-        f"- How the backported code was corrected to fix it"
+        f"Run `git show HEAD` for the current backport, and `git show {sha}` "
+        f"for the upstream fix you backported.\n\n"
+        f"### What to fix and what to look for\n\n"
+        f"Classify each failing case before changing anything — a ptest "
+        f"regression is almost always one of two things:\n\n"
+        f"1. **A defect in the backport.** Your adaptation changed behavior in "
+        f"a way the test correctly rejects (mis-resolved conflict, dropped "
+        f"hunk, wrong signature/sign). Re-read the failing test to see what it "
+        f"asserts, compare with the upstream intent (`git show {sha}`), and fix "
+        f"the C/source **in the allowed files only**.\n"
+        f"2. **An expected behavior change upstream shipped a companion commit "
+        f"for.** Some fixes deliberately change observable behavior and "
+        f"upstream updates the test suite (or adds a follow-up fix) in a "
+        f"*separate* commit. The failing test then needs that commit — not a "
+        f"hand-edit.\n\n"
+        f"To tell them apart, search upstream history for a follow-up. The full "
+        f"upstream history is fetched as the `upstream` remote:\n"
+        f"```\n"
+        f"git log --oneline {sha}..upstream/master -- <failing_test_file>   "
+        f"# later commits touching that test (try upstream/main if master is absent)\n"
+        f"git log --oneline {sha}..upstream/master -- <code_area_under_test>\n"
+        f"git show <candidate_sha>                                          "
+        f"# confirm it addresses the failing case\n"
+        f"```\n"
+        f"Derive `<failing_test_file>` from the failing-case names above "
+        f"(e.g. a `tar` case lives in `testsuite/tar.tests`).\n\n"
+        f"Then:\n"
+        f"- **Companion commit touches only Allowed Files** \u2192 cherry-pick it "
+        f"as a separate follow-up commit (Strategy A) and re-verify.\n"
+        f"- **Companion commit touches files OUTSIDE the Allowed Files** (a "
+        f"testsuite update almost always does) \u2192 do NOT hand-edit those "
+        f"files. Escalate naming that commit in `suggested_commits` (see "
+        f"\"Suggesting a commit for a scope extension\") so the run can be "
+        f"retried with it added to the fix chain and your scope widened. Give "
+        f"the exact SHA you confirmed with `git show`.\n"
+        f"- **No companion commit and it is a real backport defect** \u2192 fix "
+        f"the code in the allowed files.\n\n"
+        f"**Rule**: Never hand-edit test cases — only backported source files "
+        f"may be modified directly. A legitimate upstream test update must come "
+        f"in as its own commit via `suggested_commits`, not by editing tests.\n\n"
+        f"In the `Conflicts Resolved:` commit message section, document: which "
+        f"ptest cases failed, the cause, and either the code change that fixed "
+        f"them or the companion commit you suggested."
     )
 
 
@@ -316,6 +361,13 @@ def _read_ptest_results(workspace_path: Path) -> str:
         ptest_before = data.get('ptest_before')
         if ptest_before:
             lines.append(f"**Before patch**:\n```\n{ptest_before}\n```\n")
+        ptest_after = data.get('ptest_after')
+        if ptest_after:
+            lines.append(
+                "**After patch** — the `Failing cases:` listed here are the "
+                "regressions you must investigate and resolve (each name is a "
+                "ptest case; reproduce and analyse it):\n"
+                f"```\n{ptest_after}\n```\n")
 
     # Read ptest log for detailed failure output
     recipe = workspace_path.name
@@ -437,8 +489,15 @@ def _find_state_file(workspace_path: Path) -> Path | None:
         Path to state JSON file, or None if not found.
     """
     recipe_name = workspace_path.name
-    build_dir = get_build_dir(workspace_path)
-    state_dir = build_dir / 'cve_corrector'
+    # The corrector saves state under the devtool workspace, at
+    # get_build_path()/workspace/cve_corrector/<recipe>.json (see
+    # cve_corrector.bitbake_ops.get_state_dir). That is two levels up from the
+    # recipe source dir — the same base get_agent_dir() uses. A previous
+    # version looked at get_build_dir()/cve_corrector (three levels up, one
+    # directory too high) and silently never found the state file, so ptest
+    # before/after results — and their `Failing cases:` list — never reached
+    # the agent's context.
+    state_dir = workspace_path.parent.parent / 'cve_corrector'
     state_file = state_dir / f'{recipe_name}.json'
     if state_file.exists():
         return state_file

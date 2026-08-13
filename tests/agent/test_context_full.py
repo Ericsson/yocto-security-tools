@@ -138,16 +138,25 @@ class TestGatherBuildErrorContext:
         result = _gather_build_error_context(Path("/ws"))
         assert "Build Error" in result
         assert "commit stat" in result
+        # Stale-sstate recovery must be surfaced so the agent recovers the
+        # .config.orig-class failure instead of escalating.
+        assert ".config.orig" in result
+        assert "cleansstate" in result
 
 
 class TestGatherPtestErrorContext:
+    @patch("cve_agent.context.get_upstream_sha", return_value="3fb6b31c7166")
     @patch("cve_agent.context._read_ptest_results", return_value="ptest data")
     @patch("cve_agent.context.run_git_stdout", return_value="commit stat")
     def test_basic(self, *_):
-        result = _gather_ptest_error_context(Path("/ws"))
+        result = _gather_ptest_error_context(Path("/ws"), {})
         assert "Test Failure" in result
         assert "ptest data" in result
-        assert "Test cases must NEVER change" in result
+        # Guidance now steers toward upstream companion commits + suggested_commits.
+        assert "Never hand-edit test cases" in result
+        assert "suggested_commits" in result
+        assert "upstream/master" in result
+        assert "3fb6b31c7166" in result
 
 
 class TestGatherAnalysisContext:
@@ -179,6 +188,29 @@ class TestReadPtestResults:
         assert "Before patch" in result
 
     @patch("cve_agent.context._find_ptest_log", return_value=None)
+    @patch("cve_agent.context._find_state_file")
+    def test_surfaces_ptest_after_failing_cases(self, mock_state, mock_log, tmp_path):
+        """The post-patch summary — including the Failing cases: list — must
+        reach the context so the agent knows which cases to investigate."""
+        summary = ("PASSED: 620, FAILED: 2, SKIPPED: 90, ABORTED: 0\n"
+                   "Failing cases:\n"
+                   "  tar Pax-encoded UTF8 names and symlinks\n"
+                   "  tar Symlinks and hardlinks coexist")
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps({
+            "ptest_before": "PASSED: 622, FAILED: 0, SKIPPED: 90, ABORTED: 0",
+            "ptest_after": summary,
+        }))
+        mock_state.return_value = state
+        ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
+        ws.mkdir(parents=True)
+        result = _read_ptest_results(ws)
+        assert "After patch" in result
+        assert "tar Pax-encoded UTF8 names and symlinks" in result
+        assert "tar Symlinks and hardlinks coexist" in result
+        assert "investigate" in result.lower()
+
+    @patch("cve_agent.context._find_ptest_log", return_value=None)
     @patch("cve_agent.context._find_state_file", return_value=None)
     def test_no_data(self, *_):
         result = _read_ptest_results(Path("/build/workspace/sources/r"))
@@ -208,12 +240,25 @@ class TestFindPtestLog:
 
 class TestFindStateFile:
     def test_found(self, tmp_path):
+        """Must look where the corrector saves state:
+        <build>/workspace/cve_corrector/<recipe>.json (two levels up from the
+        recipe source dir), not <build>/cve_corrector."""
         ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
         ws.mkdir(parents=True)
-        state_dir = tmp_path / "build" / "cve_corrector"
+        state_dir = tmp_path / "build" / "workspace" / "cve_corrector"
         state_dir.mkdir(parents=True)
-        (state_dir / "busybox.json").write_text("{}")
-        assert _find_state_file(ws) is not None
+        state_file = state_dir / "busybox.json"
+        state_file.write_text("{}")
+        assert _find_state_file(ws) == state_file
+
+    def test_not_at_build_root(self, tmp_path):
+        """A state file one level too high (the old buggy location) is ignored."""
+        ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
+        ws.mkdir(parents=True)
+        wrong = tmp_path / "build" / "cve_corrector"
+        wrong.mkdir(parents=True)
+        (wrong / "busybox.json").write_text("{}")
+        assert _find_state_file(ws) is None
 
     def test_not_found(self, tmp_path):
         ws = tmp_path / "build" / "workspace" / "sources" / "busybox"
