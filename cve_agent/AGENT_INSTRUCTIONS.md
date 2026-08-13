@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: MIT -->
 # CVE Backport Agent Instructions
 
 ## Available Tools
@@ -70,7 +69,8 @@ Bash commands you CAN run:
 - Commit: `git commit -m "<msg>"`, `git commit -F <file>`, `git commit --amend
   --no-edit`, `git commit --amend -m "<msg>"`, `git commit --amend -F <file>`.
 - Build: `devtool build *`.
-- Recover stale build state (see §3): `bitbake -c cleansstate <recipe>` — a
+- Recover stale build state (see the Build Error phase instructions in
+  `context.md`): `bitbake -c cleansstate <recipe>` — a
   single recipe name, no chaining. Forces the recipe's tasks to re-run from
   scratch (e.g. so `do_configure` regenerates files a stale sstate restore
   left missing). No other `bitbake` subcommand is permitted.
@@ -130,7 +130,8 @@ a different name, signature, or location?**
 If a function was renamed, a signature changed, a struct member renamed, or a
 function moved, the functionality is already present — this is *adaptation, not
 a prerequisite*. Adapt the fix in place to match the stable name/shape and do
-**NOT** cherry-pick anything. See **Common Conflict Patterns** below. This is
+**NOT** cherry-pick anything. See **Common Conflict Patterns** in the
+conflict-resolution instructions. This is
 the common case.
 
 **Step 2 — only if the referenced code genuinely does NOT exist in the stable
@@ -229,124 +230,10 @@ or feature and the version. Example:
 
 After writing the conclusion file, **stop — do not make any other changes.**
 
-### 2. Resolve Conflicts (exit code 1)
-```bash
-git status && git diff                      # examine conflicts
-git ls-files -u                             # unmerged stages (1=base, 2=ours, 3=theirs)
-git show <upstream_sha>                     # upstream fix intent
-git log --oneline -20 -- <file>             # file history for context
-```
-
-Resolve each conflicted file. Three shapes come up, in increasing order of
-effort — prefer the cheapest one that is correct:
-
-1. **Take one side wholesale.** If the resolution is "keep upstream verbatim"
-   or "drop the upstream hunk entirely", do it with git rather than an editor:
-   ```bash
-   git checkout --theirs <file>   # keep the upstream (cherry-picked) side
-   git checkout --ours <file>     # keep the stable-branch side
-   ```
-2. **Partial resolution.** Neither side is right on its own — edit the file
-   with your editing tool, removing all conflict markers.
-3. **Drop a path from the cherry-pick.** If upstream deletes a file, mark it
-   with `git rm <file>`. If a conflicted path exists only in the upstream
-   history and not in this workspace (a submodule/gitlink recorded upstream
-   against a tarball-sourced recipe is the common case — confirm with `git
-   submodule status`), unstage it instead of trying to materialise it:
-   ```bash
-   git restore --staged <path>    # index-only; the working tree is untouched
-   ```
-
-Then stage the resolutions:
-```bash
-git add <resolved_files>                    # ONLY allowed files
-```
-
-If the cherry-pick as a whole turns out not to apply to this version, `git
-cherry-pick --skip` drops it (`--abort` stops the sequence entirely).
-
-If you adapted the patch (not a verbatim cherry-pick), append your backport
-notes to `.git/MERGE_MSG` — **read the file first**, keep the original content,
-and append your notes after a blank line. Then:
-```bash
-git cherry-pick --no-edit --continue
-```
-
-### 3. Fix Build Errors (exit code 4)
-Run the build to reproduce the failure:
-```bash
-devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
-```
-Only read log output on failure (`Exit code:` is non-zero). On failure, read
-the **last 50 lines** of `<agent_dir>/build.log` to identify the error.
-
-**Stale build state — recover, do NOT escalate.** If the build fails because a
-task was restored from sstate/skipped and a file it should have generated is
-missing, the recipe's cached build state is stale — this is **not** a defect in
-your patch and **not** grounds for escalation. The classic signatures are:
-- `cp: cannot stat '.config.orig'` (busybox), or any "No such file or
-  directory" for a file a configure/prepare step produces; and/or
-- a task log showing only `do_compile` ran while `do_configure` was skipped.
-
-Recover by forcing this recipe to rebuild from scratch, then re-verify:
-```bash
-bitbake -c cleansstate <recipe>
-devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
-```
-`cleansstate` drops the recipe's stale sstate so `do_configure` actually
-re-executes and regenerates the missing files. Do this before concluding a
-build failure is environmental.
-
-If the failing task belongs to a **different recipe** than the one being
-patched, **abort immediately** — do not attempt to fix it. This indicates a
-pre-existing or environmental issue.
-Otherwise, fix the code, amend the commit, and re-run the build to verify.
-
-### 4. Fix Test Failures (exit code 3)
-
-The context file lists the **failing test cases** and the **before/after** pass
-counts. Understand *why* the backport made them fail before changing anything —
-a ptest regression is almost always one of two things:
-
-**(a) A defect in the backport.** Your adaptation changed behavior in a way the
-test correctly rejects (a mis-resolved conflict, a dropped hunk, a wrong
-signature or sign). Re-read the failing test to see what behavior it asserts,
-compare against the upstream fix intent (`git show <upstream_sha>`), and correct
-the C/source **in the allowed files only**. Amend and re-verify.
-
-**(b) An expected behavior change upstream shipped a companion commit for.**
-Some fixes deliberately change observable behavior, and upstream updates the
-test suite (or adds a follow-up fix) in a *separate* commit. The failing test
-then needs that companion commit — not a hand-edit. **Never hand-edit test
-files**; test cases must not be changed by you.
-
-To tell (a) from (b), look for a follow-up in upstream history. The workspace
-has the full upstream history fetched as the `upstream` remote, so search it
-directly:
-```bash
-git show <upstream_sha>                                                  # the fix you backported
-git log --oneline <upstream_sha>..upstream/master -- <failing_test_file> # later commits touching that test
-git log --oneline <upstream_sha>..upstream/master -- <code_area>         # or the code area under test
-git show <candidate_sha>                                                 # confirm it addresses the failing case
-```
-Derive `<failing_test_file>` from the failing-case names in the context (e.g. a
-`tar` case lives in `testsuite/tar.tests`). If `upstream/master` does not exist,
-try `upstream/main`.
-
-Then choose:
-- **Companion commit touches only Allowed Files** → cherry-pick it as a
-  separate follow-up commit (Strategy A) and re-verify.
-- **Companion commit touches files OUTSIDE the Allowed Files** (a test-suite
-  update almost always does) → do NOT edit those files. Escalate with a
-  `suggested_commits` entry naming the exact SHA you confirmed (see "Suggesting
-  a commit for a scope extension"), so a human or `--trust` can re-run with it
-  added to the fix chain and your scope widened.
-- **No companion commit exists and it is a real backport defect** → fix the code
-  in the allowed files.
-
-Document in the `Conflicts Resolved:` commit-message block: which ptest cases
-failed, the cause, and either the code change that fixed them or the companion
-commit you suggested.
+> The phase-specific steps for the current run — resolving conflicts (exit 1),
+> fixing build errors (exit 4), or fixing ptest regressions (exit 3) — are
+> provided in the `context.md` for this session, under its "Instructions"
+> section. Follow those together with the always-applicable rules here.
 
 ### 5. Build Verification (mandatory after every change)
 **You MUST verify the build passes before finishing.** Do not declare success
@@ -400,15 +287,6 @@ make/cmake/gcc directly.
 - **Check dependencies** — look for `Link:` in commit, prerequisite patches
 - **If uncertain, stop** — flag for human review rather than guess
 
-## Common Conflict Patterns
-
-| Pattern | Resolution | Commit Note |
-|---|---|---|
-| Function signature changed | Keep fix logic, adapt to stable signature | `Adapted foo_v2() to foo_v1() API` |
-| Struct member renamed | Use stable member name with upstream logic | `Member renamed netdev→ndev in original patch` |
-| Function moved to different file | Apply fix where function lives in stable | `Function in old_file.c in original patch` |
-| Missing helper function | Inline it or use stable equivalent | `Inlined helper_foo() (not in stable)` |
-
 ## Commit Message Format
 
 **IMPORTANT: Preserve the original upstream commit message.** The `.git/MERGE_MSG`
@@ -449,10 +327,12 @@ Rules:
   types, APIs, and why the stable branch differs
 - **No duplication**: each fact (what changed, in which function, why) must
   appear exactly once
-- **Be succinct**: use as few sentences and lines as possible while still
-  covering what/why/how. Cut restatements, filler, and any detail a reviewer
-  wouldn't need (e.g. exact test-run counts, step-by-step narration). One
-  short paragraph per conflicted file is usually enough.
+- **Be succinct — hard limit**: at most 2–3 lines (~40 words) per file. State
+  only the *adaptation*: what changed and the stable-vs-upstream reason. Do NOT
+  include the investigation that led you there — no "checked upstream history",
+  no "no companion commit exists", no describing how unrelated code paths handle
+  the case, no test-run counts or step-by-step narration. If you cherry-picked
+  or suggested a companion commit, name it in one clause.
 - Omitted files: `<file>: omitted (not in branch)`
 - Do NOT add a "Changes from upstream" section (the agent generates that)
 - If you adapted the patch (not a verbatim cherry-pick), add a trailer line

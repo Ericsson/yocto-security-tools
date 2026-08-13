@@ -29,7 +29,10 @@
 │   ├── backend.py               # AIBackend interface + backend registry
 │   ├── kiro_backend.py          # KiroBackend (drives `kiro-cli`, default)
 │   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
-│   └── context.py / knowledge.py / review.py
+│   ├── context.py / knowledge.py / review.py
+│   ├── AGENT_INSTRUCTIONS.md    # Phase-independent core AI system prompt
+│   └── instructions/           # Per-phase workflow fragments embedded into
+│                               # context.md by exit code (conflict/build/ptest)
 ├── extra/                       # Plugin directory (.gitignore'd .py files)
 └── tests/{agent,corrector,extractor,shared}/
 ```

@@ -99,4 +99,4 @@ include = ["cve_agent*", "cve_corrector*", "cve_metadata_extractor*", "shared*"]
 
 [tool.setuptools.package-data]
 cve_metadata_extractor = ["config.json"]
-cve_agent = ["AGENT_INSTRUCTIONS.md", "agents/*.json"]
+cve_agent = ["AGENT_INSTRUCTIONS.md", "instructions/*.md", "agents/*.json"]

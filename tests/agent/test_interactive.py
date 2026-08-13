@@ -101,49 +101,25 @@ class TestInteractiveAgentSelection:
         assert '--trust-all-tools' not in cmd
 
 
-class TestNonInteractivePromptIncludesInstructions:
-    """CI (--no-interactive) runs inline AGENT_INSTRUCTIONS.md into the query
-    text itself, since kiro-cli has no --append-system-prompt equivalent and
-    there's no human to notice a silently-unresolved file:// agent prompt."""
+class TestPromptCarriesNoInlinedInstructions:
+    """The instructions reach the model via the agent's file:// system prompt
+    plus the per-phase context.md — the query itself is just a pointer to the
+    context file, in both interactive and non-interactive mode. Regression
+    guard against re-introducing the AGENT_INSTRUCTIONS.md double-send that
+    inlined the full manual into the query on every CI run."""
 
     @patch('subprocess.run')
-    def test_non_interactive_prompt_prepends_instructions(self, mock_run, tmp_path):
-        instructions_file = tmp_path / 'AGENT_INSTRUCTIONS.md'
-        instructions_file.write_text('# CVE Backport Agent Instructions\n'
-                                     'Use fs_read for everything.',
-                                     encoding='utf-8')
-        with patch('cve_agent.resolve_agent_instructions',
-                   return_value=instructions_file):
-            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
-                            interactive=False)
+    def test_non_interactive_prompt_is_just_context_pointer(self, mock_run):
+        _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
+                        interactive=False)
         cmd = mock_run.call_args_list[0][0][0]
-        query = cmd[-1]
-        assert 'Use fs_read for everything.' in query
-        assert 'Read /ctx.md' in query
+        assert cmd[-1] == 'Read /ctx.md'
+        assert '--no-interactive' in cmd
 
     @patch('subprocess.run')
-    def test_interactive_prompt_does_not_duplicate_instructions(
-            self, mock_run, tmp_path):
-        """Interactive already gets instructions via the agent config's
-        file:// prompt; inlining them again would be redundant noise."""
-        instructions_file = tmp_path / 'AGENT_INSTRUCTIONS.md'
-        instructions_file.write_text('# CVE Backport Agent Instructions',
-                                     encoding='utf-8')
-        with patch('cve_agent.resolve_agent_instructions',
-                   return_value=instructions_file):
-            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
-                            interactive=True)
-        cmd = mock_run.call_args_list[0][0][0]
-        query = cmd[-1]
-        assert query == 'Read /ctx.md'
-
-    @patch('subprocess.run')
-    def test_missing_instructions_file_falls_back_to_plain_prompt(
-            self, mock_run, tmp_path):
-        missing = tmp_path / 'does-not-exist.md'
-        with patch('cve_agent.resolve_agent_instructions', return_value=missing):
-            _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
-                            interactive=False)
+    def test_interactive_prompt_is_just_context_pointer(self, mock_run):
+        _spawn_kiro_cli(Path('/ctx.md'), Path('/ws'), 'model', 300,
+                        interactive=True)
         cmd = mock_run.call_args_list[0][0][0]
         assert cmd[-1] == 'Read /ctx.md'
 

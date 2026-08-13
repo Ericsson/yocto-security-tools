@@ -4,27 +4,45 @@
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
-from cve_agent import EXIT_CONFLICT, EXIT_SUCCESS
+from cve_agent import EXIT_BUILD_ERROR, EXIT_CONFLICT, EXIT_PTEST_ERROR, EXIT_SUCCESS
 from cve_agent.context import _build_phase_instructions, _gather_interdiff, build_context
 
 
-def test_build_phase_instructions_file_exists(tmp_path):
-    """When the instructions file exists, a short pointer is returned —
-    not the full file content, which already reaches the model via the
-    system prompt (see cve_agent.kiro_backend / cve_agent.claude_backend)."""
-    instructions = tmp_path / "AGENT_INSTRUCTIONS.md"
-    instructions.write_text("# Instructions\nDo the thing.")
-    with mock_patch("cve_agent.context.resolve_agent_instructions", return_value=instructions):
-        result = _build_phase_instructions()
-    assert "Do the thing" not in result
-    assert "AGENT_INSTRUCTIONS.md" in result
+def test_build_phase_instructions_conflict():
+    """Conflict phase embeds ONLY the conflict fragment (§2 + patterns)."""
+    result = _build_phase_instructions(EXIT_CONFLICT)
+    assert "## Instructions" in result
+    assert "Resolve Conflicts" in result
+    assert "Common Conflict Patterns" in result
+    # Other phases' workflow must not leak into a conflict session.
+    assert "Fix Build Errors" not in result
+    assert "Fix Test Failures" not in result
+    # Fragments carry no SPDX/license header (prompt files are streamed to
+    # the model — a header would just pollute the context).
+    assert "SPDX-License-Identifier" not in result
 
 
-def test_build_phase_instructions_missing(tmp_path):
-    missing = tmp_path / "nonexistent.md"
-    with mock_patch("cve_agent.context.resolve_agent_instructions", return_value=missing):
-        result = _build_phase_instructions()
-    assert "AGENT_INSTRUCTIONS.md" in result
+def test_build_phase_instructions_build():
+    """Build phase embeds ONLY the build fragment (§3)."""
+    result = _build_phase_instructions(EXIT_BUILD_ERROR)
+    assert "Fix Build Errors" in result
+    assert "cleansstate" in result
+    assert "Resolve Conflicts" not in result
+    assert "Fix Test Failures" not in result
+
+
+def test_build_phase_instructions_ptest():
+    """Ptest phase embeds ONLY the ptest fragment (§4)."""
+    result = _build_phase_instructions(EXIT_PTEST_ERROR)
+    assert "Fix Test Failures" in result
+    assert "Never hand-edit" in result
+    assert "Resolve Conflicts" not in result
+    assert "Fix Build Errors" not in result
+
+
+def test_build_phase_instructions_analysis_has_no_fragment():
+    """Exit 0 (analysis) needs no fragment — the core Analyse step covers it."""
+    assert _build_phase_instructions(EXIT_SUCCESS) == ""
 
 
 class TestGatherInterdiff:
