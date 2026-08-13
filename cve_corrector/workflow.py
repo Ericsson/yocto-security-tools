@@ -232,16 +232,34 @@ def _ensure_layer_branch(meta_layer: Path) -> None:
         )
 
 
+def _clean_and_reset_sstate(workspace_path: Path, recipe: str) -> None:
+    """Remove stale workspace artifacts, then invalidate the recipe's sstate.
+
+    Whenever we remove files from the workspace before a build, we must reset
+    the recipe's sstate — the two go together. ``git clean -fdx`` drops every
+    ignored/untracked build artifact from the workspace and
+    remove_git_only_build_triggers drops git-only files; if the recipe's sstate
+    is left valid after that, the next build setscene-restores ``do_configure``
+    WITHOUT re-creating the run-time files it produces (e.g. busybox's
+    ``${B}/.config.orig``, consumed by ``do_compile``), and the build dies with
+    ``cp: cannot stat '.config.orig'``. ``bitbake -c cleansstate`` drops the
+    sstate too, forcing ``do_configure`` to actually execute again and
+    regenerate those files. The recipe recompiles from source either way, so
+    the only added cost is one ``do_configure`` execution.
+    """
+    git_clean_workspace(workspace_path, remove_ignored=True)
+    copy_missing_files_from_devtool(workspace_path)
+    remove_git_only_build_triggers(workspace_path)
+    run_cmd(['bitbake', '-c', 'cleansstate', recipe])
+
+
 def _run_build_step(state: WorkflowState) -> None:
     """Build recipe after patch, saving progress on failure."""
     if state.skip_build:
         logger.info("Skipping build")
         return
     logger.info("Building %s", state.recipe)
-    git_clean_workspace(state.workspace_path, remove_ignored=True)
-    copy_missing_files_from_devtool(state.workspace_path)
-    remove_git_only_build_triggers(state.workspace_path)
-    run_cmd(['bitbake', '-c', 'clean', state.recipe])
+    _clean_and_reset_sstate(state.workspace_path, state.recipe)
     if run_cmd(['devtool', 'build', state.recipe]) != 0:
         save_progress(state, 'build_after_patch')
         print_build_failure_instructions(state.workspace_path, state.recipe)
@@ -273,6 +291,12 @@ def _run_ptest_step(state: WorkflowState) -> Optional[str]:
         save_progress(state, 'build_after_patch')
         print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Test image build failed for {state.recipe}") from None
+    # Persist the post-patch summary — which includes the `Failing cases:` list
+    # — to state *before* any save_progress/raise below, so a regression
+    # surfaces the exact failing cases in the agent's context (save_progress
+    # serializes state.ptest_after). Setting it only on the success path left
+    # the saved state's ptest_after as None precisely when the agent needs it.
+    state.ptest_after = ptest_after
     if ptest_after:
         logger.info("✓ Ptest completed: %s", ptest_after)
         if state.ptest_before:
@@ -290,7 +314,6 @@ def _run_ptest_step(state: WorkflowState) -> Optional[str]:
         _log_ptest_debug_conf()
         save_progress(state, 'ptest_after_patch')
         raise PtestError("Post-patch ptest failed to run")
-    state.ptest_after = ptest_after
     return ptest_after
 
 
@@ -748,6 +771,11 @@ def initialize_cve_workflow(
 
     if not config.skip_build and not ptest_before:
         logger.info("Pre-patch build verification for %s", recipe)
+        # prepare_cve_branch removed files from the workspace (git-only build
+        # triggers, and generated files dropped by the branch checkout); reset
+        # the recipe's sstate so do_configure re-runs and regenerates run-time
+        # artifacts rather than being setscene-restored without them.
+        _clean_and_reset_sstate(workspace_path, recipe)
         if run_cmd(['devtool', 'build', recipe]) != 0:
             logger.error("Pre-patch build failed")
             raise BuildPreexistingError("Pre-patch build failed")
