@@ -3,6 +3,7 @@
 """CVE processing orchestration — single-CVE workflow and resolution loop."""
 import dataclasses
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -579,18 +580,32 @@ def process_single_cve(config: AgentConfig,
 
     accepted_hashes: set[str] = set()
     extensions = 0
+    total_credits: Optional[float] = None
+    credits_unit: Optional[str] = None
     while True:
         try:
-            return _run_cve_pipeline(config, knowledge_base, start_time)
+            result = _run_cve_pipeline(config, knowledge_base, start_time)
+            total_credits, credits_unit = _accumulate_credits(
+                config, total_credits, credits_unit)
+            result.total_credits = total_credits
+            result.credits_unit = credits_unit
+            return result
         except _AcceptedSuggestion as accepted:
+            # Read this run's credits before the next pipeline's clean=True
+            # wipes the agent dir, so re-run costs accumulate rather than reset.
+            total_credits, credits_unit = _accumulate_credits(
+                config, total_credits, credits_unit)
             genuinely_new = [h for h in accepted.new_hashes
                              if h not in accepted_hashes]
             if not genuinely_new or extensions >= _MAX_CHAIN_EXTENSIONS:
-                return _make_result(
+                result = _make_result(
                     config.cve_id, ResultStatus.ESCALATED, 0, start_time,
                     "Suggested commits already tried or chain-extension cap "
                     f"({_MAX_CHAIN_EXTENSIONS}) reached — escalating"
                 )
+                result.total_credits = total_credits
+                result.credits_unit = credits_unit
+                return result
             accepted_hashes.update(genuinely_new)
             extensions += 1
             # Keep --cve-info (version + recipe metadata); the fix-url chain is
@@ -605,6 +620,69 @@ def process_single_cve(config: AgentConfig,
             print(f"{'=' * 60}")
 
 
+def _resolve_cve_data(config: AgentConfig) -> Optional[dict]:
+    """Build the CVE metadata dict from ``--cve-info`` or ``--fix-url``.
+
+    Mirrors the resolution in :func:`_run_cve_pipeline` so credit aggregation
+    can locate the recipe workspace by the same rules. Returns ``None`` when
+    neither source is available or metadata can't be loaded.
+    """
+    if config.cve_info_path:
+        return load_cve_metadata(config.cve_info_path)
+    if config.fix_urls and config.recipe:
+        from shared.url_parser import parse_fix_urls
+        url_metadata = parse_fix_urls(config.fix_urls)
+        return {config.cve_id: {'name': config.recipe, **url_metadata}}
+    return None
+
+
+def _accumulate_credits(
+        config: AgentConfig, running_total: Optional[float],
+        running_unit: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+    """Fold this pipeline run's session credits into the running per-CVE total.
+
+    Reads ``sum_session_credits`` from the recipe's agent dir (populated by
+    :func:`cve_agent.session.guarded_session` via ``sessions.log``) and adds it
+    to ``running_total``. The agent dir is derived straight from ``BBPATH`` and
+    the recipe name rather than via :func:`get_workspace_path`, because a
+    successful run's ``devtool finish`` removes the source workspace before we
+    get here — but the agent dir lives outside it and survives. Failures to
+    resolve it are non-fatal (credits are best-effort telemetry), so the
+    running total is returned unchanged.
+    """
+    from .session import sum_session_credits
+
+    agent_dir = _agent_dir_for(config)
+    if agent_dir is None:
+        return running_total, running_unit
+
+    run_credits, run_unit = sum_session_credits(agent_dir)
+    if run_credits is None:
+        return running_total, running_unit
+    if running_total is None:
+        return run_credits, run_unit
+    return running_total + run_credits, running_unit or run_unit
+
+
+def _agent_dir_for(config: AgentConfig) -> Optional[Path]:
+    """Resolve the recipe's agent dir from ``BBPATH`` + recipe name.
+
+    Mirrors :func:`cve_agent.get_agent_dir`'s layout
+    (``<build>/workspace/cve_agent/<recipe>``) without needing the source
+    workspace to exist, so it still works after ``devtool finish``. Returns
+    ``None`` when the recipe or ``BBPATH`` can't be determined.
+    """
+    try:
+        cve_data = _resolve_cve_data(config)
+    except Exception:
+        return None
+    recipe = (cve_data or {}).get(config.cve_id, {}).get('name')
+    bbpath = os.environ.get('BBPATH', '')
+    if not recipe or not bbpath:
+        return None
+    return Path(bbpath.split(':')[0]) / 'workspace' / 'cve_agent' / recipe
+
+
 def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase,
                       start_time: float) -> CveResult:
     """Run the CVE pipeline once (corrector -> resolution loop).
@@ -613,13 +691,8 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase,
     catches to re-run with an extended commit chain.
     """
     try:
-        if config.cve_info_path:
-            cve_data = load_cve_metadata(config.cve_info_path)
-        elif config.fix_urls and config.recipe:
-            from shared.url_parser import parse_fix_urls
-            url_metadata = parse_fix_urls(config.fix_urls)
-            cve_data = {config.cve_id: {'name': config.recipe, **url_metadata}}
-        else:
+        cve_data = _resolve_cve_data(config)
+        if cve_data is None:
             return _make_result(
                 config.cve_id, ResultStatus.FAILED, 0, start_time,
                 "No --cve-info or --fix-url provided"

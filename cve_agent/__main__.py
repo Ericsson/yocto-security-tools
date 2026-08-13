@@ -62,6 +62,18 @@ def _show_trust_warning() -> bool:
 
 # --- Logging ---
 
+def _credits(result: CveResult, sep: str = " | ") -> str:
+    """Render a CVE's total backend cost as ``<sep>credits=<amount> <unit>``,
+    or ``''`` when the backend reported no cost, so callers can append it
+    unconditionally. ``sep`` is ``" | "`` for log/summary lines and ``", "``
+    for the saved-results parenthesized form.
+    """
+    if result.total_credits is None:
+        return ""
+    unit = result.credits_unit or "credits"
+    return f"{sep}credits={result.total_credits:.2f} {unit}"
+
+
 def _log_result(config: AgentConfig, result: CveResult,
                 workspace_path: Optional[Path] = None) -> None:
     """Append result entry to the CVE agent log file."""
@@ -75,7 +87,8 @@ def _log_result(config: AgentConfig, result: CveResult,
     lines = [
         f"[{datetime.now(timezone.utc).isoformat()}] "
         f"{result.cve_id} | {result.status.value} | "
-        f"{result.duration:.1f}s | retries={result.retries} | "
+        f"{result.duration:.1f}s | retries={result.retries}"
+        f"{_credits(result)} | "
         f"{result.resolution_summary}"
     ]
 
@@ -119,7 +132,8 @@ def _process_batch(cve_list: list[str], config_template: AgentConfig,
         result = process_single_cve(config, knowledge_base)
         _log_result(config, result)
         results.append(result)
-        print(f"  Result: {result.status.value} — {result.resolution_summary}")
+        print(f"  Result: {result.status.value} — {result.resolution_summary}"
+              f"{_credits(result)}")
 
         if result.status in (ResultStatus.FAILED, ResultStatus.ESCALATED) and not config_template.trust_mode:
             response = input(
@@ -148,7 +162,14 @@ def _print_batch_summary(results: list[CveResult]) -> None:
     print("\nPer-CVE results:")
     for result in results:
         retries_info = f" ({result.retries} retries)" if result.retries else ""
-        print(f"  {result.cve_id}: {result.status.value}{retries_info}")
+        print(f"  {result.cve_id}: {result.status.value}{retries_info}"
+              f"{_credits(result)}")
+
+    costs = [r.total_credits for r in results if r.total_credits is not None]
+    if costs:
+        unit = next(r.credits_unit for r in results
+                    if r.total_credits is not None) or "credits"
+        print(f"\nTotal {unit}: {sum(costs):.2f}")
 
     print(f"{'=' * 60}")
 
@@ -166,7 +187,8 @@ def _save_results(results: list[CveResult]) -> None:
             file.write(
                 f"{result.cve_id}: {result.status.value} "
                 f"(retries={result.retries}, "
-                f"duration={result.duration:.1f}s)\n"
+                f"duration={result.duration:.1f}s"
+                f"{_credits(result, ', ')})\n"
                 f"  {result.resolution_summary}\n\n"
             )
     print(f"Results saved to: {filepath}")
@@ -359,6 +381,9 @@ def main() -> None:
         _log_result(config, result)
         if result.resolution_summary:
             print(f"  {result.resolution_summary}")
+        if result.total_credits is not None:
+            print(f"  credits: {result.total_credits:.2f} "
+                  f"{result.credits_unit or 'credits'}")
         if result.status not in (ResultStatus.SUCCESS,
                                  ResultStatus.CONFLICT_RESOLVED,
                                  ResultStatus.SKIPPED):

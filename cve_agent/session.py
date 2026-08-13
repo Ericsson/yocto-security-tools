@@ -6,8 +6,10 @@ Spawns AI sessions with context files, wraps them with file-scope
 enforcement (pre-commit hook + post-session revert).
 """
 import difflib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from shared.git_runner import copy_missing_files_from_devtool, force_checkout_branch
 
@@ -215,7 +217,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
     finally:
         remove_scope_hook(workspace_path)
 
-    _log_session_end(agent_dir, result.resolved, result.duration)
+    _log_session_end(agent_dir, result)
 
     if not workspace_path.exists():
         return result
@@ -431,10 +433,50 @@ def _log_session_start(agent_dir: Path, context_file: Path) -> None:
         log.write(f"[{timestamp}] SESSION START context={context_file}\n")
 
 
-def _log_session_end(agent_dir: Path, resolved: bool, duration: float) -> None:
-    """Log session end to the sessions log file."""
+def _log_session_end(agent_dir: Path, result: SessionResult) -> None:
+    """Log session end to the sessions log file.
+
+    Appends the backend's per-session cost (``credits=<amount> unit=<unit>``)
+    when present, so :func:`sum_session_credits` can tally it across a CVE's
+    retry attempts. The RESOLVED/UNRESOLVED status and measured ``duration``
+    tokens are kept unchanged for backward compatibility with existing log
+    readers.
+    """
     log_file = agent_dir / 'sessions.log'
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    status = "RESOLVED" if resolved else "UNRESOLVED"
+    status = "RESOLVED" if result.resolved else "UNRESOLVED"
+    line = (f"[{timestamp}] SESSION END {status} "
+            f"duration={result.duration:.1f}s")
+    if result.credits is not None:
+        line += f" credits={result.credits:.2f} unit={result.credits_unit}"
     with open(log_file, 'a', encoding='utf-8') as log:
-        log.write(f"[{timestamp}] SESSION END {status} duration={duration:.1f}s\n")
+        log.write(line + "\n")
+
+
+# Matches the ``credits=<amount> unit=<unit>`` tokens written by
+# _log_session_end. ``unit`` runs to end-of-token (no spaces in a unit label).
+_CREDITS_LOG_RE = re.compile(
+    r"credits=(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+unit=(?P<unit>\S+)")
+
+
+def sum_session_credits(agent_dir: Path) -> tuple[Optional[float], Optional[str]]:
+    """Sum per-session credits recorded in ``agent_dir/sessions.log``.
+
+    Reads the ``credits=<amount> unit=<unit>`` tokens appended by
+    :func:`_log_session_end` and returns their total plus the unit.
+
+    Returns:
+        ``(total, unit)`` when at least one session recorded a cost, else
+        ``(None, None)``.
+    """
+    log_file = agent_dir / 'sessions.log'
+    try:
+        text = log_file.read_text(encoding='utf-8')
+    except OSError:
+        return None, None
+
+    matches = list(_CREDITS_LOG_RE.finditer(text))
+    if not matches:
+        return None, None
+    total = sum(float(m.group('amount')) for m in matches)
+    return total, matches[0].group('unit')

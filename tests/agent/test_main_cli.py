@@ -170,6 +170,35 @@ class TestTrustSignOffRejected:
         assert '--trust and --sign-off cannot be combined' not in err
 
 
+class TestMainSingleCveCostReport:
+    """On completion of a single-CVE run, main() prints the backend cost when
+    the session reported one, and stays silent when it did not."""
+
+    def _run_main(self, monkeypatch, result):
+        from cve_agent.__main__ import main
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--cve-info', '/tmp/c.json', '--trust'])
+        with patch('cve_agent.__main__.ensure_agents'), \
+             patch('cve_agent.__main__._show_trust_warning', return_value=True), \
+             patch('cve_agent.__main__._log_result'), \
+             patch('cve_agent.__main__.process_single_cve', return_value=result):
+            main()
+
+    def test_prints_cost_when_present(self, monkeypatch, capsys):
+        result = CveResult('CVE-2025-0001', ResultStatus.SUCCESS,
+                           total_credits=5.86, credits_unit='credits')
+        self._run_main(monkeypatch, result)
+        out = capsys.readouterr().out
+        assert 'credits: 5.86 credits' in out
+
+    def test_omits_cost_when_none(self, monkeypatch, capsys):
+        result = CveResult('CVE-2025-0001', ResultStatus.SUCCESS)
+        self._run_main(monkeypatch, result)
+        out = capsys.readouterr().out
+        assert 'credits:' not in out
+
+
 class TestReadCveList:
     def test_valid_file(self, tmp_path):
         f = tmp_path / 'cves.txt'

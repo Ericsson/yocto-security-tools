@@ -416,6 +416,24 @@ class TestPrintBatchSummary:
         assert "CVE-1" in out
         assert "2 retries" in out
 
+    def test_prints_credits_and_total(self, capsys):
+        results = [
+            CveResult("CVE-1", ResultStatus.SUCCESS,
+                      total_credits=5.86, credits_unit="credits"),
+            CveResult("CVE-2", ResultStatus.CONFLICT_RESOLVED,
+                      total_credits=2.14, credits_unit="credits"),
+        ]
+        _print_batch_summary(results)
+        out = capsys.readouterr().out
+        assert "credits=5.86 credits" in out
+        assert "Total credits: 8.00" in out
+
+    def test_omits_credits_when_absent(self, capsys):
+        _print_batch_summary([CveResult("CVE-1", ResultStatus.SUCCESS)])
+        out = capsys.readouterr().out
+        assert "credits=" not in out
+        assert "Total credits" not in out
+
 
 class TestSaveResults:
     def test_saves_file(self, tmp_path, monkeypatch):
@@ -426,6 +444,15 @@ class TestSaveResults:
             "backport_agent_results_*.txt"))
         assert len(files) == 1
         assert "CVE-1" in files[0].read_text()
+
+    def test_saves_credits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('CVE_TOOLS_DATA_DIR', str(tmp_path))
+        results = [CveResult("CVE-1", ResultStatus.SUCCESS, duration=1.5,
+                             total_credits=5.86, credits_unit="credits")]
+        _save_results(results)
+        files = list((tmp_path / 'yocto-security-tools' / 'results').glob(
+            "backport_agent_results_*.txt"))
+        assert "credits=5.86 credits" in files[0].read_text()
 
 
 class TestReadCveList:
