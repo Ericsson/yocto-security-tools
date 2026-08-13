@@ -34,6 +34,7 @@ from cve_corrector.ui import (
     print_edit_instructions,
 )
 from cve_corrector.workflow import (
+    _clean_and_reset_sstate,
     _handle_failed_series,
     _handle_no_clean_apply,
     _log_ptest_debug_conf,
@@ -785,6 +786,26 @@ class TestContinueFromConflict:
         assert state.current_step == "ptest_after_patch"
 
 
+class TestCleanAndResetSstate:
+    """Removing files from the workspace must be paired with cleansstate so a
+    stale do_configure sstate can't be setscene-restored without regenerating
+    run-time artifacts (busybox .config.orig)."""
+
+    @patch("cve_corrector.workflow.run_cmd", return_value=0)
+    @patch("cve_corrector.workflow.remove_git_only_build_triggers")
+    @patch("cve_corrector.workflow.copy_missing_files_from_devtool")
+    @patch("cve_corrector.workflow.git_clean_workspace")
+    def test_removes_then_cleansstate(self, mock_clean, mock_copy, mock_trig,
+                                      mock_cmd, tmp_path):
+        _clean_and_reset_sstate(tmp_path, "busybox")
+        # Ignored build artifacts are removed from the workspace...
+        mock_clean.assert_called_once_with(tmp_path, remove_ignored=True)
+        mock_trig.assert_called_once_with(tmp_path)
+        # ...and the recipe's sstate is invalidated so do_configure re-runs.
+        assert mock_cmd.call_args_list[-1].args[0] == \
+            ['bitbake', '-c', 'cleansstate', 'busybox']
+
+
 class TestRunBuildStep:
     @patch("cve_corrector.workflow.run_cmd", return_value=0)
     @patch("cve_corrector.workflow.run_cmd_capture")
@@ -792,6 +813,24 @@ class TestRunBuildStep:
     def test_success(self, mock_copy, mock_capture, mock_cmd, tmp_path):
         state = _state(tmp_path, skip_build=False)
         _run_build_step(state)
+
+    @patch("cve_corrector.workflow.run_cmd", return_value=0)
+    @patch("cve_corrector.workflow.run_cmd_capture")
+    @patch("cve_corrector.workflow.copy_missing_files_from_devtool")
+    def test_uses_cleansstate_not_clean(self, mock_copy, mock_capture,
+                                        mock_cmd, tmp_path):
+        """Regression: the after-patch build must cleansstate so do_configure
+        re-executes and regenerates run-time artifacts (e.g. busybox's
+        .config.orig). Plain `-c clean` leaves do_configure sstate valid, which
+        gets restored without those artifacts and breaks do_compile."""
+        state = _state(tmp_path, skip_build=False)
+        _run_build_step(state)
+        commands = [call.args[0] for call in mock_cmd.call_args_list]
+        assert ['bitbake', '-c', 'cleansstate', 'busybox'] in commands
+        assert ['bitbake', '-c', 'clean', 'busybox'] not in commands
+        # cleansstate must precede the build so do_configure runs fresh.
+        assert commands.index(['bitbake', '-c', 'cleansstate', 'busybox']) < \
+            commands.index(['devtool', 'build', 'busybox'])
 
     def test_skip(self, tmp_path):
         state = _state(tmp_path, skip_build=True)
@@ -802,7 +841,7 @@ class TestRunBuildStep:
     @patch("cve_corrector.workflow.run_cmd_capture")
     @patch("cve_corrector.workflow.copy_missing_files_from_devtool")
     def test_failure(self, mock_copy, mock_capture, mock_cmd, mock_save, tmp_path):
-        # clean ok, bitbake -c clean ok, devtool build fails
+        # cleansstate ok, devtool build fails
         mock_cmd.side_effect = [0, 1]
         state = _state(tmp_path, skip_build=False)
         with pytest.raises(BuildError):
@@ -821,11 +860,18 @@ class TestRunPtestStep:
         assert "PASSED" in result
 
     @patch("cve_corrector.workflow.save_progress")
-    @patch("cve_corrector.workflow.run_ptest", return_value="PASSED: 4, FAILED: 1")
+    @patch("cve_corrector.workflow.run_ptest",
+           return_value="PASSED: 4, FAILED: 1\nFailing cases:\n  tar hardlink")
     def test_regression(self, mock_ptest, mock_save, tmp_path):
         state = _state(tmp_path, skip_ptest=False, ptest_before="PASSED: 5, FAILED: 0")
         with pytest.raises(PtestError):
             _run_ptest_step(state)
+        # The failing-case summary must be persisted to state BEFORE the raise
+        # so the agent's context can surface the failing cases.
+        assert state.ptest_after == \
+            "PASSED: 4, FAILED: 1\nFailing cases:\n  tar hardlink"
+        assert "tar hardlink" in mock_save.call_args_list[-1].args[0].ptest_after
+        assert mock_save.call_args_list[-1].args[1] == 'ptest_after_patch'
 
     @patch("cve_corrector.workflow.save_progress")
     @patch("cve_corrector.workflow.run_ptest", return_value=None)
