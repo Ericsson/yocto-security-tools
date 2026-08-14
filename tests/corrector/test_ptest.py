@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cve_corrector.ptest import (
+    _kvm_available,
     check_ptest_in_recipe,
     compare_ptest_results,
     enable_ptest,
@@ -13,6 +14,24 @@ from cve_corrector.ptest import (
     summarize_ptest_log,
 )
 from cve_corrector.state import BuildPreexistingError
+
+
+class TestKvmAvailable:
+    @patch("cve_corrector.ptest.os.access", return_value=True)
+    @patch("cve_corrector.ptest.os.path.exists", return_value=True)
+    def test_available_when_device_readable_writable(self, mock_exists, mock_access):
+        assert _kvm_available() is True
+        mock_exists.assert_called_once_with("/dev/kvm")
+
+    @patch("cve_corrector.ptest.os.path.exists", return_value=False)
+    def test_unavailable_when_device_missing(self, mock_exists):
+        assert _kvm_available() is False
+
+    @patch("cve_corrector.ptest.os.access", return_value=False)
+    @patch("cve_corrector.ptest.os.path.exists", return_value=True)
+    def test_unavailable_when_not_accessible(self, mock_exists, mock_access):
+        # e.g. /dev/kvm exists but current user lacks read/write permission
+        assert _kvm_available() is False
 
 
 class TestEnablePtest:
@@ -132,6 +151,55 @@ class TestRunPtest:
         # After run, local.conf should be restored to original
         content = conf.read_text()
         assert content == "# config\n"
+
+    @patch("cve_corrector.ptest._kvm_available", return_value=True)
+    @patch("cve_corrector.ptest.run_cmd")
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_enables_kvm_when_available(self, mock_bp, mock_check, mock_capture,
+                                         mock_cmd, mock_kvm, tmp_path):
+        mock_bp.return_value = tmp_path
+        (tmp_path / "conf").mkdir()
+        conf = tmp_path / "conf" / "local.conf"
+        conf.write_text("# config\n")
+        mock_capture.return_value = MagicMock(stdout="IMAGE_CLASSES = ''")
+
+        captured = {}
+
+        def capture_conf_on_build(*_args, **_kwargs):
+            captured["content"] = conf.read_text()
+            return 0
+
+        mock_cmd.side_effect = capture_conf_on_build
+        run_ptest("busybox")
+
+        assert 'TEST_RUNQEMUPARAMS += "slirp nographic kvm"' in captured["content"]
+
+    @patch("cve_corrector.ptest._kvm_available", return_value=False)
+    @patch("cve_corrector.ptest.run_cmd")
+    @patch("cve_corrector.ptest.run_cmd_capture")
+    @patch("cve_corrector.ptest.check_ptest_in_recipe", return_value=True)
+    @patch("cve_corrector.ptest.get_build_path")
+    def test_omits_kvm_when_unavailable(self, mock_bp, mock_check, mock_capture,
+                                         mock_cmd, mock_kvm, tmp_path):
+        mock_bp.return_value = tmp_path
+        (tmp_path / "conf").mkdir()
+        conf = tmp_path / "conf" / "local.conf"
+        conf.write_text("# config\n")
+        mock_capture.return_value = MagicMock(stdout="IMAGE_CLASSES = ''")
+
+        captured = {}
+
+        def capture_conf_on_build(*_args, **_kwargs):
+            captured["content"] = conf.read_text()
+            return 0
+
+        mock_cmd.side_effect = capture_conf_on_build
+        run_ptest("busybox")
+
+        assert 'TEST_RUNQEMUPARAMS += "slirp nographic"' in captured["content"]
+        assert "kvm" not in captured["content"]
 
 
 # A trimmed excerpt of the real ptest-runner.log that surfaced this bug:
