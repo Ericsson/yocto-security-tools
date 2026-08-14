@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Ptest operations for CVE corrector."""
+import os
 import re
 import sys
 from typing import Optional
@@ -8,6 +9,25 @@ from typing import Optional
 from .bitbake_ops import get_build_path
 from .state import BuildPreexistingError
 from .utils import logger, run_cmd, run_cmd_capture
+
+
+def _kvm_available() -> bool:
+    """Check whether KVM acceleration is usable on this build host.
+
+    Mirrors the conditions ``runqemu`` itself enforces for its ``kvm``
+    convenience option (see the Yocto Project dev-manual QEMU chapter):
+    ``/dev/kvm`` must exist and be both readable and writable by the
+    current user. Anything short of that (missing device node, running
+    inside a container without ``/dev/kvm`` passed through, permission
+    denied, etc.) means KVM acceleration is not usable and callers must
+    fall back to full software emulation instead of asking ``runqemu``
+    to enable an accelerator that will fail to initialize.
+
+    Returns:
+        True if ``/dev/kvm`` is present and both readable and writable.
+    """
+    kvm_dev = '/dev/kvm'
+    return os.path.exists(kvm_dev) and os.access(kvm_dev, os.R_OK | os.W_OK)
 
 
 def enable_ptest() -> None:
@@ -49,12 +69,27 @@ def run_ptest(recipe: str, build_timeout: int = 7200,
     # Save original content for cleanup
     _original_conf = local_conf.read_text() if local_conf.exists() else None
 
+    # KVM acceleration is opportunistic: only ask runqemu to enable it when
+    # /dev/kvm is actually usable. Requesting "kvm" on a host without a
+    # working accelerator (no /dev/kvm, no VT-capable CPU, container
+    # without the device passed through, etc.) makes runqemu fail outright
+    # instead of quietly falling back to software emulation, so the token
+    # is only added when _kvm_available() confirms it will work.
+    qemuparams = 'slirp nographic'
+    if _kvm_available():
+        qemuparams += ' kvm'
+        logger.debug("KVM is available, enabling KVM acceleration for testimage")
+    else:
+        logger.info(
+            "KVM not usable (/dev/kvm missing or not read/write-accessible), "
+            "falling back to software emulation for testimage")
+
     result_inherit = run_cmd_capture(
         ['bitbake-getvar', 'IMAGE_CLASSES', '-r', 'core-image-minimal'])
     if 'testimage' not in result_inherit.stdout and local_conf.exists():
         with open(local_conf, 'a', encoding='utf-8') as f:
             f.write('\n## Added by CVE corrector (test-only, auto-removed)\n')
-            f.write('\nTEST_RUNQEMUPARAMS += "slirp nographic"\n')
+            f.write(f'\nTEST_RUNQEMUPARAMS += "{qemuparams}"\n')
             # WARNING: These features weaken security. They are required
             # for automated testimage/ptest execution only.
             f.write('\nEXTRA_IMAGE_FEATURES += "allow-empty-password empty-root-password allow-root-login"\n')
