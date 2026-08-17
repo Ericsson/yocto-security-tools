@@ -100,7 +100,8 @@ class _AcceptedSuggestion(Exception):
 
 
 def _make_result(cve_id: str, status: ResultStatus, retries: int,
-                 start_time: float, summary: str) -> CveResult:
+                 start_time: float, summary: str,
+                 outcome: Optional[ResultOutcome] = None) -> CveResult:
     """Create a CveResult with computed duration."""
     return CveResult(
         cve_id=cve_id,
@@ -108,6 +109,7 @@ def _make_result(cve_id: str, status: ResultStatus, retries: int,
         retries=retries,
         duration=time.monotonic() - start_time,
         resolution_summary=summary,
+        outcome=outcome,
     )
 
 
@@ -524,6 +526,17 @@ def _run_single_resolution_attempt(
 
     if not session_result.resolved:
         print(f"{config.backend} session did not resolve conflicts for {config.cve_id}")
+        if (session_result.outcome is not None
+                and session_result.outcome.failure_class
+                is FailureClass.HOST_INITIALIZATION):
+            return _AttemptOutcome(result=_make_result(
+                config.cve_id,
+                ResultStatus.FAILED,
+                attempt,
+                start_time,
+                session_result.failure_reason,
+                session_result.outcome,
+            ))
         if config.trust_mode:
             return _AttemptOutcome()
         response = input(
@@ -532,7 +545,8 @@ def _run_single_resolution_attempt(
         if response in ('n', 'no'):
             return _AttemptOutcome(result=_make_result(
                 config.cve_id, ResultStatus.ESCALATED,
-                attempt, start_time, f"{config.backend} session failed to resolve"
+                attempt, start_time, f"{config.backend} session failed to resolve",
+                session_result.outcome,
             ))
         return _AttemptOutcome()
 
@@ -673,6 +687,7 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
         return _make_result(
             config.cve_id, ResultStatus.ESCALATED, 0, start_time,
             session_result.failure_reason or "Analysis session was not verified",
+            session_result.outcome,
         )
 
     conclusion_reason = _read_conclusion(workspace_path)
@@ -710,6 +725,7 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
         return _make_result(
             config.cve_id, ResultStatus.ESCALATED, 0, start_time,
             session_result.failure_reason or "Analysis session was not verified",
+            session_result.outcome,
         )
 
     conclusion_reason = _read_conclusion(workspace_path)
@@ -850,10 +866,6 @@ def process_single_cve(config: AgentConfig,
         artifacts.event("preflight_started")
         result = _process_single_cve(config, knowledge_base)
         result.artifact_dir = artifacts.path
-        artifacts.atomic_json("preflight.json", {
-            "schema_version": 1,
-            "status": "completed",
-        })
         assert result.outcome is not None
         if result.outcome.workflow_status is WorkflowStatus.SKIPPED:
             artifacts.event("run_skipped")

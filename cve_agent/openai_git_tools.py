@@ -49,6 +49,7 @@ MAX_COMMIT_MESSAGE_BYTES = 16 * 1024
 MAX_GIT_COMMAND_SECONDS = 30
 MAX_GIT_MESSAGE_BYTES = 256 * 1024
 MAX_GIT_SEQUENCE_BYTES = 64 * 1024
+MAX_GIT_PREFLIGHT_OUTPUT_BYTES = 8 * 1024 * 1024
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -111,6 +112,10 @@ _READ_ONLY_OPERATIONS = frozenset({
     "tracked_path",
     "staged_paths",
     "baseline_ancestor",
+    "preflight_head",
+    "preflight_index",
+    "preflight_status",
+    "preflight_tree",
 })
 
 _OPERATION_VERBS: Mapping[str, str] = {
@@ -129,6 +134,10 @@ _OPERATION_VERBS: Mapping[str, str] = {
     "tracked_path": "ls-files",
     "staged_paths": "diff",
     "baseline_ancestor": "merge-base",
+    "preflight_head": "rev-parse",
+    "preflight_index": "ls-files",
+    "preflight_status": "status",
+    "preflight_tree": "rev-parse",
     "commit": "commit",
     "amend": "commit",
     "stage": "add",
@@ -259,7 +268,10 @@ class GitCommandExecutor:
 
         self.deadline.require("Git operation")
         limit = self.limits.max_output_bytes if output_limit is None else output_limit
-        limit = min(limit, self.limits.max_output_bytes)
+        if operation.startswith("preflight_"):
+            limit = min(limit, MAX_GIT_PREFLIGHT_OUTPUT_BYTES)
+        else:
+            limit = min(limit, self.limits.max_output_bytes)
         command = [GIT_EXECUTABLE, "--no-pager", *argv]
         environment = self._environment(operation)
 

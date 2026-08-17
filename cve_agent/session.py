@@ -20,8 +20,15 @@ from shared.git_runner import (
     merge_diff_flags,
 )
 
-from . import get_agent_dir
-from .artifacts import current_run_artifacts
+from . import (
+    BuildStatus,
+    FailureClass,
+    ResultOutcome,
+    SecurityStatus,
+    WorkflowStatus,
+    get_agent_dir,
+)
+from .artifacts import ArtifactError, current_run_artifacts
 from .backend import SessionResult, get_backend
 from .git import (
     compute_allowed_files,
@@ -37,6 +44,8 @@ from .git import (
     upstream_changed_files,
     warn_if_hooks_disabled,
 )
+from .openai_deadline import SessionDeadline
+from .openai_preflight import PreflightErrorCode, RepositoryPreflight
 
 
 def check_resolution_state(workspace_path: Path) -> bool:
@@ -150,6 +159,51 @@ def guarded_session(context_file: Path, workspace_path: Path,
 
     recipe = workspace_path.name
 
+    preflight_deadline = SessionDeadline.from_timeout(timeout)
+    preflight = RepositoryPreflight(
+        workspace_path, allowed, preflight_deadline).run()
+    artifact_run = current_run_artifacts()
+    if artifact_run is not None:
+        try:
+            artifact_run.atomic_json("preflight.json", preflight.to_dict())
+            artifact_run.event(
+                "preflight_completed" if preflight.ok else "preflight_failed",
+                phase=preflight.phase.value,
+                error_code=(preflight.error_code.value
+                            if preflight.error_code else None),
+                status_counts=preflight.status_counts,
+                out_of_scope_count=preflight.out_of_scope_count,
+                resource_bytes=preflight.resource_bytes,
+            )
+        except ArtifactError:
+            code = PreflightErrorCode.TRANSCRIPT_FAILED
+            return SessionResult(
+                resolved=False,
+                duration=0.0,
+                failure_reason=f"Repository preflight failed: {code.value}",
+                outcome=ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.HOST_INITIALIZATION,
+                    code.value,
+                ),
+            )
+    if not preflight.ok:
+        code = preflight.error_code or PreflightErrorCode.BASELINE_CAPTURE_FAILED
+        return SessionResult(
+            resolved=False,
+            duration=0.0,
+            failure_reason=f"Repository preflight failed: {code.value}",
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.HOST_INITIALIZATION,
+                code.value,
+            ),
+        )
+
     # The allowed set is the hard scope boundary for the whole session. It
     # intentionally permits the agent to bring in an in-scope prerequisite
     # (Strategy A in AGENT_INSTRUCTIONS.md): a `git cherry-pick` of a
@@ -161,7 +215,6 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # Both guards are installed inside the try: if installing the second one
     # fails, or anything between here and the session raises, cleanup must
     # still strip whichever hook did get written.
-    artifact_run = current_run_artifacts()
     result: SessionResult | None = None
     primary_error: tuple[BaseException, TracebackType | None] | None = None
     cleanup_errors: list[BaseException] = []
@@ -201,14 +254,47 @@ def guarded_session(context_file: Path, workspace_path: Path,
         _log_session_start(agent_dir, context_file)
 
         print(f"Starting {backend_name} session (timeout {timeout}s)...")
-        if artifact_run is not None:
-            artifact_run.event(
-                "provider_session_started",
-                backend=backend_name,
-                model=model,
+        # Re-capture immediately before handing control to any backend. This
+        # also covers CLI backends that cannot enforce a host callback before
+        # their first internal tool action.
+        verification = RepositoryPreflight(
+            workspace_path, allowed, preflight_deadline).run()
+        if (not verification.ok
+                or verification.state_fingerprint != preflight.state_fingerprint):
+            code = PreflightErrorCode.WORKSPACE_CHANGED_DURING_CAPTURE
+            if artifact_run is not None:
+                artifact_run.atomic_json("preflight.json", {
+                    **verification.to_dict(),
+                    "ok": False,
+                    "phase": "consistency",
+                    "error_code": code.value,
+                })
+                artifact_run.event(
+                    "preflight_failed",
+                    phase="consistency",
+                    error_code=code.value,
+                )
+            result = SessionResult(
+                resolved=False,
+                duration=0.0,
+                failure_reason=f"Repository preflight failed: {code.value}",
+                outcome=ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.HOST_INITIALIZATION,
+                    code.value,
+                ),
             )
-        result = backend.run_session(
-            prompt, workspace_path, allowed, model, timeout, interactive)
+        else:
+            if artifact_run is not None:
+                artifact_run.event(
+                    "provider_session_started",
+                    backend=backend_name,
+                    model=model,
+                )
+            result = backend.run_session(
+                prompt, workspace_path, allowed, model, timeout, interactive)
     except BaseException as exc:
         primary_error = (exc, exc.__traceback__)
 
