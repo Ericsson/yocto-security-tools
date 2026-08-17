@@ -215,6 +215,41 @@ class JSONLTranscript:
                 view = view[written:]
         except OSError as exc:
             raise TranscriptError("native transcript write failed") from exc
+        # Mirror provider and tool events into the durable per-attempt audit.
+        # Loss of that audit is fatal and prevents further privileged work.
+        from .artifacts import current_run_artifacts
+        artifact_run = current_run_artifacts()
+        if artifact_run is not None:
+            durable_kind = {
+                "model_request": "provider_request_started",
+                "assistant_response": "provider_response_received",
+                "tool_request": "tool_call_requested",
+                "tool_result": "tool_call_completed",
+                "terminal_result": "finish_requested",
+            }.get(kind, kind)
+            artifact_run.event(durable_kind, provider_event=kind, **data)
+            if kind == "tool_request" and data.get("tool") == "build_recipe":
+                artifact_run.event("build_started")
+            if kind == "tool_result" and data.get("tool") == "build_recipe":
+                build_status = "passed" if data.get("success") is True else "failed"
+                artifact_run.atomic_json("build-summary.json", {
+                    "schema_version": 1,
+                    "status": build_status,
+                    "mutation_generation": data.get("mutation_generation"),
+                    "validated_generation": data.get("validated_generation"),
+                })
+                artifact_run.event(
+                    "build_completed",
+                    status=build_status,
+                    mutation_generation=data.get("mutation_generation"),
+                    validated_generation=data.get("validated_generation"),
+                )
+            if kind == "tool_result" and data.get("mutated") is True:
+                artifact_run.event(
+                    "mutation_committed",
+                    tool=data.get("tool"),
+                    mutation_generation=data.get("mutation_generation"),
+                )
 
     def sync(self) -> None:
         """Durably flush terminal/session boundary events."""

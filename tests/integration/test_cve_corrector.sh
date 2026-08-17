@@ -78,6 +78,11 @@ test_single_cve() {
         local watchdog_pid=$!
         wait "$agent_pid" 2>/dev/null || agent_exit=$?
         kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null || true
+        local durable_artifacts
+        durable_artifacts=$(grep '^Artifacts: ' "$agent_log" | tail -n 1 | cut -d' ' -f2- || true)
+        if [[ -n "$durable_artifacts" && -d "$durable_artifacts" ]]; then
+            cp -a "$durable_artifacts" "${LOG_DIR}/${cve_id}_${mode}_artifacts"
+        fi
         if [[ "$agent_exit" -eq 0 ]]; then
             # Compare agent-generated patches against originals
             local agent_diff_output

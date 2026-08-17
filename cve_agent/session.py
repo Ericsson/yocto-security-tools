@@ -21,6 +21,7 @@ from shared.git_runner import (
 )
 
 from . import get_agent_dir
+from .artifacts import current_run_artifacts
 from .backend import SessionResult, get_backend
 from .git import (
     compute_allowed_files,
@@ -160,6 +161,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # Both guards are installed inside the try: if installing the second one
     # fails, or anything between here and the session raises, cleanup must
     # still strip whichever hook did get written.
+    artifact_run = current_run_artifacts()
     result: SessionResult | None = None
     primary_error: tuple[BaseException, TracebackType | None] | None = None
     cleanup_errors: list[BaseException] = []
@@ -199,6 +201,12 @@ def guarded_session(context_file: Path, workspace_path: Path,
         _log_session_start(agent_dir, context_file)
 
         print(f"Starting {backend_name} session (timeout {timeout}s)...")
+        if artifact_run is not None:
+            artifact_run.event(
+                "provider_session_started",
+                backend=backend_name,
+                model=model,
+            )
         result = backend.run_session(
             prompt, workspace_path, allowed, model, timeout, interactive)
     except BaseException as exc:
@@ -227,6 +235,20 @@ def guarded_session(context_file: Path, workspace_path: Path,
                 cleanup_errors.append(exc)
 
     if primary_error is not None:
+        if artifact_run is not None:
+            error, _ = primary_error
+            artifact_run.atomic_json("provider-summary.json", {
+                "schema_version": 1,
+                "status": "failed",
+                "backend": backend_name,
+                "model": model,
+                "error_class": type(error).__name__,
+            })
+            artifact_run.event(
+                "run_failed",
+                error_class=type(error).__name__,
+                error_code="provider_exception",
+            )
         for cleanup_error in cleanup_errors:
             print(
                 "Session cleanup also failed: "
@@ -245,6 +267,26 @@ def guarded_session(context_file: Path, workspace_path: Path,
         raise error.with_traceback(error.__traceback__)
     if result is None:
         raise RuntimeError("backend returned no session result")
+
+    if artifact_run is not None:
+        artifact_run.atomic_json("provider-summary.json", {
+            "schema_version": 1,
+            "status": "completed" if result.resolved else "failed",
+            "backend": backend_name,
+            "model": model,
+            "duration_seconds": result.duration,
+            "failure_reason": result.failure_reason,
+            "credits": result.credits,
+            "credits_unit": result.credits_unit,
+            "input_tokens": None,
+            "output_tokens": None,
+        })
+        artifact_run.event(
+            "provider_session_completed",
+            backend=backend_name,
+            resolved=result.resolved,
+            duration_seconds=result.duration,
+        )
 
     _log_session_end(agent_dir, result)
 

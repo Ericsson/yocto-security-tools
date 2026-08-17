@@ -614,6 +614,10 @@ class OpenAICompatibleBackend(AIBackend):
             )
 
         secret = os.environ.get(self._config.api_key_env, "").strip()
+        from .artifacts import current_run_artifacts
+        artifact_run = current_run_artifacts()
+        if artifact_run is not None:
+            artifact_run.add_secret(secret)
         transcript_factory = self._transcript_factory or JSONLTranscript.create
         try:
             transcript = transcript_factory(

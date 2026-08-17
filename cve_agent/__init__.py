@@ -158,6 +158,7 @@ class CveResult:
     outcome: Optional[ResultOutcome] = None
     failure_class: Optional[FailureClass] = None
     failure_code: Optional[str] = None
+    artifact_dir: Optional[Path] = None
 
     def __post_init__(self) -> None:
         if self.outcome is None:
@@ -185,6 +186,7 @@ class CveResult:
             "resolution_summary": self.resolution_summary,
             "total_credits": self.total_credits,
             "credits_unit": self.credits_unit,
+            "artifact_dir": str(self.artifact_dir) if self.artifact_dir else None,
             # Compatibility only.  Do not use this field for release gates.
             "legacy_status": self.status.value,
         })
