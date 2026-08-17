@@ -394,6 +394,24 @@ def test_interactive_commit_denial_is_structured_and_does_not_stage(host_reposit
     assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
 
 
+def test_interactive_amend_denial_is_structured_and_does_not_stage(host_repository):
+    repo, agent = host_repository
+    (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _git(repo, "commit", "-m", "selected fix")
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "a.c").write_text("repair\n", encoding="utf-8")
+    approval = FakeApproval(ApprovalDecision.DENY)
+    runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=approval)
+    result = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    assert not result.success and result.error_kind == "approval"
+    assert approval.requests[0].category == "git_mutation"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
 def test_approve_class_suppresses_later_prompts(host_repository):
     repo, agent = host_repository
     approval = FakeApproval(ApprovalDecision.APPROVE_CLASS)
@@ -476,16 +494,17 @@ def test_build_is_invalidated_by_later_file_mutation(host_repository):
     assert "predates" in result.payload["error"]
 
 
-def test_build_is_invalidated_by_later_git_mutation(host_repository):
+def test_staging_already_built_content_does_not_invalidate_build(host_repository):
     repo, agent = host_repository
     runtime = _runtime(repo, agent)
-    assert runtime.dispatch("build_recipe", {}).success
-    (repo / "a.c").write_text("changed\n", encoding="utf-8")
+    assert runtime.dispatch("write_file", {
+        "path": "a.c", "content": "changed\n", "mode": "replace_only"}).success
+    built = runtime.dispatch("build_recipe", {})
+    assert built.success
+    generation = runtime.mutation_generation
     assert runtime.dispatch("git_stage", {"paths": ["a.c"]}).success
-    result = runtime.dispatch("finish", {
-        "status": "done", "reason": "complete", "summary": "built"})
-    assert not result.success
-    assert "predates" in result.payload["error"]
+    assert runtime.mutation_generation == generation
+    assert runtime.validated_generation == generation
 
 
 def test_amend_after_successful_build_records_built_source_without_staling_it(
@@ -511,14 +530,59 @@ def test_amend_after_successful_build_records_built_source_without_staling_it(
     amended = runtime.dispatch("git_amend", {
         "paths": ["a.c"], "message_mode": "no_edit"})
     assert amended.success and amended.mutated
+    transition = amended.payload["trusted_transition"]
+    assert transition["old_head"] != transition["new_head"]
+    assert transition["operation"] == "amend"
+    assert all(transition["invariants"].values())
+    assert runtime.trusted_git_state.trusted_head == transition["new_head"]
+    assert runtime.trusted_git_state.last_host_git_operation == "amend"
+    assert runtime.trusted_git_state.transition_count == 2
     assert runtime.mutation_generation == generation
     assert runtime.validated_generation == generation
+    assert runtime.trusted_git_state.built_generation == generation
     finished = runtime.dispatch("finish", {
         "status": "done", "reason": "built repair committed",
         "summary": "portable fix"})
     assert finished.success and finished.terminal
     assert _git(repo, "status", "--porcelain").stdout == ""
     assert _git(repo, "show", "HEAD:a.c").stdout == "portable upstream\n"
+
+
+def test_edit_amend_build_finish_succeeds(host_repository):
+    repo, agent = host_repository
+    (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _git(repo, "commit", "-m", "selected fix")
+    runtime = _runtime(repo, agent)
+    assert runtime.dispatch("write_file", {
+        "path": "a.c", "content": "repaired fix\n", "mode": "replace_only",
+    }).success
+    assert runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"}).success
+    assert runtime.dispatch("build_recipe", {}).success
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "verified", "summary": "amended repair"})
+    assert finished.success
+    assert _git(repo, "show", "HEAD:a.c").stdout == "repaired fix\n"
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+def test_build_edit_amend_finish_is_rejected_as_stale(host_repository):
+    repo, agent = host_repository
+    (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _git(repo, "commit", "-m", "selected fix")
+    runtime = _runtime(repo, agent)
+    assert runtime.dispatch("build_recipe", {}).success
+    assert runtime.dispatch("write_file", {
+        "path": "a.c", "content": "later repair\n", "mode": "replace_only",
+    }).success
+    assert runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"}).success
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "claim", "summary": "stale"})
+    assert not finished.success
+    assert "predates" in finished.payload["error"]
 
 
 def test_followup_commit_after_successful_build_does_not_stale_validation(
@@ -635,7 +699,7 @@ def test_done_rejected_for_out_of_scope_committed_path(host_repository):
     result = runtime.dispatch("finish", {
         "status": "done", "reason": "claim", "summary": "claim"})
     assert not result.success
-    assert result.payload["rejected_paths"] == ["outside.c"]
+    assert "not produced by a typed trusted Git operation" in result.payload["error"]
 
 
 def test_done_rejected_for_staged_or_unstaged_state(host_repository):

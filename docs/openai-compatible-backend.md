@@ -42,9 +42,33 @@ Replacement and follow-up messages receive one trusted native provenance
 trailer. Message text is carried in a mode-`0600` Git-internal temporary file,
 not as model-selected argv. A commit or amend records source content without
 changing it, so it does not invalidate a successful build of that same content.
-File and index/source mutations remain the build-validity boundary. This
+Staging and unstaging likewise do not change the content generation. File
+edits, removals, conflict restoration, and cherry-pick content changes do. This
 supports the normal sequence: repair an allowed file, build successfully,
 amend the exact repair paths, then request `finish(done)` with a clean tree.
+
+The runtime owns an explicit trusted Git state containing the session root and
+tree, current trusted commit and tree, expected parent basis, last typed Git
+operation, content/build generations, and a digest of the allowed path set.
+Every commit-producing tool checks that it started at the trusted HEAD, that
+the resulting parents match the operation (including replacement parents for
+amend), that the repository has no operation or conflict left in progress,
+that the index is resolved, and that the complete root-to-result tree delta is
+within scope. Only after all checks pass does the runtime advance the trusted
+commit. Consequently, `finish(done)` accepts an authorized amend without
+weakening protection against an externally replaced HEAD. Old/new commit and
+tree IDs plus the invariant results are recorded in the native and durable
+transcripts, with the latest state retained as `trusted-git-state.json`.
+
+Abort and single-commit skip are trusted rollback operations. They may restore
+paths named by the active cherry-pick even when those paths are unavailable or
+outside the model's write scope, because the postcondition must exactly match
+the already trusted session HEAD and tree. They may also discard exact paths
+mutated through typed tools during that cherry-pick. Any unrelated tracked edit
+still blocks rollback, including an edit to an otherwise allowed file that was
+not produced by the typed runtime. Rollback provenance is reset at every new
+cherry-pick and successful trusted commit transition, so paths touched by an
+earlier operation can never authorize discarding a later external edit.
 
 ## Local Ollama quick start
 

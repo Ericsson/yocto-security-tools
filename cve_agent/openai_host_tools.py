@@ -554,6 +554,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
     ) -> None:
         session_deadline = deadline or SessionDeadline.from_timeout(timeout_seconds)
         self._started_at = session_deadline.clock()
+        self._event_sink = event_sink
         super().__init__(
             workspace_root,
             allowed_files,
@@ -585,6 +586,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         self._terminal_reason = ""
         self._terminal_summary = ""
         self._conclusion_written = False
+        self._persist_trusted_git_state()
 
     @property
     def validated_generation(self) -> Optional[int]:
@@ -713,8 +715,27 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             error.payload = payload
             raise error
         self._validated_generation = self.mutation_generation
+        self.trusted_git_state.built_generation = self._validated_generation
+        self._persist_trusted_git_state()
         payload["validated_generation"] = self._validated_generation
         return _ExecutionResult(payload)
+
+    def _after_successful_execution(
+        self, tool: str, execution: _ExecutionResult,
+    ) -> None:
+        super()._after_successful_execution(tool, execution)
+        transition = execution.payload.get("trusted_transition")
+        if isinstance(transition, dict) and self._event_sink is not None:
+            self._event_sink("trusted_git_transition", transition)
+        if isinstance(transition, dict):
+            self._persist_trusted_git_state()
+
+    def _persist_trusted_git_state(self) -> None:
+        from .artifacts import current_run_artifacts
+        artifact_run = current_run_artifacts()
+        if artifact_run is not None:
+            artifact_run.atomic_json(
+                "trusted-git-state.json", self.trusted_git_state.to_dict())
 
     def _finish(self, arguments: dict[str, object]) -> _ExecutionResult:
         status_value = self._required_string(arguments, "status")
@@ -795,27 +816,28 @@ class OpenAIHostToolRuntime(GitToolRuntime):
                     "current_generation": self.mutation_generation,
                 })
         current_head = self._current_head()
-        ancestor = self._executor.run(
-            "baseline_ancestor",
-            ["merge-base", "--is-ancestor",
-             self.repository_snapshot.head, current_head],
-        )
-        if ancestor.timed_out:
-            raise RuntimeTimeoutError("baseline ancestry check timed out")
-        if ancestor.returncode == 1:
+        trusted = self.trusted_git_state
+        if current_head != trusted.trusted_head:
             raise TerminalInvariantError(
-                "current HEAD is not descended from the session baseline")
-        if ancestor.returncode != 0:
-            raise ToolOperationalError("unable to verify baseline ancestry")
-
-        changed = self._executor.run(
-            "diff",
-            ["diff", "--name-only", "-z",
-             f"{self.repository_snapshot.head}..{current_head}", "--"],
-        )
-        self._require_complete(changed, "durable changed-path inspection")
-        changed_paths = [path for path in changed.stdout.split("\x00") if path]
-        rejected = self._unauthorized_repository_paths(changed_paths)
+                "current HEAD was not produced by a typed trusted Git operation",
+                {
+                    "trusted_head": trusted.trusted_head,
+                    "current_head": current_head,
+                },
+            )
+        current_tree = self._commit_tree(current_head)
+        if current_tree != trusted.trusted_tree:
+            raise TerminalInvariantError(
+                "current commit tree differs from trusted Git state")
+        changed = self._changed_paths_between(
+            trusted.session_root_head, current_head)
+        unsupported = sorted({
+            item.path for item in changed
+            if item.old_mode in {"120000", "160000"}
+            or item.new_mode in {"120000", "160000"}
+        })
+        rejected = sorted(
+            set(unsupported) | set(self._preflight_changed_paths(changed)))
         if rejected:
             raise TerminalInvariantError(
                 "durable changed paths are outside allowed_files", {
@@ -825,10 +847,10 @@ class OpenAIHostToolRuntime(GitToolRuntime):
 
     def _verify_non_code_outcome(self) -> None:
         current_head = self._current_head()
-        if current_head != self.repository_snapshot.head:
+        if current_head != self.trusted_git_state.session_root_head:
             raise TerminalInvariantError(
                 "non-code outcome requires the session baseline HEAD", {
-                    "expected_head": self.repository_snapshot.head,
+                    "expected_head": self.trusted_git_state.session_root_head,
                     "current_head": current_head,
                 })
         self._require_clean_worktree()

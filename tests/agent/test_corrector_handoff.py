@@ -13,8 +13,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cve_agent import AgentConfig, FailureClass
-from cve_agent.handoff import validate_repository_handoff
+from cve_agent.handoff import (
+    activate_validated_handoff,
+    deactivate_validated_handoff,
+    validate_repository_handoff,
+)
 from cve_agent.knowledge import KnowledgeBase
+from cve_agent.openai_git_tools import GitToolRuntime
 from cve_agent.openai_tools import FileToolPathPolicy, ToolPolicyError
 from cve_agent.orchestrator import _run_cve_pipeline
 from cve_agent.session import guarded_session
@@ -84,6 +89,27 @@ def test_ordinary_handoff_validates_and_generated_file_is_restored(tmp_path):
         policy.authorize_write("generated.txt")
     assert validate_repository_handoff(
         repo, "CVE-2026-1234", required=True) == manifest
+
+
+def test_trusted_git_baseline_records_only_validated_handoff_provenance(tmp_path):
+    repo, selected = _repo(tmp_path)
+    state_dir = repo.parent.parent / "cve_corrector"
+    emit_handoff(_state(repo, selected), state_dir)
+    validated = validate_repository_handoff(
+        repo, "CVE-2026-1234", required=True)
+    assert validated is not None
+    token = activate_validated_handoff(validated)
+    try:
+        runtime = GitToolRuntime(
+            repo, {"source.c"}, "gpt-test", 30)
+    finally:
+        deactivate_validated_handoff(token)
+    assert runtime.trusted_git_state.initial_trust_source == "validated_handoff"
+    assert runtime.trusted_git_state.handoff_digest == validated.critical_sha256
+
+    unbound = GitToolRuntime(repo, {"source.c"}, "gpt-test", 30)
+    assert unbound.trusted_git_state.initial_trust_source == "session_preflight"
+    assert unbound.trusted_git_state.handoff_digest is None
 
 
 def test_unknown_tracked_out_of_scope_fails_with_bounded_manifest(tmp_path):

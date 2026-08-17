@@ -12,6 +12,11 @@ and tree identities, selected reference commits, the explicit merge mainline
 paths, tracked out-of-scope paths, and index/worktree fingerprints. A SHA-256
 digest covers every security-critical field. The validated manifest and its
 digest are copied to the per-attempt artifacts and recorded in the transcript.
+During the provider call, that validated digest is bound through session-local
+host state and recorded as the native runtime's initial trust source. A later
+attempt therefore receives an amended commit as a baseline only after the
+corrector has emitted and the agent has fully validated a new handoff; the
+runtime never silently promotes an arbitrary current HEAD.
 
 Allowed paths are the exact net change of the selected commit against its
 parent. Renames retain both source and destination; deletions and file-type

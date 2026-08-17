@@ -392,13 +392,13 @@ def test_stage_unstage_remove_and_generation(repository):
     runtime = _runtime(repo, {"a.c", "b.c"})
     assert runtime.mutation_generation == 0
     staged = runtime.dispatch("git_stage", {"paths": ["a.c"]})
-    assert staged.success and staged.audit.generation == 1
+    assert staged.success and staged.audit.generation == 0
     unstaged = runtime.dispatch("git_unstage", {"paths": ["a.c"]})
-    assert unstaged.success and unstaged.audit.generation == 2
+    assert unstaged.success and unstaged.audit.generation == 0
     removed = runtime.dispatch("git_remove", {"paths": ["b.c"]})
-    assert removed.success and removed.audit.generation == 3
+    assert removed.success and removed.audit.generation == 1
     failed = runtime.dispatch("git_stage", {"paths": ["missing.c"]})
-    assert not failed.success and failed.audit.generation == 3
+    assert not failed.success and failed.audit.generation == 1
 
 
 def test_remove_stages_a_tracked_file_already_deleted_from_worktree(repository):
@@ -491,6 +491,24 @@ def test_amend_preflights_existing_commit_scope_before_staging(repository):
     assert not result.success and result.error_kind == "policy"
     assert result.payload["rejected_paths"] == ["b.c"]
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
+
+
+def test_amend_rejects_head_changed_outside_typed_runtime(repository):
+    repo, _, _ = repository
+    (repo / "a.c").write_text("selected\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _commit(repo, "selected")
+    runtime = _runtime(repo, {"a.c"})
+    (repo / "a.c").write_text("external commit\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    external = _commit(repo, "external")
+    (repo / "a.c").write_text("attempted amend\n", encoding="utf-8")
+    result = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    assert not result.success and result.error_kind == "policy"
+    assert "outside a typed trusted Git operation" in result.payload["error"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == external
     assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
 
 
@@ -937,6 +955,107 @@ def test_abort_and_skip_refuse_unrelated_tracked_changes(repository, action):
     assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
 
 
+def test_abort_restores_trusted_baseline_when_fix_path_is_out_of_scope(repository):
+    repo, _, branch = repository
+    source = _make_source_commit(repo, branch, path="b.c", content="upstream b\n")
+    (repo / "b.c").write_text("stable b\n", encoding="utf-8")
+    _git(repo, "add", "--", "b.c")
+    before = _commit(repo, "stable b")
+    cherry_pick = _git(repo, "cherry-pick", source, check=False)
+    assert cherry_pick.returncode != 0
+    runtime = _runtime(repo, {"a.c"})
+
+    result = runtime.dispatch("git_cherry_pick_abort", {})
+
+    assert result.success
+    assert result.payload["discarded_paths"] == ["b.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert (repo / "b.c").read_text(encoding="utf-8") == "stable b\n"
+    assert not (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+    assert not _git(repo, "status", "--porcelain").stdout
+
+
+def test_skip_discards_typed_moved_path_adaptation_before_followup(repository):
+    repo, _, branch = repository
+    source = _make_source_commit(repo, branch, content="upstream\n")
+    moved = repo / "moved" / "a.c"
+    moved.parent.mkdir()
+    moved.write_text("stable moved\n", encoding="utf-8")
+    (repo / "a.c").unlink()
+    _git(repo, "add", "-A")
+    before = _commit(repo, "move a")
+    cherry_pick = _git(repo, "cherry-pick", source, check=False)
+    assert cherry_pick.returncode != 0
+    runtime = _runtime(repo, {"a.c", "moved/a.c"})
+    adapted = runtime.dispatch("replace_in_file", {
+        "path": "moved/a.c",
+        "old_text": "stable moved\n",
+        "new_text": "adapted moved\n",
+        "expected_count": 1,
+    })
+    assert adapted.success
+
+    result = runtime.dispatch("git_cherry_pick_skip", {})
+
+    assert result.success
+    assert result.payload["discarded_paths"] == ["a.c", "moved/a.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert moved.read_text(encoding="utf-8") == "stable moved\n"
+    assert not (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+    assert not _git(repo, "status", "--porcelain").stdout
+
+
+def test_rollback_still_refuses_external_edit_after_typed_mutation(repository):
+    repo, _, branch = repository
+    source = _make_source_commit(repo, branch)
+    (repo / "a.c").write_text("stable\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _commit(repo, "stable")
+    runtime = _runtime(repo, {"a.c", "b.c"})
+    assert runtime.dispatch(
+        "git_cherry_pick_start", {"revision": source}).payload["conflicted"] is True
+    assert runtime.dispatch("git_restore_conflict", {
+        "path": "a.c", "side": "ours"}).success
+    (repo / "b.c").write_text("external edit\n", encoding="utf-8")
+    assert runtime.dispatch("git_stage", {"paths": ["b.c"]}).success
+
+    result = runtime.dispatch("git_cherry_pick_abort", {})
+
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["b.c"]
+    assert (repo / "b.c").read_text(encoding="utf-8") == "external edit\n"
+    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+
+
+def test_rollback_refuses_external_edit_to_path_from_completed_operation(repository):
+    repo, base, branch = repository
+    source_b = _make_source_commit(
+        repo, branch, path="b.c", content="upstream b\n")
+    _git(repo, "checkout", "-q", "-b", "source-a", base)
+    (repo / "a.c").write_text("upstream a\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    source_a = _commit(repo, "upstream a")
+    _git(repo, "checkout", "-q", branch)
+    (repo / "a.c").write_text("stable a\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _commit(repo, "stable a")
+    runtime = _runtime(repo, {"a.c", "b.c"})
+    first = runtime.dispatch("git_cherry_pick_start", {"revision": source_b})
+    assert first.success and first.payload["conflicted"] is False
+    trusted = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    second = runtime.dispatch("git_cherry_pick_start", {"revision": source_a})
+    assert second.success and second.payload["conflicted"] is True
+    (repo / "b.c").write_text("unrelated external edit\n", encoding="utf-8")
+
+    result = runtime.dispatch("git_cherry_pick_abort", {})
+
+    assert not result.success and result.error_kind == "policy"
+    assert result.payload["rejected_paths"] == ["b.c"]
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == trusted
+    assert (repo / "b.c").read_text(encoding="utf-8") == "unrelated external edit\n"
+    assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
+
+
 def test_unauthorized_staged_path_is_caught_before_continue(repository):
     repo, _, branch = repository
     source = _make_source_commit(repo, branch)
@@ -970,6 +1089,8 @@ def test_allowed_but_unexpected_staged_path_is_caught_before_continue(repository
     result = runtime.dispatch("git_cherry_pick_continue", {})
     assert not result.success and result.error_kind == "policy"
     assert result.payload["rejected_paths"] == ["b.c"]
+    assert result.payload["recovery_tool"] == "git_cherry_pick_skip"
+    assert result.payload["reapply_after_rollback"] is True
     assert (repo / ".git" / "CHERRY_PICK_HEAD").exists()
 
 
@@ -1103,6 +1224,14 @@ def test_session_snapshot_captures_head_and_initial_operation_state(repository):
     assert runtime.repository_snapshot.operations == {
         "cherry_pick": False, "merge": False, "rebase": False, "revert": False,
     }
+    trusted = runtime.trusted_git_state
+    assert trusted.session_root_head == head
+    assert trusted.trusted_head == head
+    assert trusted.session_root_tree == trusted.trusted_tree
+    assert trusted.last_host_git_operation is None
+    assert trusted.mutation_generation == 0
+    assert trusted.built_generation is None
+    assert len(trusted.allowed_path_digest) == 64
 
 
 def test_executor_bounds_output_and_enforces_timeout(tmp_path):
