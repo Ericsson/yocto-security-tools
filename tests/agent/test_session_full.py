@@ -3,6 +3,7 @@
 """Tests for cve_agent.session — kiro-cli session management and audit log."""
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +26,19 @@ from cve_agent.session import (
 )
 
 _kiro = KiroBackend()
+
+
+def _preflight_ok():
+    return SimpleNamespace(
+        ok=True,
+        state_fingerprint="stable",
+        phase=SimpleNamespace(value="complete"),
+        error_code=None,
+        status_counts={},
+        out_of_scope_count=0,
+        resource_bytes=0,
+        to_dict=lambda: {"schema_version": 1, "ok": True},
+    )
 
 
 class _FakePopen:
@@ -221,9 +235,11 @@ class TestGuardedKiroSession:
                        m_session, m_unhook, m_revert, m_audit, tmp_path):
         ws = tmp_path / "ws"
         ws.mkdir()
-        result = guarded_session(
-            Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]}, "model", 300, "CVE-1"
-        )
+        with patch("cve_agent.session.RepositoryPreflight.run",
+                   return_value=_preflight_ok()):
+            result = guarded_session(
+                Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                "model", 300, "CVE-1")
         assert result.resolved is True
 
     @patch("cve_agent.session.remove_scope_hook")
@@ -329,7 +345,9 @@ class TestGuardedKiroSession:
                 patch("cve_agent.session.revert_unauthorized_changes") as revert, \
                 patch("cve_agent.session._write_audit_log") as audit, \
                 patch("cve_agent.session.get_backend", return_value=backend), \
-                patch("cve_agent.session.get_agent_dir", return_value=agent):
+                patch("cve_agent.session.get_agent_dir", return_value=agent), \
+                patch("cve_agent.session.RepositoryPreflight.run",
+                      return_value=_preflight_ok()):
             result = guarded_session(
                 agent / "context.md", ws, "unknown", {}, "model", 30,
                 "CVE-1", backend_name="openai")
@@ -356,7 +374,9 @@ class TestGuardedKiroSession:
                 patch("cve_agent.session.revert_unauthorized_changes") as revert, \
                 patch("cve_agent.session._write_audit_log") as audit, \
                 patch("cve_agent.session.get_backend", return_value=backend), \
-                patch("cve_agent.session.get_agent_dir", return_value=agent):
+                patch("cve_agent.session.get_agent_dir", return_value=agent), \
+                patch("cve_agent.session.RepositoryPreflight.run",
+                      return_value=_preflight_ok()):
             with pytest.raises(RuntimeError, match="backend exploded"):
                 guarded_session(
                     agent / "context.md", ws, "unknown", {}, "model", 30,
@@ -380,7 +400,9 @@ class TestGuardedKiroSession:
                 patch("cve_agent.session.revert_unauthorized_changes") as revert, \
                 patch("cve_agent.session._write_audit_log") as audit, \
                 patch("cve_agent.session.get_backend", return_value=backend), \
-                patch("cve_agent.session.get_agent_dir", return_value=agent):
+                patch("cve_agent.session.get_agent_dir", return_value=agent), \
+                patch("cve_agent.session.RepositoryPreflight.run",
+                      return_value=_preflight_ok()):
             with pytest.raises(OSError, match="cannot remove hook"):
                 guarded_session(
                     agent / "context.md", ws, "unknown", {}, "model", 30,

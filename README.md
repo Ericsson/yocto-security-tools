@@ -18,7 +18,7 @@ security validation. A successful agent/build workflow is reported as
 `WORKFLOW_COMPLETED_UNVERIFIED` until a trusted semantic validation phase
 accepts it; see [the versioned result schema](docs/result-schema.md). Every
 attempt also has a [durable, redacted artifact directory](docs/agent-artifacts.md)
-created before repository preflight.
+created before [typed repository preflight](docs/agent-preflight.md).
 
 ## Tools
 
