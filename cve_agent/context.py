@@ -7,6 +7,7 @@ and writes a structured context.md file for Claude to consume.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -35,6 +36,10 @@ from .git import (
 )
 from .handoff import validate_repository_handoff
 from .interdiff import generate_interdiff
+
+MAX_CONTEXT_SECTION_BYTES = 32 * 1024
+MAX_CONTEXT_BYTES = 256 * 1024
+MAX_BUILD_ERROR_EXCERPT_BYTES = 16 * 1024
 
 # Per-phase workflow fragments embedded into context.md by exit code. The
 # phase-independent core is delivered separately via the system prompt; exit 0
@@ -71,6 +76,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
     sections = [
         _build_header(cve_id, recipe, exit_code, workspace_path, cve_info,
                       model, backend, backend_profile),
+        _security_evidence_requirements(cve_info),
         _build_phase_instructions(exit_code),
         _gather_context_for_exit_code(workspace_path, exit_code, cve_info),
     ]
@@ -103,9 +109,57 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
             )
         feedback_file.unlink()
 
-    context_file.write_text('\n\n'.join(s for s in sections if s),
-                            encoding='utf-8')
+    rendered = '\n\n'.join(
+        _bounded_hashed_section(section) for section in sections if section)
+    if len(rendered.encode('utf-8')) > MAX_CONTEXT_BYTES:
+        raise ValueError("targeted agent context exceeds its total safety bound")
+    context_file.write_text(rendered, encoding='utf-8')
     return context_file
+
+
+def _bounded_hashed_section(section: str) -> str:
+    """Attach a stable full-content digest and bound one context section."""
+    encoded = section.encode('utf-8')
+    digest = hashlib.sha256(encoded).hexdigest()
+    if len(encoded) > MAX_CONTEXT_SECTION_BYTES:
+        retained = encoded[:MAX_CONTEXT_SECTION_BYTES].decode(
+            'utf-8', errors='ignore')
+        section = (
+            retained
+            + "\n\n[Section compacted; use typed reads for detail. "
+            + f"Original SHA-256: {digest}]"
+        )
+    return f"<!-- section-sha256: {digest} -->\n{section}"
+
+
+def _security_evidence_requirements(cve_info: dict) -> str:
+    """Keep trusted prerequisites and tests visible through compaction."""
+    metadata = cve_info.get('semantic_validation')
+    if not isinstance(metadata, dict):
+        metadata = {}
+    lines = ["## Trusted Security Evidence Requirements"]
+    fields = (
+        ('reference_commits', 'Reference commits'),
+        ('prerequisite_commits', 'Prerequisite commits'),
+        ('expected_symbols', 'Expected anchors'),
+        ('required_tests', 'Required tests'),
+        ('equivalent_tests', 'Declared equivalent tests'),
+    )
+    for key, label in fields:
+        value = metadata.get(key)
+        if isinstance(value, list) and value:
+            bounded = [str(item)[:256] for item in value[:64]]
+            lines.append(f"- **{label}**: {', '.join(bounded)}")
+    reproducer = metadata.get('reproducer')
+    if isinstance(reproducer, str) and reproducer:
+        lines.append(f"- **Registered reproducer**: {reproducer[:128]}")
+    if len(lines) == 1:
+        lines.append(
+            "- No explicit semantic prerequisites or tests were declared; "
+            "use the trusted reference manifest and typed Git inspection.")
+    lines.append(
+        "These host-derived requirements cannot be replaced by model claims.")
+    return '\n'.join(lines)
 
 
 def _build_header(cve_id: str, recipe: str, exit_code: int,
@@ -306,6 +360,12 @@ def _gather_build_error_context(workspace_path: Path) -> str:
         Formatted build error context string.
     """
     last_commit = run_git_stdout(['show', '--stat', 'HEAD'], cwd=workspace_path)
+    error_excerpt = _latest_corrector_error_excerpt(workspace_path)
+    excerpt_section = (
+        f"\n\n### Latest bounded corrector/build diagnostics\n```\n"
+        f"{error_excerpt}\n```"
+        if error_excerpt else ""
+    )
 
     return (
         f"## Build Error Details\n\n"
@@ -313,7 +373,42 @@ def _gather_build_error_context(workspace_path: Path) -> str:
         f"Run `git show HEAD` to see the full diff. Check the build logs in "
         f"the Yocto build directory (paths in the context header) for the "
         f"specific error, and `devtool build <recipe>` to reproduce."
+        f"{excerpt_section}"
     )
+
+
+def _latest_corrector_error_excerpt(workspace_path: Path) -> str:
+    """Read only the bounded tail of this CVE's newest trusted corrector log."""
+    state_file = _find_state_file(workspace_path)
+    if state_file is None:
+        return ""
+    try:
+        state = json.loads(state_file.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+    cve_id = state.get('cve_id') if isinstance(state, dict) else None
+    if (not isinstance(cve_id, str)
+            or not re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,}', cve_id)):
+        return ""
+    log_dir = workspace_path.parent.parent / 'logs'
+    try:
+        candidates = [
+            path for path in log_dir.glob(f'cve_corrector_{cve_id}_*.log')
+            if path.is_file() and not path.is_symlink()
+        ]
+        if not candidates:
+            return ""
+        newest = max(candidates, key=lambda path: (path.stat().st_mtime_ns, path.name))
+        with newest.open('rb') as source:
+            size = source.seek(0, 2)
+            source.seek(max(0, size - MAX_BUILD_ERROR_EXCERPT_BYTES))
+            data = source.read(MAX_BUILD_ERROR_EXCERPT_BYTES)
+    except OSError:
+        return ""
+    text = data.decode(TEXT_ENCODING, errors=TEXT_ERRORS)
+    if size > len(data):
+        text = "[earlier diagnostics compacted]\n" + text
+    return text
 
 
 def _gather_ptest_error_context(workspace_path: Path, cve_info: dict) -> str:

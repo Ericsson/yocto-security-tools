@@ -37,6 +37,9 @@ with content anchors, rollback, and exact path verification.
 Completed builds pass through a host-owned
 [semantic security validation gate](docs/semantic-security-validation.md)
 before they are accepted for release.
+Native model sessions use [state-based progress accounting and bounded
+terminal budgets](docs/agent-progress-and-budgets.md) instead of trusting model
+prose or call IDs as evidence of progress.
 
 ## Requirements
 

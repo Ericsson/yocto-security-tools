@@ -28,12 +28,14 @@ from .backend import (
 DEFAULT_OPENAI_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_MAX_STEPS = 20
 DEFAULT_MAX_TOOL_CALLS = 100
+DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS = 3
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_REQUEST_TIMEOUT = 120
 
 MAX_STEPS_LIMIT = 100
 MAX_TOOL_CALLS_LIMIT = 1000
+MAX_CONSECUTIVE_NO_PROGRESS_LIMIT = 10
 MAX_OUTPUT_TOKENS_LIMIT = 131072
 MAX_CONNECT_TIMEOUT = 300
 MAX_REQUEST_TIMEOUT = 3600
@@ -62,6 +64,7 @@ class OpenAIConfig:
     request_timeout: int
     allow_remote_endpoint: bool
     allow_insecure_remote_http: bool
+    max_consecutive_no_progress: int = DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     reasoning_effort: Optional[str] = None
@@ -94,6 +97,10 @@ class OpenAIConfig:
             "max_output_tokens": ("maximum output tokens", MAX_OUTPUT_TOKENS_LIMIT),
             "connect_timeout": ("connect timeout", MAX_CONNECT_TIMEOUT),
             "request_timeout": ("request timeout", MAX_REQUEST_TIMEOUT),
+            "max_consecutive_no_progress": (
+                "maximum consecutive no-progress turns",
+                MAX_CONSECUTIVE_NO_PROGRESS_LIMIT,
+            ),
         }
         for field, (label, upper) in bounds.items():
             value = getattr(self, field)
@@ -187,6 +194,18 @@ class OpenAIConfig:
                 "max_output_tokens"), environ,
             "CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
             "maximum output tokens", MAX_OUTPUT_TOKENS_LIMIT)
+        max_consecutive_no_progress = _resolve_bounded_int(
+            _prefer_profile(
+                options.get("openai_max_consecutive_no_progress"),
+                profile_openai,
+                "max_consecutive_no_progress",
+            ),
+            environ,
+            "CVE_AGENT_OPENAI_MAX_CONSECUTIVE_NO_PROGRESS",
+            DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS,
+            "maximum consecutive no-progress turns",
+            MAX_CONSECUTIVE_NO_PROGRESS_LIMIT,
+        )
         connect_timeout = _resolve_bounded_int(
             _prefer_profile(
                 options.get("openai_connect_timeout"), profile_openai, "connect_timeout"),
@@ -236,6 +255,7 @@ class OpenAIConfig:
             request_timeout=request_timeout,
             allow_remote_endpoint=allow_remote,
             allow_insecure_remote_http=allow_insecure_remote,
+            max_consecutive_no_progress=max_consecutive_no_progress,
             temperature=temperature,
             top_p=top_p,
             reasoning_effort=reasoning_effort,
@@ -700,6 +720,8 @@ class OpenAICompatibleBackend(AIBackend):
                 AgentLoopLimits(
                     max_model_turns=self._config.max_steps,
                     max_total_tool_calls=self._config.max_tool_calls,
+                    max_consecutive_nonprogress=(
+                        self._config.max_consecutive_no_progress),
                 ),
                 complete_openai_tool_schemas(),
                 system_message,

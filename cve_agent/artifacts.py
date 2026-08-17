@@ -329,6 +329,8 @@ class RunArtifacts:
                     counters["build_calls"] += 1
         if kind in {"retry", "http_retry"}:
             counters["provider_retries"] += 1
+        if kind == "progress_warning":
+            counters["duplicate_call_count"] += 1
 
     def atomic_json(self, name: str, value: object) -> None:
         """Write bounded structured JSON via mode-0600 atomic replacement."""
