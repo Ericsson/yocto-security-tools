@@ -120,7 +120,7 @@ def _log_result(config: AgentConfig, result: CveResult,
 # --- Batch Processing ---
 
 def _process_batch(cve_list: list[str], config_template: AgentConfig,
-                   knowledge_base: KnowledgeBase) -> list[CveResult]:
+                   knowledge_base: Optional[KnowledgeBase]) -> list[CveResult]:
     """Process a list of CVEs sequentially."""
     results: list[CveResult] = []
     total = len(cve_list)
@@ -257,6 +257,10 @@ def _parse_args() -> argparse.Namespace:
     ai_group.add_argument('--trust', action='store_true',
                         help='Skip human review (NOT recommended). Cannot be '
                              'combined with --sign-off.')
+    ai_group.add_argument('--no-knowledge', action='store_true',
+                        help='Disable the knowledge base for this run: no '
+                             'similar-pattern lookups, and no pattern is '
+                             'saved on success.')
     ai_group.add_argument('-i', '--interactive', action='store_true',
                         help='Enable interactive mode (human-in-the-loop). '
                              'Omit for non-interactive/CI use (default).')
@@ -325,6 +329,7 @@ def _config_from_args(args: argparse.Namespace,
         backend=args.backend,
         skip_sources=args.skip_sources,
         sign_off=args.sign_off,
+        no_knowledge=args.no_knowledge,
     )
 
 
@@ -368,7 +373,7 @@ def main() -> None:
         print("Trust mode declined. Exiting.")
         sys.exit(EXIT_TRUST_DECLINED)
 
-    knowledge_base = KnowledgeBase()
+    knowledge_base = None if args.no_knowledge else KnowledgeBase()
 
     if args.cve_id:
         from .corrector import validate_cve_id

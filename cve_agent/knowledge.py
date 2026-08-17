@@ -281,12 +281,20 @@ def gather_pattern_details(workspace_path: Path,
 
 
 def save_knowledge_pattern(config: AgentConfig,
-                           knowledge_base: KnowledgeBase,
+                           knowledge_base: KnowledgeBase | None,
                            summary: str,
                            upstream_sha: str,
                            recipe: str = "",
                            details: dict | None = None) -> None:
-    """Save a resolution pattern to the knowledge base after success."""
+    """Save a resolution pattern to the knowledge base after success.
+
+    A no-op when ``config.no_knowledge`` is set (``--no-knowledge`` on the
+    CLI) or when ``knowledge_base`` is ``None`` — no write, and no save
+    prompt either.
+    """
+    if config.no_knowledge or knowledge_base is None:
+        return
+
     recipe = recipe or config.cve_id
     details = details or {}
 

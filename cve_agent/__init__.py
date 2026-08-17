@@ -102,6 +102,7 @@ class AgentConfig:
     backend: str = "kiro"
     skip_sources: list[str] = field(default_factory=list)
     sign_off: bool = False
+    no_knowledge: bool = False
 
 
 @dataclass
