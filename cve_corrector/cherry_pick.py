@@ -1,7 +1,6 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Cherry-pick and series application logic for CVE corrector."""
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +14,7 @@ from .git_ops import (
 )
 from .meta_layer import write_cve_status
 from .state import AlreadyAppliedError, GitError, PatchError, WorkflowState, save_progress
+from .transfer import TransferError, transfer_commits
 from .utils import logger, run_cmd, run_cmd_capture
 
 
@@ -126,163 +126,40 @@ def collect_cve_commits(state: WorkflowState) -> list[str]:
     return rev_list.stdout.split()
 
 
-def _git_apply_patch(workspace_path: Path, patch: Path, cve_id: str,
-                     strip_level: int) -> bool:
-    """Apply a single patch with git-apply, committing it on success."""
-    variants = [
-        ['git', 'apply', f'-p{strip_level}', str(patch)],
-        ['git', 'apply', f'-p{strip_level}', '-C0', str(patch)],
-        ['git', 'apply', f'-p{strip_level}', '--3way', str(patch)],
-    ]
-    # When git am has already failed, this is the last thing standing between
-    # a resolved conflict and an unrecoverable PatchError -- so log why each
-    # variant refused the patch. Silently returning False here made an
-    # over-broad AI resolution (one that no longer matches the tree it must
-    # replay onto) indistinguishable from a genuinely malformed patch.
-    errors = []
-    for apply_args in variants:
-        result = run_cmd_capture(apply_args, cwd=workspace_path)
-        if result.returncode != 0:
-            errors.append(f"{' '.join(apply_args[1:-1])}: "
-                          f"{result.stderr.strip() or 'no stderr'}")
-            continue
-        run_cmd(['git', 'add', '-A'], cwd=workspace_path)
-        run_cmd_capture(
-            ['git', 'commit', '-m', f'Apply {cve_id} patch ({patch.name})'],
-            cwd=workspace_path)
-        logger.info("Applied %s via %s", patch.name, ' '.join(apply_args[1:-1]))
-        return True
-    logger.warning("git apply could not apply %s; tried %s variant(s): %s",
-                   patch.name, len(variants), ' | '.join(errors))
-    return False
-
-
 def cherry_pick_to_devtool(state: WorkflowState) -> None:
-    """Cherry-pick CVE commits onto devtool branch via format-patch + git am."""
-    logger.info("Cherry-picking commits to devtool branch")
-    subdir = get_repo_subdir(state.workspace_path)
+    """Transfer CVE commits through a bounded, verified host-side plan."""
+    logger.info("Transferring CVE commits to devtool branch")
+    cve_commits = collect_cve_commits(state)
+    if not cve_commits:
+        logger.info("No CVE commits to transfer — fix already in tree")
+        handle_empty_cherry_pick(state)
+        raise AlreadyAppliedError("no CVE commits to transfer to devtool")
+    logger.info("Planning %s CVE commit(s) for devtool", len(cve_commits))
 
-    with tempfile.TemporaryDirectory() as patch_dir:
-        cve_commits = collect_cve_commits(state)
-        if not cve_commits:
-            logger.info("No CVE commits to transfer — fix already in tree")
-            handle_empty_cherry_pick(state)
-            raise AlreadyAppliedError("no CVE commits to transfer to devtool")
-        logger.info("Transferring %s CVE commit(s) to devtool", len(cve_commits))
-        for number, commit in enumerate(cve_commits, 1):
-            fmt_result = run_cmd_capture(
-                ['git', 'format-patch', '-o', patch_dir,
-                 '--start-number', str(number), '-1', commit],
-                cwd=state.workspace_path)
-            if fmt_result.returncode != 0:
-                raise PatchError(
-                    f"format-patch failed for {commit[:12]}: {fmt_result.stderr}")
-        patches = sorted(Path(patch_dir).glob('*.patch'))
-        if not patches:
-            logger.info("format-patch produced no patches — fix already in tree")
-            handle_empty_cherry_pick(state)
-            raise AlreadyAppliedError("format-patch produced no patches")
-        logger.info("Generated %s patch(es) for devtool", len(patches))
-        for p in patches:
-            logger.info("  Patch: %s (first 3 diff lines: %s)", p.name,
-                        [ln for ln in p.read_text().splitlines() if ln.startswith('diff ')][:3])
-
-        strip_level = detect_strip_level(patches)
-        if strip_level == 1 and subdir:
-            strip_level = 2
-        logger.info("Monorepo subdir: %s, strip level: %s", subdir, strip_level)
-
-        git_clean_workspace(state.workspace_path, remove_ignored=True)
-        run_cmd(['git', 'checkout', '.'], cwd=state.workspace_path)
-        if run_cmd(['git', 'checkout', '-f', 'devtool'],
-                   cwd=state.workspace_path) != 0:
-            save_progress(state, 'cherry_pick_to_devtool')
-            raise GitError("Failed to checkout devtool branch")
-
-        # Try detected strip level first, then alternate levels
-        strip_levels = [strip_level] + [
-            p for p in (1, 2, 3) if p != strip_level
-        ]
-        am_result = None
-        # Every attempt's stderr, in order tried, as (label, stderr) pairs.
-        # Without this, `am_result` holds only the LAST attempt's error -- and
-        # since the loop ends on `-p3 --3way`, a patch that genuinely failed at
-        # the detected strip level for an unrelated reason gets reported as
-        # "lacks filename information when removing 3 leading pathname
-        # components", which describes only the final, least-relevant attempt.
-        am_failures: list[tuple[str, str]] = []
-        for p_level in strip_levels:
-            am_cmd = ['git', 'am', f'-p{p_level}']
-            am_result = run_cmd_capture(
-                am_cmd + [str(p) for p in patches],
-                cwd=state.workspace_path)
-            if am_result.returncode == 0:
-                if p_level != strip_level:
-                    logger.info("Strip level %s worked (detected %s)",
-                                p_level, strip_level)
-                break
-            logger.debug("git am -p%s failed: %s", p_level, am_result.stderr[:200])
-            am_failures.append((f'-p{p_level}', am_result.stderr))
-            run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
-            # Try with --3way at this level
-            am_result = run_cmd_capture(
-                am_cmd + ['--3way'] + [str(p) for p in patches],
-                cwd=state.workspace_path)
-            if am_result.returncode == 0:
-                if p_level != strip_level:
-                    logger.info("Strip level %s (3way) worked (detected %s)",
-                                p_level, strip_level)
-                break
-            logger.debug("git am -p%s --3way failed: %s",
-                         p_level, am_result.stderr[:200])
-            am_failures.append((f'-p{p_level} --3way', am_result.stderr))
-            run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
-
-        if am_result and am_result.returncode != 0:
-            # Fallback: try cherry-picking CVE commits directly onto devtool
-            logger.warning("git am failed at all strip levels, trying direct cherry-pick")
-            all_picked = True
-            for commit in cve_commits:
-                ret = run_cmd_capture(['git', 'cherry-pick', commit],
-                                      cwd=state.workspace_path)
-                if ret.returncode != 0:
-                    run_cmd(['git', 'cherry-pick', '--abort'],
-                            cwd=state.workspace_path)
-                    all_picked = False
-                    break
-            if all_picked:
-                logger.info("Applied CVE commits via direct cherry-pick on devtool")
-                return
-
-            # Last resort: git apply, all patches in order (a partially applied
-            # series is worse than no patch at all, so roll back on failure).
-            logger.warning("Cherry-pick fallback failed, trying git apply")
-            pre_apply = run_cmd_capture(['git', 'rev-parse', 'HEAD'],
-                                        cwd=state.workspace_path).stdout.strip()
-            if all(_git_apply_patch(state.workspace_path, p, state.cve_id, strip_level)
-                   for p in patches):
-                logger.info("Applied %s patch(es) via git apply on devtool", len(patches))
-                return
-            if pre_apply:
-                run_cmd(['git', 'reset', '--hard', pre_apply], cwd=state.workspace_path)
-
-            # Report the attempt at the DETECTED strip level, not the last one
-            # tried: the alternate levels are speculative retries, and their
-            # "lacks filename information" complaints are an artifact of
-            # stripping too many path components rather than the real problem.
-            if am_failures:
-                primary_label, primary_err = am_failures[0]
-            else:
-                primary_label, primary_err = f'-p{strip_level}', am_result.stderr
-            tried = ', '.join(label for label, _ in am_failures)
-            logger.error("git am failed at all strip levels (tried: %s); "
-                         "error at detected level %s: %s",
-                         tried, primary_label, primary_err)
-            save_progress(state, 'cherry_pick_to_devtool')
-            raise PatchError(
-                f"git am {primary_label} failed: {primary_err.strip()} "
-                f"(also tried: {tried}; then direct cherry-pick and git apply)")
-
+    git_clean_workspace(state.workspace_path, remove_ignored=True)
+    run_cmd(['git', 'checkout', '.'], cwd=state.workspace_path)
+    if run_cmd(['git', 'checkout', '-f', 'devtool'], cwd=state.workspace_path) != 0:
+        save_progress(state, 'cherry_pick_to_devtool')
+        raise GitError("Failed to checkout devtool branch")
+    try:
+        manifest = transfer_commits(
+            state.workspace_path,
+            cve_commits,
+            state.recipe,
+            state.cve_id,
+            source_prefix=state.transfer_source_prefix,
+            explicit_mapping=state.transfer_path_map,
+        )
+    except TransferError as error:
+        save_progress(state, 'cherry_pick_to_devtool')
+        raise PatchError(str(error)) from error
+    logger.info(
+        "Transfer verified: %s mapped entries, %s final paths",
+        len(manifest.entries), len(manifest.final_changed_paths))
+    if not manifest.final_changed_paths:
+        logger.info("Selected fix is already present in the devtool target")
+        handle_empty_cherry_pick(state)
+        raise AlreadyAppliedError("transferred fix already present in target")
 
 
 def apply_series(workspace_path: Path,
@@ -382,28 +259,14 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
             logger.info("Commit %s already applied, skipping...", commit_hash[:8])
             return True, commit_hash
 
-    # Order candidates before trying any of them. This loop returns the *first*
-    # commit that cherry-picks cleanly, so a trivial-but-irrelevant commit
-    # sitting ahead of the real fix wins outright — and the more irrelevant it
-    # is, the more likely it applies without conflict.
-    #
-    # CVE-2024-6387's metadata is the cautionary case: four hashes drawn from
-    # three different repositories (openssh-portable twice, plus the
-    # openela-main and hpn-ssh forks). After the bad-object and ancestor
-    # filters, two survive: the genuine 9.8 fix 81c1099d2, which touches
-    # sshd.c and conflicts heavily against 9.6p1, and 651879740 — a 2006
-    # ChangeLog-only commit on the V_4_4 branch, which applies trivially.
-    # Without this ordering the corrector reports success having backported a
-    # twenty-year-old documentation change as the fix for a pre-auth RCE.
+    # Prefer substantive source changes over changelog and version-only
+    # commits, which frequently apply cleanly without carrying a CVE fix.
     substantive: list[str] = []
     metadata_only: list[str] = []
     for commit_hash in hashes:
         if is_bad_object(workspace_path, commit_hash):
             logger.warning("Skipping %s (bad object)", commit_hash[:8])
             continue
-        # A commit already in this branch's history shipped in this version, so
-        # it cannot be the fix. Replaying it pits stale code against whatever
-        # superseded it, which surfaces as a large, plausible-looking conflict.
         if is_ancestor_of_head(workspace_path, commit_hash):
             logger.warning(
                 "Skipping %s: already an ancestor of HEAD (shipped in this "
@@ -434,13 +297,6 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
 _METADATA_ONLY_FILES = frozenset({
     'VERSION', 'CHANGES', 'NEWS', 'ChangeLog', 'RELEASE',
     'configure', 'configure.ac', 'meson.build',
-    # A commit touching *only* the top-level Makefile is a release/version
-    # bump, not a fix: upstreams like u-boot cut releases by editing the
-    # VERSION/PATCHLEVEL variables there. CVE-2025-24857's sole metadata hash
-    # (c253573f3e2, "Prepare v2017.11") is exactly this shape -- a 2017 release
-    # commit changing one Makefile line, eight years older than the CVE. A
-    # genuine fix that happens to touch a Makefile also touches source, so it
-    # never trips this all()-based check.
     'Makefile', 'Makefile.am', 'Makefile.in',
 })
 
@@ -484,10 +340,6 @@ def find_least_conflict_commit(workspace_path: Path,
     for idx, commit_hash in enumerate(hashes):
         if is_bad_object(workspace_path, commit_hash):
             continue
-        # Same reasoning as apply_single_commits: an ancestor of HEAD is not a
-        # candidate. Without this it is often the *winner* here, because
-        # replaying superseded code conflicts in a way that can score lower
-        # than the real fix's genuine adaptation work.
         if is_ancestor_of_head(workspace_path, commit_hash):
             logger.warning(
                 "Skipping %s: already an ancestor of HEAD (shipped in this "
@@ -505,9 +357,9 @@ def find_least_conflict_commit(workspace_path: Path,
                          commit_hash[:12])
             continue
         command = (cherry_pick_command(workspace_path, commit_hash)
-                    if mainline_parent is None else
-                    cherry_pick_command(
-                        workspace_path, commit_hash, mainline_parent))
+                   if mainline_parent is None else
+                   cherry_pick_command(
+                       workspace_path, commit_hash, mainline_parent))
         pick = run_cmd_capture(command, cwd=workspace_path)
         result = run_cmd_capture(
             ['git', 'diff', '--name-only', '--diff-filter=U'], cwd=workspace_path)

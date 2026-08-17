@@ -468,222 +468,58 @@ class TestIsMetadataOnlyCommit:
 
 
 class TestCherryPickToDevtool:
-    """Tests for cherry_pick_to_devtool — format-patch and fallback logic."""
+    """Tests for the deterministic transfer handoff."""
+
+    @patch("cve_corrector.cherry_pick.transfer_commits")
     @patch("cve_corrector.cherry_pick.run_cmd")
     @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
     @patch("cve_corrector.cherry_pick.git_clean_workspace")
-    def test_formats_only_cve_commits(self, mock_clean, mock_subdir,
-                                       mock_capture, mock_cmd, tmp_path):
-        """format-patch runs per CVE commit, skipping ones already on devtool."""
+    def test_transfers_only_selected_cve_commits(
+            self, mock_clean, mock_capture, mock_cmd, mock_transfer, tmp_path):
         state = _state(tmp_path)
-
-        mock_capture.side_effect = [
-            # git cherry devtool CVE original-version
-            MagicMock(returncode=0, stdout="+ h1\n- h2\n+ h3\n"),
-            MagicMock(returncode=0, stdout=""),  # format-patch h1
-            MagicMock(returncode=0, stdout=""),  # format-patch h3
-        ]
-        from cve_corrector.state import AlreadyAppliedError
-        with patch("cve_corrector.cherry_pick.handle_empty_cherry_pick"):
-            with pytest.raises(AlreadyAppliedError):
-                cherry_pick_to_devtool(state)
-
-        fmt_calls = [c[0][0] for c in mock_capture.call_args_list
-                     if 'format-patch' in c[0][0]]
-        assert len(fmt_calls) == 2
-        assert fmt_calls[0][-1] == 'h1'
-        assert fmt_calls[1][-1] == 'h3'
-        assert '--start-number' in fmt_calls[1]
-        assert 'h2' not in [c[-1] for c in fmt_calls]
-
-    @patch("cve_corrector.cherry_pick.run_cmd")
-    @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
-    @patch("cve_corrector.cherry_pick.git_clean_workspace")
-    def test_falls_back_to_cherry_pick(self, mock_clean, mock_subdir,
-                                        mock_capture, mock_cmd, tmp_path):
-        """When git am fails at all levels, falls back to direct cherry-pick."""
-        state = _state(tmp_path)
-        patch_content = "From abc\nSubject: fix\n\ndiff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n"
-        patch_dir_path = tmp_path / "patches"
-        patch_dir_path.mkdir()
-        (patch_dir_path / "0001-fix.patch").write_text(patch_content)
-
-        mock_cmd.return_value = 0  # git checkout devtool succeeds
-
-        am_fail = MagicMock(returncode=1, stderr="error: patch failed")
-        cherry_pick_ok = MagicMock(returncode=0)
-        mock_capture.side_effect = [
-            MagicMock(returncode=0, stdout="+ commit1\n"),  # git cherry
-            MagicMock(returncode=0, stdout="patched"),  # format-patch
-            am_fail,  # git am -p1
-            am_fail,  # git am -p1 --3way
-            am_fail,  # git am -p2
-            am_fail,  # git am -p2 --3way
-            am_fail,  # git am -p3
-            am_fail,  # git am -p3 --3way
-            cherry_pick_ok,  # cherry-pick commit1
-        ]
-
-        with patch("tempfile.TemporaryDirectory") as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = lambda s: str(patch_dir_path)
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-            cherry_pick_to_devtool(state)
-
-        # Verify cherry-pick was attempted as fallback
-        cherry_pick_calls = [c for c in mock_capture.call_args_list
-                             if 'cherry-pick' in str(c) and 'abort' not in str(c)]
-        assert len(cherry_pick_calls) >= 1
-
-    @patch("cve_corrector.cherry_pick.run_cmd")
-    @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
-    @patch("cve_corrector.cherry_pick.git_clean_workspace")
-    def test_no_commits_to_transfer(self, mock_clean, mock_subdir,
-                                    mock_capture, mock_cmd, tmp_path):
-        """All commits already on devtool -> already applied, no format-patch."""
-        state = _state(tmp_path)
-
-        mock_capture.side_effect = [
-            MagicMock(returncode=0, stdout="- h1\n- h2\n"),  # git cherry
-        ]
-        from cve_corrector.state import AlreadyAppliedError
-        with patch("cve_corrector.cherry_pick.handle_empty_cherry_pick"):
-            with pytest.raises(AlreadyAppliedError):
-                cherry_pick_to_devtool(state)
-
-        assert not [c for c in mock_capture.call_args_list
-                    if 'format-patch' in c[0][0]]
-
-    @patch("cve_corrector.cherry_pick.save_progress")
-    @patch("cve_corrector.cherry_pick.run_cmd")
-    @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
-    @patch("cve_corrector.cherry_pick.git_clean_workspace")
-    def test_git_apply_rolls_back_partial_series(self, mock_clean, mock_subdir,
-                                                 mock_capture, mock_cmd,
-                                                 mock_save, tmp_path):
-        """A series that git-applies only partially is rolled back, not kept."""
-        state = _state(tmp_path)
-        patch_content = ("From abc\nSubject: fix\n\ndiff --git a/f.c b/f.c\n"
-                         "--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n")
-        patch_dir_path = tmp_path / "patches"
-        patch_dir_path.mkdir()
-        (patch_dir_path / "0001-fix.patch").write_text(patch_content)
-        (patch_dir_path / "0002-fix.patch").write_text(patch_content)
-
-        mock_cmd.return_value = 0
-        fail = MagicMock(returncode=1, stderr="error: patch failed")
-        ok = MagicMock(returncode=0, stdout="")
-        mock_capture.side_effect = [
-            MagicMock(returncode=0, stdout="+ c1\n+ c2\n"),  # git cherry
-            ok, ok,                    # format-patch c1, c2
-            fail, fail, fail, fail, fail, fail,  # git am at p1/p2/p3 (+3way)
-            fail,                      # cherry-pick c1 fails
-            MagicMock(returncode=0, stdout="oldhead\n"),  # rev-parse HEAD
-            ok,                        # git apply patch 1
-            ok,                        # git commit patch 1
-            fail, fail, fail,          # git apply patch 2 (all variants)
-        ]
-
-        from cve_corrector.state import PatchError
-        with patch("tempfile.TemporaryDirectory") as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = lambda s: str(patch_dir_path)
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-            with pytest.raises(PatchError):
-                cherry_pick_to_devtool(state)
-
-        reset_calls = [c for c in mock_cmd.call_args_list
-                       if c[0][0][:3] == ['git', 'reset', '--hard']]
-        assert reset_calls and reset_calls[-1][0][0][-1] == 'oldhead'
-        mock_save.assert_called_once()
-
-    @patch("cve_corrector.cherry_pick.save_progress")
-    @patch("cve_corrector.cherry_pick.run_cmd")
-    @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
-    @patch("cve_corrector.cherry_pick.git_clean_workspace")
-    def test_error_reports_detected_strip_level_not_last_attempt(
-            self, mock_clean, mock_subdir, mock_capture, mock_cmd,
-            mock_save, tmp_path):
-        """PatchError quotes the -p1 failure, not -p3's path-stripping artifact.
-
-        Regression test: the retry loop overwrote a single `am_result`, so the
-        raised error always described the final `-p3 --3way` attempt. For a
-        patch whose real problem is at the detected strip level, that surfaced
-        a misleading "lacks filename information when removing 3 leading
-        pathname components" instead of the actual cause.
-        """
-        state = _state(tmp_path)
-        patch_content = ("From abc\nSubject: fix\n\ndiff --git a/f.c b/f.c\n"
-                         "--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n")
-        patch_dir_path = tmp_path / "patches"
-        patch_dir_path.mkdir()
-        (patch_dir_path / "0001-fix.patch").write_text(patch_content)
-
-        mock_cmd.return_value = 0
-        real_cause = MagicMock(
-            returncode=1, stderr="error: patch does not apply")
-        p3_artifact = MagicMock(
-            returncode=1,
-            stderr=("error: git diff header lacks filename information when "
-                    "removing 3 leading pathname components (line 14)"))
-        fail = MagicMock(returncode=1, stderr="error: patch failed")
-        mock_capture.side_effect = [
-            MagicMock(returncode=0, stdout="+ c1\n"),      # git cherry
-            MagicMock(returncode=0, stdout=""),            # format-patch
-            real_cause, real_cause,                        # -p1, -p1 --3way
-            fail, fail,                                    # -p2, -p2 --3way
-            p3_artifact, p3_artifact,                      # -p3, -p3 --3way
-            fail,                                          # cherry-pick c1
-            MagicMock(returncode=0, stdout="oldhead\n"),   # rev-parse HEAD
-            fail, fail, fail,                              # git apply variants
-        ]
-
-        from cve_corrector.state import PatchError
-        with patch("tempfile.TemporaryDirectory") as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = lambda s: str(patch_dir_path)
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-            with pytest.raises(PatchError) as exc:
-                cherry_pick_to_devtool(state)
-
-        message = str(exc.value)
-        assert "patch does not apply" in message
-        assert "-p1" in message
-        # The p3 artifact must not be the headline cause any more.
-        assert not message.startswith("git am --3way failed")
-        assert "lacks filename information" not in message
-        # Still records what else was tried, for diagnosability.
-        assert "-p3 --3way" in message
-
-    @patch("cve_corrector.cherry_pick.run_cmd")
-    @patch("cve_corrector.cherry_pick.run_cmd_capture")
-    def test_git_apply_logs_why_each_variant_failed(self, mock_capture,
-                                                    mock_cmd, tmp_path, caplog):
-        """_git_apply_patch logs each variant's stderr instead of failing mute.
-
-        An over-broad AI resolution that no longer matches the tree it must
-        replay onto looked identical to a malformed patch, because every
-        git-apply variant's error was discarded.
-        """
-        from cve_corrector.cherry_pick import _git_apply_patch
-
-        patch_file = tmp_path / "0001-fix.patch"
-        patch_file.write_text("diff --git a/f.c b/f.c\n")
         mock_capture.return_value = MagicMock(
-            returncode=1, stderr="error: while searching for:\n    context\n")
+            returncode=0, stdout="+ h1\n- h2\n+ h3\n")
+        mock_cmd.return_value = 0
+        mock_transfer.return_value = MagicMock(
+            entries=(), final_changed_paths=("f.c",))
 
-        with caplog.at_level(logging.WARNING):
-            applied = _git_apply_patch(tmp_path, patch_file, "CVE-2024-0001", 1)
+        cherry_pick_to_devtool(state)
 
-        assert applied is False
-        assert "while searching for" in caplog.text
-        # All three variants are named, so the reader can see -C0/--3way were
-        # tried and not silently skipped.
-        assert "-C0" in caplog.text
-        assert "--3way" in caplog.text
+        assert mock_transfer.call_args.args[1] == ["h1", "h3"]
+        assert mock_transfer.call_args.kwargs == {
+            "source_prefix": None, "explicit_mapping": {}}
 
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_no_commits_to_transfer(
+            self, mock_clean, mock_capture, mock_cmd, tmp_path):
+        state = _state(tmp_path)
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="- h1\n- h2\n")
+        from cve_corrector.state import AlreadyAppliedError
+        with patch("cve_corrector.cherry_pick.handle_empty_cherry_pick"):
+            with pytest.raises(AlreadyAppliedError):
+                cherry_pick_to_devtool(state)
+
+    @patch("cve_corrector.cherry_pick.transfer_commits")
+    @patch("cve_corrector.cherry_pick.save_progress")
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_transfer_failure_is_retained(
+            self, mock_clean, mock_capture, mock_cmd, mock_save,
+            mock_transfer, tmp_path):
+        state = _state(tmp_path)
+        mock_capture.return_value = MagicMock(returncode=0, stdout="+ c1\n+ c2\n")
+        mock_cmd.return_value = 0
+        from cve_corrector.transfer import TransferCode, TransferError
+        mock_transfer.side_effect = TransferError(
+            TransferCode.AMBIGUOUS_MAPPING, "duplicate target")
+        from cve_corrector.state import PatchError
+        with pytest.raises(PatchError, match="TRANSFER_AMBIGUOUS_MAPPING"):
+            cherry_pick_to_devtool(state)
+        mock_save.assert_called_once()
 
 class TestHandleFailedSeries:
     @patch("cve_corrector.workflow.run_cmd")

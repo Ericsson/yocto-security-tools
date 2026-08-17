@@ -45,7 +45,7 @@ from .git import (
     upstream_changed_files,
     warn_if_hooks_disabled,
 )
-from .handoff import validate_repository_handoff
+from .handoff import read_transfer_artifact, validate_repository_handoff
 from .openai_deadline import SessionDeadline
 from .openai_preflight import PreflightErrorCode, RepositoryPreflight
 
@@ -151,6 +151,17 @@ def guarded_session(context_file: Path, workspace_path: Path,
                 selected_parent=handoff.selected_parent,
                 digest=handoff.critical_sha256,
             )
+            transfer = read_transfer_artifact(workspace_path)
+            if transfer is not None:
+                changed_paths = transfer.get("final_changed_paths")
+                artifact_run.atomic_json("patch-transfer.json", transfer)
+                artifact_run.event(
+                    "patch_transfer_retained",
+                    verification=transfer.get("verification"),
+                    failure_code=transfer.get("failure_code"),
+                    changed_path_count=(len(changed_paths)
+                                        if isinstance(changed_paths, list) else 0),
+                )
     except (HandoffError, ArtifactError) as handoff_error:
         code = (handoff_error.code if isinstance(handoff_error, HandoffError)
                 else "HANDOFF_TRANSCRIPT_FAILED")

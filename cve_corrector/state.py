@@ -122,6 +122,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
     sign_off: bool = False
     mainline_parent: Optional[int] = None
     known_generated_paths: list[str] = field(default_factory=list)
+    transfer_source_prefix: Optional[str] = None
+    transfer_path_map: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -145,6 +147,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             'sign_off': self.sign_off,
             'mainline_parent': self.mainline_parent,
             'known_generated_paths': self.known_generated_paths,
+            'transfer_source_prefix': self.transfer_source_prefix,
+            'transfer_path_map': self.transfer_path_map,
         }
 
     @classmethod
@@ -170,6 +174,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             sign_off=data.get('sign_off', False),
             mainline_parent=data.get('mainline_parent'),
             known_generated_paths=data.get('known_generated_paths', []),
+            transfer_source_prefix=data.get('transfer_source_prefix'),
+            transfer_path_map=data.get('transfer_path_map', {}),
         )
 
 
