@@ -683,6 +683,22 @@ def initialize_cve_workflow(
     hashes = cve_info.get('hashes', [])
     hash_details = cve_info.get('hash_details', [])
     series = cve_info.get('series', [])
+    transfer_config = cve_info.get('transfer', {})
+    if not isinstance(transfer_config, dict) or set(transfer_config) - {
+            'source_root_prefix', 'path_map'}:
+        raise MetadataError("Invalid transfer configuration")
+    source_prefix = transfer_config.get('source_root_prefix')
+    path_map = transfer_config.get('path_map', {})
+    if ((source_prefix is not None and not isinstance(source_prefix, str))
+            or not isinstance(path_map, dict)
+            or not all(isinstance(key, str) and isinstance(value, str)
+                       for key, value in path_map.items())):
+        raise MetadataError("Invalid transfer configuration")
+    from .transfer import TransferError, validate_transfer_config
+    try:
+        validate_transfer_config(source_prefix, path_map)
+    except TransferError as error:
+        raise MetadataError(str(error)) from error
 
     if not recipe or (not hashes and not series):
         logger.error("CVE %s missing recipe name or fix commits/series", cve_id)
@@ -833,7 +849,7 @@ def initialize_cve_workflow(
         run_cmd(['bitbake', '-c', 'clean', recipe])
 
     def make_state(commit_hash, series_state=None):
-        return WorkflowState(
+        state = WorkflowState(
             workspace_path=workspace_path, cve_id=cve_id, recipe=recipe,
             commit_hash=commit_hash,
             hash_details=hash_details,
@@ -843,6 +859,9 @@ def initialize_cve_workflow(
             subproject=subproject, bbappend=config.bbappend,
             version=version, sign_off=config.sign_off,
             mainline_parent=config.mainline_parent)
+        state.transfer_source_prefix = source_prefix
+        state.transfer_path_map = dict(path_map)
+        return state
 
     if config.manual_mode:
         state = make_state(hashes[0] if hashes else '')

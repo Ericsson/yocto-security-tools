@@ -32,6 +32,8 @@ Recoverable corrector failures cross a validated, versioned repository-state
 boundary before an AI backend starts. See
 [Corrector-to-agent repository handoff](docs/corrector-agent-handoff.md) for
 the manifest, generated-file policy, and explicit merge-mainline handling.
+Cross-layout changes use a [deterministic patch-transfer plan](docs/safe-patch-transfer.md)
+with content anchors, rollback, and exact path verification.
 
 ## Requirements
 

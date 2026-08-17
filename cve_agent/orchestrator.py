@@ -52,6 +52,7 @@ from .session import guarded_session
 # a misbehaving session from suggesting an endless stream of commits.
 _MAX_CHAIN_EXTENSIONS = 3
 _HANDOFF_CODE_RE = re.compile(r"\b(HANDOFF_[A-Z0-9_]{1,96})\b")
+_TRANSFER_CODE_RE = re.compile(r"\b(TRANSFER_[A-Z0-9_]{1,96})\b")
 
 # Safety cap on how many times a single CVE run may be bounced back to the AI
 # purely to shorten over-budget ``Conflicts Resolved:`` notes. Past this, the
@@ -1010,7 +1011,21 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBas
 
     if exit_code in UNRECOVERABLE_EXITS:
         handoff_match = _HANDOFF_CODE_RE.search(corrector_output[:64 * 1024])
-        if handoff_match:
+        transfer_match = _TRANSFER_CODE_RE.search(corrector_output[:64 * 1024])
+        if transfer_match:
+            code = transfer_match.group(1)
+            result = _make_result(
+                config.cve_id, ResultStatus.FAILED, 0, start_time,
+                f"Patch transfer failed: {code}",
+                ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.PATCH_TRANSFER,
+                    code,
+                ),
+            )
+        elif handoff_match:
             code = handoff_match.group(1)
             result = _make_result(
                 config.cve_id, ResultStatus.FAILED, 0, start_time,

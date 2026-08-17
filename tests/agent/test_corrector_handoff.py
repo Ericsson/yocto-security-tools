@@ -180,3 +180,20 @@ def test_corrector_handoff_error_is_preserved_in_result(tmp_path):
     assert result.failure_class is FailureClass.CORRECTOR_HANDOFF
     assert result.failure_code == "HANDOFF_UNKNOWN_OUT_OF_SCOPE"
     provider.assert_not_called()
+
+
+def test_transfer_error_is_preserved_and_makes_zero_provider_calls(tmp_path):
+    metadata = tmp_path / "cves.json"
+    metadata.write_text(json.dumps({
+        "CVE-2026-1703": {"name": "recipe", "hashes": ["a" * 40]},
+    }), encoding="utf-8")
+    config = AgentConfig(cve_id="CVE-2026-1703", cve_info_path=metadata)
+    with patch(
+            "cve_agent.orchestrator.run_corrector",
+            return_value=(5, "TRANSFER_AMBIGUOUS_MAPPING: refused")), patch(
+                "cve_agent.orchestrator.guarded_session") as provider:
+        result = _run_cve_pipeline(
+            config, KnowledgeBase(tmp_path / "knowledge.json"), time.monotonic())
+    assert result.failure_class is FailureClass.PATCH_TRANSFER
+    assert result.failure_code == "TRANSFER_AMBIGUOUS_MAPPING"
+    provider.assert_not_called()

@@ -17,6 +17,7 @@ from shared.handoff import (
 )
 
 from .state import WorkflowState
+from .transfer import transfer_manifest_path, verified_transfer_paths
 
 
 def handoff_path(state_dir: Path, recipe: str) -> Path:
@@ -34,6 +35,10 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
     generated_dirty = tuple(path for path in generated if path in before.tracked_paths)
     restore_tracked_paths(workspace, generated_dirty)
     captured = capture_handoff_state(workspace)
+    transferred = verified_transfer_paths(
+        transfer_manifest_path(workspace, state.recipe), captured.head)
+    if transferred is not None:
+        allowed = transferred
 
     declared = set(allowed) | set(captured.conflicted_paths)
     out_of_scope = tuple(sorted(set(captured.tracked_paths) - declared))
