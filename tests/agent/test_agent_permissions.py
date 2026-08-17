@@ -156,10 +156,10 @@ def test_destructive_command_is_rejected(command):
 @pytest.mark.parametrize("command", MUST_DENY)
 def test_destructive_command_is_rejected_interactive(command):
     """The interactive manifest gates on human approval but must not be a
-    looser allow-list, except for its documented extras (``git checkout --``,
-    ``git format-patch``, ``find``, ``grep``)."""
-    if command == "git checkout tests/jq.test":
-        pytest.skip("interactive manifest deliberately allows git checkout --")
+    looser allow-list, except for its documented extras (``git format-patch``,
+    ``find``, ``grep``). Bare ``git checkout <path>`` (without ``--ours``/
+    ``--theirs``) is explicitly documented as unavailable in
+    AGENT_INSTRUCTIONS.md, so it must be rejected here too."""
     assert not _permitted(command, "yocto-cve-backport-interactive"), (
         f"yocto-cve-backport-interactive must NOT permit {command!r}")
 
