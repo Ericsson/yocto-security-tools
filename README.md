@@ -34,6 +34,9 @@ boundary before an AI backend starts. See
 the manifest, generated-file policy, and explicit merge-mainline handling.
 Cross-layout changes use a [deterministic patch-transfer plan](docs/safe-patch-transfer.md)
 with content anchors, rollback, and exact path verification.
+Completed builds pass through a host-owned
+[semantic security validation gate](docs/semantic-security-validation.md)
+before they are accepted for release.
 
 ## Requirements
 

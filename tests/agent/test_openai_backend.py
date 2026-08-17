@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 
 import cve_agent
-from cve_agent import CveResult, ResultStatus
+from cve_agent import (
+    BuildStatus,
+    CveResult,
+    ResultOutcome,
+    ResultStatus,
+    SecurityStatus,
+    WorkflowStatus,
+)
 from cve_agent.__main__ import _configure_backend, _parse_args, main
 from cve_agent.backend import AIBackend, SessionResult, available_backends, get_backend
 from cve_agent.claude_backend import ClaudeBackend
@@ -366,11 +373,19 @@ def test_valid_cli_configuration_proceeds_to_processing(monkeypatch, capsys):
     def process_cve(*args, **kwargs):
         nonlocal called
         called = True
-        return CveResult("CVE-2025-0001", ResultStatus.SUCCESS)
+        return CveResult(
+            "CVE-2025-0001",
+            ResultStatus.SUCCESS,
+            outcome=ResultOutcome(
+                WorkflowStatus.COMPLETED,
+                BuildStatus.PASSED,
+                SecurityStatus.EQUIVALENT,
+            ),
+        )
 
     monkeypatch.setattr("cve_agent.__main__.process_single_cve", process_cve)
     main()
     captured = capsys.readouterr()
-    assert "CVE-2025-0001: WORKFLOW_COMPLETED_UNVERIFIED" in captured.out
+    assert "CVE-2025-0001: SECURITY_VERIFIED" in captured.out
     assert captured.err == ""
     assert called is True

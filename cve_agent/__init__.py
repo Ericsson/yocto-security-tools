@@ -141,6 +141,7 @@ class AgentConfig:
     sign_off: bool = False
     no_knowledge: bool = False
     mainline_parent: Optional[int] = None
+    security_gate: SecurityStatus = SecurityStatus.EQUIVALENT
 
 
 @dataclass

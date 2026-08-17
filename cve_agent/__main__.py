@@ -24,6 +24,7 @@ from . import (
     EXIT_TRUST_DECLINED,
     AgentConfig,
     CveResult,
+    SecurityStatus,
     WorkflowStatus,
 )
 from .backend import (
@@ -36,20 +37,27 @@ from .corrector import get_workspace_path, load_cve_metadata
 from .git import run_git_stdout
 from .knowledge import KnowledgeBase
 from .orchestrator import process_single_cve
+from .result import security_gate_satisfied
 from .setup import ensure_agents
 
 logger = __import__('logging').getLogger(__name__)
 
 
-def _command_succeeded(result: CveResult) -> bool:
-    """Accept completed work or a trusted host decision to skip it."""
+def _release_accepted(result: CveResult, required: SecurityStatus) -> bool:
+    """Require both workflow completion and the configured semantic gate."""
     return (
         result.outcome is not None
-        and result.outcome.workflow_status in {
-            WorkflowStatus.COMPLETED,
-            WorkflowStatus.SKIPPED,
-        }
+        and result.outcome.workflow_status.value == "completed"
+        and security_gate_satisfied(result.outcome, required)
     )
+
+
+def _command_succeeded(result: CveResult, required: SecurityStatus) -> bool:
+    """Accept a verified repair or a trusted host decision to skip it."""
+    return (
+        result.outcome is not None
+        and result.outcome.workflow_status is WorkflowStatus.SKIPPED
+    ) or _release_accepted(result, required)
 
 
 def _get_version() -> str:
@@ -163,7 +171,8 @@ def _process_batch(cve_list: list[str], config_template: AgentConfig,
         print(f"  Result: {result.outcome.summary_state} — {result.resolution_summary}"
               f"{_credits(result)}")
 
-        if not _command_succeeded(result) and not config_template.trust_mode:
+        if (not _command_succeeded(result, config.security_gate)
+                and not config_template.trust_mode):
             response = input(
                 "Skip and continue to next CVE? [Y/n]: "
             ).strip().lower()
@@ -377,6 +386,11 @@ def _parse_args() -> argparse.Namespace:
                         help='Skip git-blame based CVE applicability check')
     build_group.add_argument('--clean', action='store_true',
                         help='Clean workspace before starting')
+    build_group.add_argument(
+        '--security-gate', choices=('verified', 'equivalent'),
+        default='equivalent',
+        help='Minimum trusted semantic status required for release success; '
+             'equivalent also accepts verified (default: %(default)s)')
 
     # --- Output ---
     output_group = parser.add_argument_group('output')
@@ -414,6 +428,9 @@ def _read_cve_list(cve_list_path: Path) -> list[str]:
 def _config_from_args(args: argparse.Namespace,
                       cve_id: Optional[str] = None) -> AgentConfig:
     """Create an AgentConfig from parsed CLI arguments."""
+    security_gate_value = getattr(args, "security_gate", "equivalent")
+    if not isinstance(security_gate_value, str):
+        security_gate_value = "equivalent"
     return AgentConfig(
         cve_id=cve_id if cve_id is not None else (args.cve_id or ""),
         cve_info_path=args.cve_info,
@@ -437,6 +454,7 @@ def _config_from_args(args: argparse.Namespace,
         sign_off=args.sign_off,
         no_knowledge=args.no_knowledge,
         mainline_parent=args.mainline_parent,
+        security_gate=SecurityStatus(security_gate_value),
     )
 
 
@@ -517,7 +535,7 @@ def main() -> None:
         if result.total_credits is not None:
             print(f"  credits: {result.total_credits:.2f} "
                   f"{result.credits_unit or 'credits'}")
-        if not _command_succeeded(result):
+        if not _command_succeeded(result, config.security_gate):
             sys.exit(EXIT_AGENT_ERROR)
     else:
         cve_list = _read_cve_list(args.cve_list)
@@ -527,7 +545,7 @@ def main() -> None:
         _save_results(results)
         failed = sum(
             1 for r in results
-            if not _command_succeeded(r)
+            if not _command_succeeded(r, config_template.security_gate)
         )
         if failed:
             sys.exit(EXIT_AGENT_ERROR)

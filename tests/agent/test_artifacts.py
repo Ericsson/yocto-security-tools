@@ -143,11 +143,22 @@ def test_seeded_secrets_are_absent_from_all_retained_artifacts(tmp_path):
     run.atomic_json("provider-summary.json", {
         "error": f"https://user:{secret}@example.invalid/fail",
     })
+    run.atomic_text("semantic-validation.txt", f"evidence {secret}\n")
     run.finalize({"message": f"exception: {secret}"})
 
     for child in run.path.iterdir():
         if child.is_file():
             assert secret.encode() not in child.read_bytes()
+
+
+def test_finalize_always_retains_semantic_status_and_human_report(tmp_path):
+    run = RunArtifacts.create("CVE-1", "openai", None, "model", root=tmp_path)
+    run.finalize({"status": "failed"})
+    semantic = json.loads((run.path / "semantic-validation.json").read_text())
+    assert semantic["status"] == "not_evaluated"
+    assert semantic["reason_code"] == "workflow_did_not_reach_semantic_validation"
+    assert "not_evaluated" in (
+        run.path / "semantic-validation.txt").read_text(encoding="utf-8")
 
 
 def test_large_values_are_bounded_with_hash(tmp_path):
