@@ -9,12 +9,13 @@ bounded and JSON serializable.
 """
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import stat
 import unicodedata
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -37,6 +38,14 @@ MAX_SEARCH_EXCERPT_CHARS = 256
 MAX_MODEL_RESULT_BYTES = 64 * 1024
 MAX_EXPECTED_OCCURRENCES = 1_000_000
 MAX_QUERY_BYTES = 1024
+MAX_PATCH_FILE_BYTES = 8 * 1024 * 1024
+MAX_PATCH_HUNKS = 8
+MAX_PATCH_CONTEXT_BYTES = 64 * 1024
+MAX_PATCH_REPLACEMENT_BYTES = 64 * 1024
+MAX_PATCH_TOTAL_CONTEXT_BYTES = 128 * 1024
+MAX_PATCH_TOTAL_REPLACEMENT_BYTES = 128 * 1024
+MAX_PATCH_CHANGED_LINES = 2048
+MAX_PATCH_DIFF_BYTES = 4096
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -84,6 +93,7 @@ class FileToolLimits:
     max_search_excerpt_chars: int = MAX_SEARCH_EXCERPT_CHARS
     max_model_result_bytes: int = MAX_MODEL_RESULT_BYTES
     max_query_bytes: int = MAX_QUERY_BYTES
+    max_patch_file_bytes: int = MAX_PATCH_FILE_BYTES
 
     def __post_init__(self) -> None:
         ceilings = {
@@ -100,6 +110,7 @@ class FileToolLimits:
             "max_search_excerpt_chars": MAX_SEARCH_EXCERPT_CHARS,
             "max_model_result_bytes": MAX_MODEL_RESULT_BYTES,
             "max_query_bytes": MAX_QUERY_BYTES,
+            "max_patch_file_bytes": MAX_PATCH_FILE_BYTES,
         }
         for name, ceiling in ceilings.items():
             value = getattr(self, name)
@@ -186,6 +197,7 @@ class FieldContract:
     min_items: Optional[int] = None
     max_items: Optional[int] = None
     item_type: Optional[str] = None
+    item_fields: Optional[Mapping[str, "FieldContract"]] = None
 
     def schema(self) -> dict[str, object]:
         """Build the JSON schema fragment for this field."""
@@ -207,7 +219,19 @@ class FieldContract:
             result["minItems"] = self.min_items
         if self.max_items is not None:
             result["maxItems"] = self.max_items
-        if self.item_type is not None:
+        if self.item_fields is not None:
+            required = [
+                name for name, field in self.item_fields.items() if field.required
+            ]
+            result["items"] = {
+                "type": "object",
+                "properties": {
+                    name: field.schema() for name, field in self.item_fields.items()
+                },
+                "required": required,
+                "additionalProperties": False,
+            }
+        elif self.item_type is not None:
             result["items"] = {"type": self.item_type}
         return result
 
@@ -253,7 +277,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     ),
     "read_file": ToolContract(
         "read_file",
-        "Read a bounded byte range from one authorized text file.",
+        "Read a bounded byte range and return the complete file SHA-256.",
         {
             "path": FieldContract(
                 "string", "Workspace-relative path or authorized absolute context path.",
@@ -306,6 +330,30 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
                 minimum=0, maximum=MAX_EXPECTED_OCCURRENCES),
         },
         "_replace_in_file",
+    ),
+    "apply_patch_hunks": ToolContract(
+        "apply_patch_hunks",
+        "Atomically replace unique exact contexts in one large authorized UTF-8 file.",
+        {
+            "path": FieldContract(
+                "string", "Exact authorized workspace-relative file path.",
+                required=True),
+            "expected_sha256": FieldContract(
+                "string", "Lowercase SHA-256 of the complete current file.",
+                required=True, min_length=64, max_length=64),
+            "hunks": FieldContract(
+                "array", "Ordered non-overlapping exact context replacements.",
+                required=True, min_items=1, max_items=MAX_PATCH_HUNKS,
+                item_fields={
+                    "old_text": FieldContract(
+                        "string", "Unique exact UTF-8 context.", required=True,
+                        min_length=1, max_length=MAX_PATCH_CONTEXT_BYTES),
+                    "replacement": FieldContract(
+                        "string", "Exact UTF-8 replacement.", required=True,
+                        max_length=MAX_PATCH_REPLACEMENT_BYTES),
+                }),
+        },
+        "_apply_patch_hunks",
     ),
     "write_file": ToolContract(
         "write_file",
@@ -606,6 +654,20 @@ class _ExecutionResult:
     advances_generation: bool = True
 
 
+@dataclass(frozen=True)
+class _PatchPlan:
+    authorized: AuthorizedPath
+    expected_info: os.stat_result
+    original: bytes
+    replacement: bytes
+    old_sha256: str
+    new_sha256: str
+    hunks_applied: int
+    lines_added: int
+    lines_removed: int
+    diff_excerpt: str
+
+
 class FileToolRuntime:
     """Central dispatcher and bounded host-side filesystem executor."""
 
@@ -828,6 +890,27 @@ class FileToolRuntime:
                     not isinstance(item, str) for item in value):
                 raise ToolValidationError(
                     f"field '{name}' items must be strings")
+            if contract.item_fields is not None:
+                for item in value:
+                    if not isinstance(item, dict) or any(
+                            not isinstance(key, str) for key in item):
+                        raise ToolValidationError(
+                            f"field '{name}' items must be objects")
+                    unexpected = set(item) - set(contract.item_fields)
+                    if unexpected:
+                        raise ToolValidationError(
+                            f"field '{name}' item has an unexpected field")
+                    missing = [
+                        child_name for child_name, child in contract.item_fields.items()
+                        if child.required and child_name not in item
+                    ]
+                    if missing:
+                        raise ToolValidationError(
+                            f"field '{name}' item is missing: {missing[0]}")
+                    for child_name, child_value in item.items():
+                        FileToolRuntime._validate_field(
+                            child_name, child_value,
+                            contract.item_fields[child_name])
             return
         raise ToolValidationError(f"field '{name}' has an unsupported contract")
 
@@ -925,11 +1008,12 @@ class FileToolRuntime:
                     "file exceeds the configured inspection size limit")
             if offset > info.st_size:
                 raise ToolOperationalError("read offset is beyond end of file")
-            os.lseek(fd, offset, os.SEEK_SET)
-            data = self._read_up_to(fd, max_bytes + 1)
+            data = self._read_up_to(fd, info.st_size + 1)
         finally:
             os.close(fd)
-        selected = data[:max_bytes]
+        if len(data) != info.st_size:
+            raise ToolOperationalError("file changed while it was being read")
+        selected = data[offset:offset + max_bytes]
         if self._looks_binary(selected):
             raise ToolOperationalError("binary file content is not returned")
         content = selected.decode(TEXT_ENCODING, errors=TEXT_ERRORS)
@@ -939,7 +1023,7 @@ class FileToolRuntime:
         except UnicodeDecodeError:
             replacements = True
         next_offset = offset + len(selected)
-        truncated = len(data) > max_bytes or next_offset < info.st_size
+        truncated = next_offset < info.st_size
         return _ExecutionResult({
             "path": path,
             "content": content,
@@ -949,6 +1033,7 @@ class FileToolRuntime:
             "truncated": truncated,
             "next_offset": next_offset if truncated else None,
             "decode_replacements": replacements,
+            "sha256": hashlib.sha256(data).hexdigest(),
         })
 
     def _search_text(self, arguments: dict[str, object]) -> _ExecutionResult:
@@ -1121,6 +1206,198 @@ class FileToolRuntime:
             "changed": True,
         }, mutated=True)
 
+    def _apply_patch_hunks(self, arguments: dict[str, object]) -> _ExecutionResult:
+        plan = self._prepare_patch_hunks(arguments)
+        self._atomic_write(
+            plan.authorized,
+            plan.replacement,
+            mode="replace_only",
+            expected_info=plan.expected_info,
+            max_bytes=self.limits.max_patch_file_bytes,
+        )
+        try:
+            self._verify_patch_postcondition(plan)
+        except (ToolOperationalError, ToolPolicyError):
+            self._restore_failed_patch(plan)
+            raise
+        return _ExecutionResult({
+            "path": plan.authorized.repository_path,
+            "old_sha256": plan.old_sha256,
+            "new_sha256": plan.new_sha256,
+            "hunks_applied": plan.hunks_applied,
+            "lines_added": plan.lines_added,
+            "lines_removed": plan.lines_removed,
+            "diff_excerpt": plan.diff_excerpt,
+            "diff_truncated": (
+                len(plan.diff_excerpt.encode("utf-8")) >= MAX_PATCH_DIFF_BYTES),
+            "mutation_generation": self.mutation_generation + 1,
+        }, mutated=True)
+
+    def _prepare_patch_hunks(self, arguments: Mapping[str, object]) -> _PatchPlan:
+        path = self._required_string(arguments, "path")
+        expected_sha256 = self._required_string(arguments, "expected_sha256")
+        if (len(expected_sha256) != 64
+                or any(character not in "0123456789abcdef"
+                       for character in expected_sha256)):
+            raise ToolValidationError(
+                "expected_sha256 must be 64 lowercase hexadecimal characters")
+        hunks_value = arguments.get("hunks")
+        if not isinstance(hunks_value, list) or not hunks_value:
+            raise ToolValidationError("hunks must contain at least one item")
+        if len(hunks_value) > MAX_PATCH_HUNKS:
+            raise ToolValidationError("hunk count exceeds its limit")
+
+        hunks: list[tuple[bytes, bytes]] = []
+        total_context = 0
+        total_replacement = 0
+        lines_removed = 0
+        lines_added = 0
+        for item in hunks_value:
+            if not isinstance(item, dict):
+                raise ToolValidationError("hunk must be an object")
+            old_text = self._required_string(item, "old_text")
+            replacement = self._required_string(item, "replacement")
+            if not old_text:
+                raise ToolValidationError("hunk old_text must not be empty")
+            try:
+                old = old_text.encode(TEXT_ENCODING, errors="strict")
+                new = replacement.encode(TEXT_ENCODING, errors="strict")
+            except UnicodeEncodeError as exc:
+                raise ToolValidationError("hunk text must be valid UTF-8") from exc
+            if b"\r" in old or b"\r" in new:
+                raise ToolValidationError("patch hunks support LF newlines only")
+            if len(old) > MAX_PATCH_CONTEXT_BYTES:
+                raise ToolValidationError("hunk context exceeds its byte limit")
+            if len(new) > MAX_PATCH_REPLACEMENT_BYTES:
+                raise ToolValidationError("hunk replacement exceeds its byte limit")
+            total_context += len(old)
+            total_replacement += len(new)
+            lines_removed += self._patch_line_count(old)
+            lines_added += self._patch_line_count(new)
+            hunks.append((old, new))
+        if total_context > MAX_PATCH_TOTAL_CONTEXT_BYTES:
+            raise ToolValidationError("total hunk context exceeds its byte limit")
+        if total_replacement > MAX_PATCH_TOTAL_REPLACEMENT_BYTES:
+            raise ToolValidationError("total hunk replacement exceeds its byte limit")
+        if lines_removed + lines_added > MAX_PATCH_CHANGED_LINES:
+            raise ToolValidationError("patch changed-line count exceeds its limit")
+
+        authorized = self._reauthorize("apply_patch_hunks", path, write=True)
+        fd, info = self.policy.open_regular(authorized)
+        try:
+            if info.st_size > self.limits.max_patch_file_bytes:
+                raise ToolOperationalError("patch target exceeds its output size limit")
+            original = self._read_up_to(fd, self.limits.max_patch_file_bytes + 1)
+        finally:
+            os.close(fd)
+        if len(original) > self.limits.max_patch_file_bytes:
+            raise ToolOperationalError("patch target exceeds its output size limit")
+        if self._looks_binary(original):
+            raise ToolOperationalError("patch target is not supported UTF-8 text")
+        try:
+            original.decode(TEXT_ENCODING, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ToolOperationalError("patch target is not valid UTF-8") from exc
+        if b"\r" in original:
+            raise ToolOperationalError("patch target does not use LF-only newlines")
+        old_sha256 = hashlib.sha256(original).hexdigest()
+        if old_sha256 != expected_sha256:
+            raise ToolOperationalError("patch target SHA-256 mismatch")
+
+        located: list[tuple[int, int, bytes, bytes]] = []
+        previous_end = 0
+        for old, new in hunks:
+            occurrences = original.count(old)
+            if occurrences == 0:
+                raise ToolOperationalError("patch hunk context mismatch")
+            if occurrences != 1:
+                raise ToolOperationalError("patch hunk context is ambiguous")
+            start = original.find(old)
+            end = start + len(old)
+            if start < previous_end:
+                raise ToolValidationError(
+                    "patch hunks overlap or are out of source order")
+            previous_end = end
+            located.append((start, end, old, new))
+
+        pieces: list[bytes] = []
+        cursor = 0
+        for start, end, _, replacement_bytes in located:
+            pieces.append(original[cursor:start])
+            pieces.append(replacement_bytes)
+            cursor = end
+        pieces.append(original[cursor:])
+        output = b"".join(pieces)
+        if output == original:
+            raise ToolValidationError("patch hunks do not change the target")
+        if len(output) > self.limits.max_patch_file_bytes:
+            raise ToolValidationError("patched output exceeds its size limit")
+        new_sha256 = hashlib.sha256(output).hexdigest()
+        return _PatchPlan(
+            authorized=authorized,
+            expected_info=info,
+            original=original,
+            replacement=output,
+            old_sha256=old_sha256,
+            new_sha256=new_sha256,
+            hunks_applied=len(located),
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+            diff_excerpt=self._patch_diff_excerpt(path, located),
+        )
+
+    @staticmethod
+    def _patch_line_count(value: bytes) -> int:
+        return len(value.splitlines()) if value else 0
+
+    @staticmethod
+    def _patch_diff_excerpt(
+        path: str, located: Sequence[tuple[int, int, bytes, bytes]],
+    ) -> str:
+        chunks = [f"--- {path}\n+++ {path}\n"]
+        for index, (_, _, old, new) in enumerate(located, start=1):
+            chunks.append(f"@@ bounded-hunk {index} @@\n")
+            chunks.extend(
+                f"-{line}\n" for line in old.decode("utf-8").splitlines())
+            chunks.extend(
+                f"+{line}\n" for line in new.decode("utf-8").splitlines())
+        encoded = "".join(chunks).encode("utf-8")
+        if len(encoded) <= MAX_PATCH_DIFF_BYTES:
+            return encoded.decode("utf-8")
+        return encoded[:MAX_PATCH_DIFF_BYTES].decode("utf-8", errors="ignore")
+
+    def _verify_patch_postcondition(self, plan: _PatchPlan) -> None:
+        authorized = self.policy.authorize_write(
+            plan.authorized.repository_path or "")
+        fd, info = self.policy.open_regular(authorized)
+        try:
+            if info.st_size != len(plan.replacement):
+                raise ToolOperationalError("patch postcondition size mismatch")
+            actual = self._read_up_to(fd, len(plan.replacement) + 1)
+        finally:
+            os.close(fd)
+        if actual != plan.replacement:
+            raise ToolOperationalError("patch postcondition content mismatch")
+        if hashlib.sha256(actual).hexdigest() != plan.new_sha256:
+            raise ToolOperationalError("patch postcondition hash mismatch")
+
+    def _restore_failed_patch(self, plan: _PatchPlan) -> None:
+        try:
+            authorized = self.policy.authorize_write(
+                plan.authorized.repository_path or "")
+            fd, current_info = self.policy.open_regular(authorized)
+            os.close(fd)
+            self._atomic_write(
+                authorized,
+                plan.original,
+                mode="replace_only",
+                expected_info=current_info,
+                max_bytes=self.limits.max_patch_file_bytes,
+            )
+        except (OSError, ToolOperationalError, ToolPolicyError) as exc:
+            raise ToolOperationalError(
+                "patch postcondition failed and rollback was not safe") from exc
+
     def _write_file(self, arguments: dict[str, object]) -> _ExecutionResult:
         path = self._required_string(arguments, "path")
         content = self._required_string(arguments, "content")
@@ -1156,8 +1433,10 @@ class FileToolRuntime:
 
     def _atomic_write(self, authorized: AuthorizedPath, data: bytes,
                       mode: str,
-                      expected_info: Optional[os.stat_result] = None) -> None:
-        if len(data) > self.limits.max_write_bytes:
+                      expected_info: Optional[os.stat_result] = None,
+                      max_bytes: Optional[int] = None) -> None:
+        write_limit = self.limits.max_write_bytes if max_bytes is None else max_bytes
+        if len(data) > write_limit:
             raise ToolValidationError("file content exceeds the configured write limit")
         parent_fd, target_name = self.policy.open_write_parent(authorized)
         temp_name = f".cve-agent-{uuid.uuid4().hex}.tmp"

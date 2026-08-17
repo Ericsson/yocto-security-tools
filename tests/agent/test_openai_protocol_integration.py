@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -37,6 +38,7 @@ from cve_agent.openai_host_tools import (
     OpenAIHostToolRuntime,
 )
 from cve_agent.openai_loop import JSONLTranscript, TranscriptError
+from cve_agent.openai_tools import MAX_WRITE_BYTES
 from cve_agent.orchestrator import _read_conclusion, _read_escalation
 from cve_agent.session import guarded_session
 
@@ -182,8 +184,8 @@ def _request_contract(body: dict[str, object]) -> None:
     assert isinstance(tools, list)
     names = {tool["function"]["name"] for tool in tools}
     assert {
-        "read_file", "replace_in_file", "git_stage", "git_commit", "git_amend",
-        "build_recipe", "finish",
+        "read_file", "replace_in_file", "apply_patch_hunks", "git_stage",
+        "git_commit", "git_amend", "build_recipe", "finish",
     } <= names
     assert all(tool["type"] == "function" for tool in tools)
     assert all(tool["function"]["parameters"]["additionalProperties"] is False for tool in tools)
@@ -369,6 +371,55 @@ def test_socket_guarded_manual_edit_build_finish_and_request_sequence(
         for call in message.get("tool_calls", [])
     ]
     assert "shell" not in requested_names
+
+
+def test_socket_loop_patches_large_file_builds_and_commits(
+    real_workspace: RealWorkspace,
+) -> None:
+    workspace = real_workspace
+    marker = "value = downstream;\n"
+    workspace.target.write_text(
+        "/* bounded padding */\n" * (MAX_WRITE_BYTES // 22 + 100) + marker,
+        encoding="utf-8",
+    )
+    assert workspace.target.stat().st_size > MAX_WRITE_BYTES
+    digest = hashlib.sha256(workspace.target.read_bytes()).hexdigest()
+    runner = RecordingBuildRunner(workspace)
+    actions = [
+        ScriptedHTTPResponse(json_body=assistant_response(tool_call(
+            "patch", "apply_patch_hunks", {
+                "path": workspace.target.name,
+                "expected_sha256": digest,
+                "hunks": [{
+                    "old_text": marker,
+                    "replacement": "value = bounded-secure;\n",
+                }],
+            })), check=_request_contract),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(tool_call("build", "build_recipe", {})),
+            check=_request_has_tool_results("patch")),
+        ScriptedHTTPResponse(json_body=assistant_response(tool_call(
+            "commit", "git_commit", {
+                "paths": [workspace.target.name],
+                "message": "record bounded large-file repair",
+            })), check=_request_has_tool_results("build")),
+        ScriptedHTTPResponse(json_body=assistant_response(tool_call(
+            "finish", "finish", {
+                "status": "done", "reason": "bounded repair built and committed",
+                "summary": "large source repair",
+            })), check=_request_has_tool_results("commit")),
+    ]
+    with ScriptedOpenAIServer(actions) as server:
+        backend, _ = _backend(server, workspace, runner)
+        result = backend.run_session(
+            "Apply the bounded repair.", workspace.repo,
+            {workspace.target.name}, "socket-model", 20, False)
+    assert result.resolved
+    assert workspace.target.read_text(encoding="utf-8").endswith(
+        "value = bounded-secure;\n")
+    assert _git(workspace.repo, "status", "--porcelain") == ""
+    assert _git(workspace.repo, "show", f"HEAD:{workspace.target.name}").endswith(
+        "value = bounded-secure;")
 
 
 def test_socket_cherry_pick_conflict_resolution_has_trusted_provenance(

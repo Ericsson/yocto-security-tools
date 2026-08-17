@@ -70,6 +70,36 @@ not produced by the typed runtime. Rollback provenance is reset at every new
 cherry-pick and successful trusted commit transition, so paths touched by an
 earlier operation can never authorize discarding a later external edit.
 
+## Bounded edits of large files
+
+The normal exact-text and full-file tools keep their 256 KiB write ceiling.
+For a larger authorized UTF-8 file, the native backend exposes
+`apply_patch_hunks(path, expected_sha256, hunks)`. Each hunk contains only a
+unique exact `old_text` and its `replacement`; the host locates every context
+in the original file and rejects missing, ambiguous, overlapping, or
+out-of-order hunks. This deliberately avoids unified-diff parsing, regular
+expressions, `patch`, `git apply`, or any command execution.
+
+The target must be an exact allowed path and a single-link regular file below
+symlink-free parents. The host rechecks the complete-file SHA-256 immediately
+before use. Every successful bounded `read_file` result includes the SHA-256 of
+the complete opened file, so the model can supply this guard without reading or
+rewriting the full content. The patch tool accepts LF-only strict UTF-8 and
+enforces fixed ceilings of eight
+hunks, 64 KiB per context or replacement, 128 KiB total context or replacement,
+2,048 changed lines, and an 8 MiB resulting file. It writes a same-directory
+temporary file, preserves the regular-file mode, fsyncs, rechecks target
+identity, atomically replaces, and reopens the result to verify its bytes and
+hash. Failures before replacement remove temporary residue; a detected
+postcondition failure restores the original bytes when the target identity is
+still safe.
+
+The result contains hashes, hunk and line counts, and at most 4 KiB of diff
+excerpt—not the complete file. Interactive mode constructs that same bounded
+preview before asking for approval and repeats every check before mutation. A
+successful hunk edit advances the content generation and therefore requires a
+new successful build.
+
 ## Local Ollama quick start
 
 Choose an Ollama model that advertises tool/function calling and has enough
