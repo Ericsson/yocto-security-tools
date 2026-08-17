@@ -73,5 +73,6 @@ Tests mirror the source package structure:
 - `tests/extractor/` — cve_metadata_extractor tests
 - `tests/shared/` — shared module tests
 - `tests/integration/` — end-to-end tests (shell + Python)
+- `tests/benchmark/` — cve-agent model benchmark (fixed CVE roster x models, AI judge)
 
 Coverage threshold: 75% (enforced in CI).
