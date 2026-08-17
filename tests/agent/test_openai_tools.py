@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Security and contract tests for native OpenAI filesystem tools."""
+import hashlib
 import json
 import os
 import socket
@@ -550,8 +551,10 @@ def test_read_truncation_has_deterministic_continuation(roots):
     assert first.payload["content"] == "01234"
     assert first.payload["truncated"] is True
     assert first.payload["next_offset"] == 5
+    assert first.payload["sha256"] == hashlib.sha256(content.encode()).hexdigest()
     assert second.payload["content"] == "56789"
     assert second.payload["offset"] == 5
+    assert second.payload["sha256"] == first.payload["sha256"]
 
 
 def test_read_and_all_results_are_bounded_and_json_serializable(roots):
@@ -741,6 +744,10 @@ _VALID_ARGUMENTS = {
     "replace_in_file": {
         "path": "file.txt", "old_text": "x", "new_text": "y",
         "expected_count": 1,
+    },
+    "apply_patch_hunks": {
+        "path": "file.txt", "expected_sha256": "0" * 64,
+        "hunks": [{"old_text": "x", "replacement": "y"}],
     },
     "write_file": {
         "path": "file.txt", "content": "x", "mode": "replace_only",

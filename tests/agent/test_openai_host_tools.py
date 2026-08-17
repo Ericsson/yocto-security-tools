@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for native build, approval, deadline, and finish host tools."""
+import hashlib
 import io
 import json
 import os
@@ -394,6 +395,35 @@ def test_interactive_commit_denial_is_structured_and_does_not_stage(host_reposit
     assert _git(repo, "diff", "--cached", "--name-only").stdout == ""
 
 
+def test_interactive_large_patch_approval_and_denial_are_bounded(host_repository):
+    repo, agent = host_repository
+    target = repo / "a.c"
+    old = target.read_text(encoding="utf-8")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    arguments = {
+        "path": "a.c", "expected_sha256": digest,
+        "hunks": [{"old_text": old, "replacement": "patched\n"}],
+    }
+    denied_approval = FakeApproval(ApprovalDecision.DENY)
+    denied_runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=denied_approval)
+    denied = denied_runtime.dispatch("apply_patch_hunks", arguments)
+    assert not denied.success and denied.error_kind == "approval"
+    assert target.read_text(encoding="utf-8") == old
+    request = denied_approval.requests[0]
+    assert request.operation == "apply_patch_hunks"
+    assert digest in request.summary
+    assert "@@ bounded-hunk 1 @@" in request.summary
+    assert len(request.summary) <= 512
+
+    approved = FakeApproval(ApprovalDecision.APPROVE_ONCE)
+    approved_runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=approved)
+    result = approved_runtime.dispatch("apply_patch_hunks", arguments)
+    assert result.success
+    assert target.read_text(encoding="utf-8") == "patched\n"
+
+
 def test_interactive_amend_denial_is_structured_and_does_not_stage(host_repository):
     repo, agent = host_repository
     (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
@@ -490,6 +520,23 @@ def test_build_is_invalidated_by_later_file_mutation(host_repository):
         "path": "a.c", "content": "changed\n", "mode": "replace_only"}).success
     result = runtime.dispatch("finish", {
         "status": "done", "reason": "complete", "summary": "built"})
+    assert not result.success
+    assert "predates" in result.payload["error"]
+
+
+def test_build_is_invalidated_by_later_large_patch_hunk(host_repository):
+    repo, agent = host_repository
+    target = repo / "a.c"
+    runtime = _runtime(repo, agent)
+    assert runtime.dispatch("build_recipe", {}).success
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    patched = runtime.dispatch("apply_patch_hunks", {
+        "path": "a.c", "expected_sha256": digest,
+        "hunks": [{"old_text": "base\n", "replacement": "fixed\n"}],
+    })
+    assert patched.success
+    result = runtime.dispatch("finish", {
+        "status": "done", "reason": "complete", "summary": "stale"})
     assert not result.success
     assert "predates" in result.payload["error"]
 

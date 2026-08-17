@@ -74,7 +74,10 @@ class FakeRuntime:
             self.finish_attempts += 1
             self.terminal_status = arguments.get("status")
             return self.result(tool_name, terminal=True)
-        if tool_name in {"write_file", "git_stage", "git_cherry_pick_continue"}:
+        if tool_name in {
+            "write_file", "apply_patch_hunks", "git_stage",
+            "git_cherry_pick_continue",
+        }:
             self.mutation_generation += 1
             return self.result(tool_name, mutated=True)
         if tool_name in {"git_commit", "git_amend"}:
@@ -205,6 +208,28 @@ def test_realistic_inspect_edit_stage_build_finish_sequence(tmp_path):
         "git_cherry_pick_continue", "build_recipe", "finish",
     ]
     assert runtime.validated_generation == runtime.mutation_generation
+
+
+def test_deterministic_loop_dispatches_bounded_patch_hunks(tmp_path):
+    arguments = json.dumps({
+        "path": "large.c", "expected_sha256": "a" * 64,
+        "hunks": [{"old_text": "vulnerable\n", "replacement": "fixed\n"}],
+    })
+    actions = [
+        _response(_call("patch", "apply_patch_hunks", arguments)),
+        _response(_call(
+            "finish", "finish",
+            '{"status":"needs_human","reason":"integration complete"}')),
+    ]
+    result, _, runtime, _, _, events = _run(tmp_path, actions)
+    assert result.resolved
+    assert runtime.calls[0] == (
+        "apply_patch_hunks", json.loads(arguments))
+    assert runtime.mutation_generation == 1
+    assert any(
+        event["event"] == "tool_result"
+        and event["tool"] == "apply_patch_hunks"
+        for event in events)
 
 
 def test_multiple_calls_preserve_assistant_and_tool_result_order(tmp_path):
