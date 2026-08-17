@@ -119,6 +119,9 @@ Options:
   --mirror-dir DIR        Local git mirror directory
   --meta-layer DIR        Target meta-layer
   --bbappend              Use bbappend mode
+  --no-knowledge          Disable the knowledge base for this run: no
+                          similar-pattern lookups, and no pattern is
+                          saved on success
   --sign-off              Passed through to cve-corrector (default: off).
                           Rejected in combination with --trust — no human
                           review means no DCO certification to make.

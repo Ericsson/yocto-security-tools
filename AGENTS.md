@@ -34,7 +34,11 @@
 │   └── instructions/           # Per-phase workflow fragments embedded into
 │                               # context.md by exit code (conflict/build/ptest)
 ├── extra/                       # Plugin directory (.gitignore'd .py files)
-└── tests/{agent,corrector,extractor,shared}/
+└── tests/{agent,corrector,extractor,shared,benchmark,integration}/
+    └── benchmark/                # cve-agent model benchmark (see its own README.md)
+        ├── run_benchmark.sh      # Orchestrator: fixed CVE roster x models, then AI judge
+        ├── bench_lib.py          # Pure-Python helpers (tiering, cost weight, judge call)
+        └── benchmark-roster.json # Committed, fixed 7-CVE roster (not regenerated)
 ```
 
 ## Key Abstractions
