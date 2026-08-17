@@ -80,6 +80,7 @@ _ALLOWED_TOOLS = (
     "Bash(git am:*)",
     "Bash(git rev-parse:*)",
     "Bash(git merge-base:*)",
+    "Bash(git format-patch:*)",
     "Bash(devtool build:*)",
     "Bash(bitbake -c cleansstate:*)",
     "Bash(tee:*)",
@@ -88,6 +89,8 @@ _ALLOWED_TOOLS = (
     "Bash(head:*)",
     "Bash(tail:*)",
     "Bash(wc:*)",
+    "Bash(find .:*)",
+    "Bash(grep:*)",
 )
 
 # Secrets / system paths: deny read AND write. Absolute paths use Claude Code's
