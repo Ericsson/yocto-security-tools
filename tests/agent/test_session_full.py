@@ -276,8 +276,11 @@ class TestGuardedKiroSession:
             tmp_path):
         ws = tmp_path / "ws"
         ws.mkdir()
-        guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
-                        "model", 300, "CVE-1")
+        with patch("cve_agent.session.RepositoryPreflight.run",
+                   return_value=_preflight_ok()):
+            guarded_session(
+                Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                "model", 300, "CVE-1")
         m_notes_install.assert_called_once_with(ws)
         m_notes_remove.assert_called_once_with(ws)
 
@@ -296,9 +299,11 @@ class TestGuardedKiroSession:
             m_unhook, m_notes_install, m_notes_remove, tmp_path):
         ws = tmp_path / "ws_raise"
         ws.mkdir()
-        with pytest.raises(RuntimeError):
-            guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
-                            "model", 300, "CVE-1")
+        with patch("cve_agent.session.RepositoryPreflight.run",
+                   return_value=_preflight_ok()), pytest.raises(RuntimeError):
+            guarded_session(
+                Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                "model", 300, "CVE-1")
         m_notes_install.assert_called_once_with(ws)
         m_notes_remove.assert_called_once_with(ws)
 
@@ -318,9 +323,11 @@ class TestGuardedKiroSession:
         """A failed second install must not leave the first guard behind."""
         ws = tmp_path / "ws_install_fail"
         ws.mkdir()
-        with pytest.raises(RuntimeError):
-            guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
-                            "model", 300, "CVE-1")
+        with patch("cve_agent.session.RepositoryPreflight.run",
+                   return_value=_preflight_ok()), pytest.raises(RuntimeError):
+            guarded_session(
+                Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                "model", 300, "CVE-1")
         m_unhook.assert_called_once_with(ws)
         m_notes_remove.assert_called_once_with(ws)
 
@@ -338,7 +345,8 @@ class TestGuardedKiroSession:
             failure_reason="check --openai-base-url",
         )
         with patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
-                patch("cve_agent.session.get_changed_files", return_value=set()), \
+                patch("cve_agent.session.compute_allowed_files",
+                      return_value=set()), \
                 patch("cve_agent.session.run_git_stdout", return_value=""), \
                 patch("cve_agent.session.install_scope_hook") as install, \
                 patch("cve_agent.session.remove_scope_hook") as remove, \

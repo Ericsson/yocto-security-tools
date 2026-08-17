@@ -140,6 +140,7 @@ class AgentConfig:
     skip_sources: list[str] = field(default_factory=list)
     sign_off: bool = False
     no_knowledge: bool = False
+    mainline_parent: Optional[int] = None
 
 
 @dataclass

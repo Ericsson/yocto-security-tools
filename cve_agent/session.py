@@ -19,6 +19,7 @@ from shared.git_runner import (
     force_checkout_branch,
     merge_diff_flags,
 )
+from shared.handoff import HandoffError
 
 from . import (
     BuildStatus,
@@ -44,6 +45,7 @@ from .git import (
     upstream_changed_files,
     warn_if_hooks_disabled,
 )
+from .handoff import validate_repository_handoff
 from .openai_deadline import SessionDeadline
 from .openai_preflight import PreflightErrorCode, RepositoryPreflight
 
@@ -125,13 +127,51 @@ def guarded_session(context_file: Path, workspace_path: Path,
                     timeout: int = 300,
                     cve_id: str = "",
                     interactive: bool = False,
-                    backend_name: str = "kiro") -> SessionResult:
+                    backend_name: str = "kiro",
+                    require_handoff: bool = False) -> SessionResult:
     """Run AI session with file-scope enforcement.
 
     Installs a git pre-commit hook that blocks unauthorized files, runs the
     AI session via the configured backend, then verifies and reverts any
     unauthorized changes.
     """
+    artifact_run = current_run_artifacts()
+    try:
+        handoff = validate_repository_handoff(
+            workspace_path, cve_id, required=require_handoff)
+        if handoff is not None and artifact_run is not None:
+            artifact_run.atomic_json("corrector-handoff.json", handoff.to_dict())
+            artifact_run.event(
+                "corrector_handoff_validated",
+                schema_version=handoff.schema_version,
+                operation_state=handoff.operation_state,
+                allowed_path_count=len(handoff.allowed_paths),
+                generated_path_count=len(handoff.known_generated_paths),
+                selected_commit=handoff.selected_commit,
+                selected_parent=handoff.selected_parent,
+                digest=handoff.critical_sha256,
+            )
+    except (HandoffError, ArtifactError) as handoff_error:
+        code = (handoff_error.code if isinstance(handoff_error, HandoffError)
+                else "HANDOFF_TRANSCRIPT_FAILED")
+        if artifact_run is not None:
+            try:
+                artifact_run.event("corrector_handoff_failed", failure_code=code)
+            except ArtifactError:
+                code = "HANDOFF_TRANSCRIPT_FAILED"
+        return SessionResult(
+            resolved=False,
+            duration=0.0,
+            failure_reason=f"Corrector handoff failed: {code}",
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.CORRECTOR_HANDOFF,
+                code,
+            ),
+        )
+
     # Ensure the agent operates on the CVE branch — the source of truth that
     # cherry_pick_to_devtool transfers to the devtool branch. The corrector's
     # build step leaves the *devtool* branch checked out, and the agent's
@@ -146,9 +186,13 @@ def guarded_session(context_file: Path, workspace_path: Path,
     _ensure_cve_branch(workspace_path, cve_id)
 
     all_shas = get_all_upstream_shas(cve_info, workspace_path)
-    # The allowed set is computed by the same helper that fills context.md's
-    # Allowed Files section, so the guard and the AI's instructions agree.
-    allowed = compute_allowed_files(cve_info, workspace_path)
+    # A validated handoff is authoritative. Without one, use the same
+    # merge-aware scope computation as context rendering.
+    allowed = (
+        set(handoff.allowed_paths)
+        if handoff is not None
+        else compute_allowed_files(cve_info, workspace_path)
+    )
     # Snapshot upstream diffs per file before the session (single pass per SHA)
     upstream_diffs: dict[str, str] = {}
     for sha in all_shas:
@@ -156,13 +200,11 @@ def guarded_session(context_file: Path, workspace_path: Path,
         for f in upstream_changed_files(workspace_path, sha):
             raw = run_git_stdout(['show', *flags, sha, '--', f], cwd=workspace_path)
             upstream_diffs[f] = _extract_diff_hunks(raw)
-
     recipe = workspace_path.name
 
     preflight_deadline = SessionDeadline.from_timeout(timeout)
     preflight = RepositoryPreflight(
         workspace_path, allowed, preflight_deadline).run()
-    artifact_run = current_run_artifacts()
     if artifact_run is not None:
         try:
             artifact_run.atomic_json("preflight.json", preflight.to_dict())

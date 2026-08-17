@@ -7,8 +7,6 @@ from typing import Optional
 
 from .git_ops import (
     cherry_pick_command,
-    detect_strip_level,
-    get_repo_subdir,
     git_clean_workspace,
     has_conflict_state,
     is_ancestor_of_head,
@@ -373,7 +371,9 @@ def apply_series(workspace_path: Path,
 
 
 def apply_single_commits(workspace_path: Path, hashes: list[str],
-                         subproject: Optional[str] = None) -> tuple[bool, Optional[str]]:
+                         subproject: Optional[str] = None,
+                         mainline_parent: Optional[int] = None,
+                         ) -> tuple[bool, Optional[str]]:
     """Apply individual fix commits until one succeeds."""
     logger.info("Attempting %s commit(s)", len(hashes))
     result = run_cmd_capture(['git', 'log', '--oneline', '-10'], cwd=workspace_path)
@@ -420,7 +420,9 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
     candidates = substantive + metadata_only
     for idx, commit_hash in enumerate(candidates, 1):
         logger.info("[%s/%s] Trying %s...", idx, len(candidates), commit_hash[:8])
-        if try_cherry_pick(workspace_path, commit_hash, subproject=subproject):
+        if try_cherry_pick(
+                workspace_path, commit_hash, subproject=subproject,
+                mainline_parent=mainline_parent):
             logger.info("✓ Success")
             return True, commit_hash
         logger.debug("✗ Failed")
@@ -455,7 +457,9 @@ def _is_metadata_only_commit(workspace_path: Path, commit_hash: str) -> bool:
 
 
 def find_least_conflict_commit(workspace_path: Path,
-                               hashes: list[str]) -> tuple[Optional[str], float]:
+                               hashes: list[str],
+                               mainline_parent: Optional[int] = None,
+                               ) -> tuple[Optional[str], float]:
     """Find commit that produces the fewest merge conflicts.
 
     Prefers the first hash in the list (usually the actual fix) and
@@ -489,8 +493,22 @@ def find_least_conflict_commit(workspace_path: Path,
                 "Skipping %s: already an ancestor of HEAD (shipped in this "
                 "version, so it cannot be the fix)", commit_hash[:8])
             continue
-        pick = run_cmd_capture(
-            cherry_pick_command(workspace_path, commit_hash), cwd=workspace_path)
+        parents = run_cmd_capture(
+            ['git', 'rev-list', '--parents', '-n', '1', commit_hash],
+            cwd=workspace_path)
+        parent_count = max(0, len(parents.stdout.split()) - 1)
+        if ((parent_count > 1 and mainline_parent is None)
+                or (parent_count <= 1 and mainline_parent is not None)
+                or (mainline_parent is not None
+                    and not 1 <= mainline_parent <= parent_count)):
+            logger.error("Skipping commit %s: merge mainline is ambiguous or invalid",
+                         commit_hash[:12])
+            continue
+        command = (cherry_pick_command(workspace_path, commit_hash)
+                    if mainline_parent is None else
+                    cherry_pick_command(
+                        workspace_path, commit_hash, mainline_parent))
+        pick = run_cmd_capture(command, cwd=workspace_path)
         result = run_cmd_capture(
             ['git', 'diff', '--name-only', '--diff-filter=U'], cwd=workspace_path)
         conflict_count = len(result.stdout.splitlines())

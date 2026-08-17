@@ -74,7 +74,8 @@ class TestStaleConclusionDoesNotOverrideResolution:
 
         def _session_side_effect(context_file, workspace_path, upstream_sha,
                                  cve_info, model, timeout, cve_id,
-                                 interactive=False, backend_name="kiro"):
+                                 interactive=False, backend_name="kiro",
+                                 require_handoff=False):
             session_calls[0] += 1
             agent_dir = get_agent_dir(workspace_path)
             if session_calls[0] == 1:

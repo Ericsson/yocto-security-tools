@@ -280,7 +280,8 @@ def test_failed_preflight_makes_zero_backend_calls(tmp_path):
 
     with patch("cve_agent.session._ensure_cve_branch"), \
          patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
-         patch("cve_agent.session.get_changed_files", return_value=set()), \
+         patch("cve_agent.session.compute_allowed_files",
+               return_value={"allowed.c"}), \
          patch("cve_agent.session.run_git_stdout", side_effect=["allowed.c", ""]), \
          patch("cve_agent.session.RepositoryPreflight.run",
                return_value=_failure_result(PreflightErrorCode.GIT_STATUS_FAILED)), \
@@ -307,7 +308,8 @@ def test_transcript_failure_has_specific_code_and_zero_backend_calls(tmp_path):
 
     with patch("cve_agent.session._ensure_cve_branch"), \
          patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
-         patch("cve_agent.session.get_changed_files", return_value=set()), \
+         patch("cve_agent.session.compute_allowed_files",
+               return_value={"allowed.c"}), \
          patch("cve_agent.session.run_git_stdout", side_effect=["allowed.c", ""]), \
          patch("cve_agent.session.RepositoryPreflight.run", return_value=good), \
          patch("cve_agent.session.current_run_artifacts", return_value=bad_artifacts), \

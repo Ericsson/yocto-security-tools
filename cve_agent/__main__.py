@@ -282,6 +282,9 @@ def _parse_args() -> argparse.Namespace:
                              'conflict.')
     input_group.add_argument('--recipe',
                         help='Recipe name (required with --fix-url without --cve-info)')
+    input_group.add_argument(
+        '--mainline-parent', type=int, metavar='N',
+        help='Explicit 1-based direct parent for a selected merge fix commit')
     input_group.add_argument('--skip-source', action='append', default=[],
                         metavar='SOURCE', dest='skip_sources',
                         help='Ignore fix commits from this source (repeatable). '
@@ -433,6 +436,7 @@ def _config_from_args(args: argparse.Namespace,
         skip_sources=args.skip_sources,
         sign_off=args.sign_off,
         no_knowledge=args.no_knowledge,
+        mainline_parent=args.mainline_parent,
     )
 
 

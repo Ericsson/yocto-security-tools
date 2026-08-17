@@ -130,47 +130,52 @@ class TestIsAncestorOfHead:
 
 
 class TestTryCherryPick:
+    @patch("cve_corrector.git_ops.run_cmd_capture")
     @patch("cve_corrector.git_ops.run_cmd", return_value=0)
-    def test_success_first_try(self, mock_cmd):
+    def test_success_first_try(self, mock_cmd, mock_capture):
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="abc123 parent\n")
         assert try_cherry_pick(Path("/repo"), "abc123") is True
 
     @patch("cve_corrector.git_ops.run_cmd_capture")
     @patch("cve_corrector.git_ops.run_cmd", return_value=1)
-    def test_fallback_merge_parent(self, mock_cmd, mock_capture):
-        mock_capture.side_effect = [
-            MagicMock(returncode=0),  # cherry-pick --abort
-            MagicMock(returncode=0, stdout="tree abc\nparent 111\nparent 222\n"),  # cat-file -p
-            MagicMock(returncode=0),  # cherry-pick -m 1
-        ]
-        assert try_cherry_pick(Path("/repo"), "abc123") is True
+    def test_merge_requires_explicit_parent(self, mock_cmd, mock_capture):
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="abc123 111 222\n")
+        assert try_cherry_pick(Path("/repo"), "abc123") is False
+        mock_cmd.assert_not_called()
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    @patch("cve_corrector.git_ops.run_cmd", return_value=0)
+    def test_merge_uses_explicit_parent(self, mock_cmd, mock_capture):
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="abc123 111 222\n")
+        assert try_cherry_pick(Path("/repo"), "abc123", mainline_parent=2)
+        mock_cmd.assert_called_once_with(
+            ['git', 'cherry-pick', '-m', '2', 'abc123'], cwd=Path('/repo'))
 
     @patch("cve_corrector.git_ops.run_cmd_capture")
     @patch("cve_corrector.git_ops.run_cmd", return_value=1)
     def test_no_merge_parent_fallback_for_non_merge(self, mock_cmd, mock_capture):
-        mock_capture.side_effect = [
-            MagicMock(returncode=0),  # cherry-pick --abort
-            MagicMock(returncode=0, stdout="tree abc\nparent 111\n"),  # cat-file -p (1 parent)
-        ]
+        mock_capture.return_value = MagicMock(
+            returncode=0, stdout="abc123 111\n")
         assert try_cherry_pick(Path("/repo"), "abc123") is False
 
     @patch("cve_corrector.git_ops.run_cmd_capture")
     @patch("cve_corrector.git_ops.run_cmd", return_value=1)
     def test_merge_parent_fallback_fails(self, mock_cmd, mock_capture):
         mock_capture.side_effect = [
-            MagicMock(returncode=0),  # cherry-pick --abort
-            MagicMock(returncode=0, stdout="tree abc\nparent 111\nparent 222\n"),  # cat-file -p
-            MagicMock(returncode=1),  # cherry-pick -m 1 fails
+            MagicMock(returncode=0, stdout="abc123 111 222\n"),
             MagicMock(returncode=0),  # cherry-pick --abort
         ]
-        assert try_cherry_pick(Path("/repo"), "abc123") is False
+        assert try_cherry_pick(
+            Path("/repo"), "abc123", mainline_parent=1) is False
 
     @patch("cve_corrector.git_ops.run_cmd_capture")
     @patch("cve_corrector.git_ops.run_cmd", return_value=1)
     def test_all_fail(self, mock_cmd, mock_capture):
         mock_capture.side_effect = [
-            MagicMock(returncode=0),  # cherry-pick --abort
-            MagicMock(returncode=0, stdout="tree abc\nparent 111\nparent 222\n"),  # cat-file -p
-            MagicMock(returncode=1),  # cherry-pick -m 1 fails
+            MagicMock(returncode=0, stdout="abc123 111\n"),
             MagicMock(returncode=0),  # cherry-pick --abort
         ]
         assert try_cherry_pick(Path("/repo"), "abc123") is False

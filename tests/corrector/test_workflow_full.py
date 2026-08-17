@@ -306,7 +306,7 @@ class TestApplySingleCommits:
             return h == "changelog06"
 
         # The real fix conflicts; only the changelog commit applies.
-        def fake_pick(_ws, h, subproject=None):
+        def fake_pick(_ws, h, subproject=None, mainline_parent=None):
             return h == "changelog06"
 
         with patch("cve_corrector.cherry_pick._is_metadata_only_commit",
@@ -371,9 +371,11 @@ class TestFindLeastConflictCommit:
     def test_finds_best(self, mock_bad, mock_anc, mock_pick, mock_state,
                         mock_capture, mock_cmd):
         mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="h1 parent\n"),
             MagicMock(returncode=1, stderr=""),  # cherry-pick first (conflicts)
             MagicMock(stdout="a.c\nb.c\n"),  # 2 conflicts for first
             MagicMock(stdout="a.c\nb.c\n"),  # diff-tree for first (source files)
+            MagicMock(returncode=0, stdout="h2 parent\n"),
             MagicMock(returncode=1, stderr=""),  # cherry-pick second (conflicts)
             MagicMock(stdout="a.c\n"),  # 1 conflict for second
             MagicMock(stdout="a.c\n"),  # diff-tree for second (source files)
@@ -393,6 +395,7 @@ class TestFindLeastConflictCommit:
                                           mock_state, mock_capture, mock_cmd):
         """A rejected cherry-pick must not be scored as "0 conflicts"."""
         mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="h1 parent\n"),
             MagicMock(returncode=128, stderr="is a merge but no -m option"),
             MagicMock(stdout=""),  # no unmerged files
         ]
@@ -416,6 +419,7 @@ class TestFindLeastConflictCommit:
         adaptation work, so without this guard it is actively preferred.
         """
         mock_capture.side_effect = [
+            MagicMock(stdout="h2 parent\n"),        # non-merge parent shape
             MagicMock(returncode=1, stderr=""),   # cherry-pick h2 (conflicts)
             MagicMock(stdout="a.c\n"),            # 1 conflict
             MagicMock(stdout="a.c\n"),            # diff-tree: source file

@@ -105,6 +105,9 @@ def main():
                         metavar='SOURCE', dest='skip_sources',
                         help='Ignore fix commits from this source (repeatable). '
                              'Commits also reported by a non-skipped source are kept.')
+    input_group.add_argument(
+        '--mainline-parent', type=int, metavar='N',
+        help='Explicit 1-based direct parent for a selected merge fix commit')
 
     # --- Workflow mode ---
     mode_group = parser.add_argument_group('workflow mode')
@@ -215,6 +218,15 @@ def main():
         sys.exit(EXIT_METADATA_ERROR)
 
     cve_info = cve_data[args.cve_id]
+    metadata_mainline = cve_info.get('mainline_parent')
+    mainline_parent = (args.mainline_parent
+                       if args.mainline_parent is not None
+                       else metadata_mainline)
+    if (mainline_parent is not None
+            and (isinstance(mainline_parent, bool)
+                 or not isinstance(mainline_parent, int)
+                 or mainline_parent < 1)):
+        parser.error('mainline parent must be a positive integer')
     recipe_name = cve_info.get('name') or args.recipe
     if not recipe_name:
         print("Recipe name not found", file=sys.stderr)
@@ -343,7 +355,8 @@ def main():
                 skip_confirm=args.yes,
                 require_all_commits=require_all_commits,
                 sign_off=bool(args.sign_off),
-                premirror=args.premirror))
+                premirror=args.premirror,
+                mainline_parent=mainline_parent))
         state.skip_confirm = args.yes
 
         finish_cve_workflow(state)

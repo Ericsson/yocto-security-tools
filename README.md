@@ -28,6 +28,11 @@ created before [typed repository preflight](docs/agent-preflight.md).
 | **cve-corrector** | Automate backporting CVE fixes to Yocto recipes using devtool |
 | **cve-agent** | Orchestrate CVE backporting with AI-assisted conflict resolution |
 
+Recoverable corrector failures cross a validated, versioned repository-state
+boundary before an AI backend starts. See
+[Corrector-to-agent repository handoff](docs/corrector-agent-handoff.md) for
+the manifest, generated-file policy, and explicit merge-mainline handling.
+
 ## Requirements
 
 - Python 3.9+

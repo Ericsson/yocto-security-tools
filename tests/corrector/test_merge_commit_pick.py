@@ -84,12 +84,18 @@ class TestCherryPickCommand:
         assert cherry_pick_command(repo, plain_sha) == [
             'git', 'cherry-pick', plain_sha]
 
+    def test_explicit_mainline_is_retained(self, merge_repo):
+        repo, merge_sha, _ = merge_repo
+        assert cherry_pick_command(repo, merge_sha, 2) == [
+            'git', 'cherry-pick', '-m', '2', merge_sha]
+
 
 class TestFindLeastConflictWithMerge:
     def test_merge_conflicts_are_counted(self, merge_repo):
         """The merge must be scored by its real conflicts, not as a free win."""
         repo, merge_sha, _ = merge_repo
-        best, conflicts = find_least_conflict_commit(repo, [merge_sha])
+        best, conflicts = find_least_conflict_commit(
+            repo, [merge_sha], mainline_parent=1)
         assert best == merge_sha
         assert conflicts == 1, "expected the conflicting file to be counted"
         # The probe cleans up after itself.
@@ -107,7 +113,7 @@ class TestHandleNoCleanApplyWithMerge:
 
         with pytest.raises(ConflictError):
             _handle_no_clean_apply(repo, [merge_sha], [], lambda *a: None,
-                                   'python3-setuptools')
+                                   'python3-setuptools', mainline_parent=1)
 
         assert has_conflict_state(repo), (
             "the resolver was sent to a workspace with no conflict")
