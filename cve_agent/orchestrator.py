@@ -23,10 +23,16 @@ from . import (
     RECOVERABLE_EXITS,
     UNRECOVERABLE_EXITS,
     AgentConfig,
+    BuildStatus,
     CveResult,
+    FailureClass,
+    ResultOutcome,
     ResultStatus,
+    SecurityStatus,
+    WorkflowStatus,
     get_agent_dir,
 )
+from .artifacts import ArtifactError, RunArtifacts, current_run_artifacts
 from .commit_notes import (
     Violation,
     check_note_budget,
@@ -756,8 +762,8 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     )
 
 
-def process_single_cve(config: AgentConfig,
-                       knowledge_base: Optional[KnowledgeBase]) -> CveResult:
+def _process_single_cve(config: AgentConfig,
+                        knowledge_base: Optional[KnowledgeBase]) -> CveResult:
     """Process a single CVE through the full agent workflow.
 
     Wraps :func:`_run_cve_pipeline` in a re-run loop: when the agent suggests a
@@ -812,6 +818,87 @@ def process_single_cve(config: AgentConfig,
                   f"({len(accepted.fix_urls)} commits, "
                   f"+{len(genuinely_new)} accepted)")
             print(f"{'=' * 60}")
+
+
+def process_single_cve(config: AgentConfig,
+                       knowledge_base: Optional[KnowledgeBase]) -> CveResult:
+    """Run one CVE with a durable audit directory created before preflight."""
+    try:
+        artifacts = RunArtifacts.create(
+            config.cve_id,
+            config.backend,
+            config.backend_profile,
+            config.model,
+        )
+    except ArtifactError as error:
+        return CveResult(
+            config.cve_id,
+            ResultStatus.FAILED,
+            resolution_summary=str(error),
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.HOST_INITIALIZATION,
+                "artifact_initialization_failed",
+                legacy_status=ResultStatus.FAILED.value,
+            ),
+        )
+    print(f"\nArtifacts: {artifacts.path}", flush=True)
+    token = artifacts.activate()
+    try:
+        artifacts.event("preflight_started")
+        result = _process_single_cve(config, knowledge_base)
+        result.artifact_dir = artifacts.path
+        artifacts.atomic_json("preflight.json", {
+            "schema_version": 1,
+            "status": "completed",
+        })
+        assert result.outcome is not None
+        if result.outcome.workflow_status is WorkflowStatus.SKIPPED:
+            artifacts.event("run_skipped")
+        elif result.outcome.workflow_status is not WorkflowStatus.COMPLETED:
+            artifacts.event(
+                "run_failed",
+                failure_class=(result.outcome.failure_class.value
+                               if result.outcome.failure_class else None),
+                failure_code=result.outcome.failure_code,
+            )
+        artifacts.finalize(result)
+        return result
+    except BaseException as error:
+        failure = CveResult(
+            config.cve_id,
+            ResultStatus.FAILED,
+            resolution_summary=f"Unexpected {type(error).__name__}",
+            artifact_dir=artifacts.path,
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.UNKNOWN,
+                "unexpected_exception",
+                legacy_status=ResultStatus.FAILED.value,
+            ),
+        )
+        try:
+            artifacts.atomic_json("preflight.json", {
+                "schema_version": 1,
+                "status": "failed",
+                "error_class": type(error).__name__,
+            })
+            artifacts.event(
+                "preflight_failed",
+                error_class=type(error).__name__,
+                error_code="unexpected_exception",
+            )
+            artifacts.finalize(failure, error)
+        except ArtifactError as artifact_error:
+            raise artifact_error from error
+        raise
+    finally:
+        if current_run_artifacts() is artifacts:
+            RunArtifacts.deactivate(token)
 
 
 def _resolve_cve_data(config: AgentConfig) -> Optional[dict]:
