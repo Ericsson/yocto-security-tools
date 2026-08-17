@@ -7,6 +7,7 @@ Run with: python3 -m cve_agent [options]
 """
 import argparse
 import dataclasses
+import json
 import os
 import signal
 import sys
@@ -23,7 +24,7 @@ from . import (
     EXIT_TRUST_DECLINED,
     AgentConfig,
     CveResult,
-    ResultStatus,
+    WorkflowStatus,
 )
 from .backend import (
     AIBackend,
@@ -38,6 +39,17 @@ from .orchestrator import process_single_cve
 from .setup import ensure_agents
 
 logger = __import__('logging').getLogger(__name__)
+
+
+def _command_succeeded(result: CveResult) -> bool:
+    """Accept completed work or a trusted host decision to skip it."""
+    return (
+        result.outcome is not None
+        and result.outcome.workflow_status in {
+            WorkflowStatus.COMPLETED,
+            WorkflowStatus.SKIPPED,
+        }
+    )
 
 
 def _get_version() -> str:
@@ -90,9 +102,10 @@ def _log_result(config: AgentConfig, result: CveResult,
     build_ws.mkdir(parents=True, exist_ok=True)
     log_file = build_ws / 'cve_agent.log'
 
+    assert result.outcome is not None
     lines = [
         f"[{datetime.now(timezone.utc).isoformat()}] "
-        f"{result.cve_id} | {result.status.value} | "
+        f"{result.cve_id} | {result.outcome.summary_state} | "
         f"{result.duration:.1f}s | retries={result.retries}"
         f"{_credits(result)} | "
         f"{result.resolution_summary}"
@@ -122,6 +135,14 @@ def _log_result(config: AgentConfig, result: CveResult,
     with open(log_file, 'a', encoding='utf-8') as log_fh:
         log_fh.write('\n'.join(lines) + '\n\n')
 
+    result_file = build_ws / f"{result.cve_id}.result.json"
+    temporary = result_file.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(result.to_dict(), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(result_file)
+
 
 # --- Batch Processing ---
 
@@ -138,10 +159,11 @@ def _process_batch(cve_list: list[str], config_template: AgentConfig,
         result = process_single_cve(config, knowledge_base)
         _log_result(config, result)
         results.append(result)
-        print(f"  Result: {result.status.value} — {result.resolution_summary}"
+        assert result.outcome is not None
+        print(f"  Result: {result.outcome.summary_state} — {result.resolution_summary}"
               f"{_credits(result)}")
 
-        if result.status in (ResultStatus.FAILED, ResultStatus.ESCALATED) and not config_template.trust_mode:
+        if not _command_succeeded(result) and not config_template.trust_mode:
             response = input(
                 "Skip and continue to next CVE? [Y/n]: "
             ).strip().lower()
@@ -160,7 +182,9 @@ def _print_batch_summary(results: list[CveResult]) -> None:
 
     counts: dict[str, int] = {}
     for result in results:
-        counts[result.status.value] = counts.get(result.status.value, 0) + 1
+        assert result.outcome is not None
+        state = result.outcome.summary_state
+        counts[state] = counts.get(state, 0) + 1
 
     for status, count in sorted(counts.items()):
         print(f"  {status}: {count}")
@@ -168,7 +192,8 @@ def _print_batch_summary(results: list[CveResult]) -> None:
     print("\nPer-CVE results:")
     for result in results:
         retries_info = f" ({result.retries} retries)" if result.retries else ""
-        print(f"  {result.cve_id}: {result.status.value}{retries_info}"
+        assert result.outcome is not None
+        print(f"  {result.cve_id}: {result.outcome.summary_state}{retries_info}"
               f"{_credits(result)}")
 
     costs = [r.total_credits for r in results if r.total_credits is not None]
@@ -186,18 +211,28 @@ def _save_results(results: list[CveResult]) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     filepath = results_dir / f"backport_agent_results_{timestamp}.txt"
+    json_filepath = results_dir / f"backport_agent_results_{timestamp}.json"
     with open(filepath, 'w', encoding='utf-8') as file:
         file.write(f"CVE Agent Results - {timestamp}\n")
         file.write("=" * 60 + "\n\n")
         for result in results:
+            assert result.outcome is not None
             file.write(
-                f"{result.cve_id}: {result.status.value} "
+                f"{result.cve_id}: {result.outcome.summary_state} "
                 f"(retries={result.retries}, "
                 f"duration={result.duration:.1f}s"
                 f"{_credits(result, ', ')})\n"
                 f"  {result.resolution_summary}\n\n"
             )
+    json_filepath.write_text(
+        json.dumps({
+            "schema_version": 2,
+            "results": [result.to_dict() for result in results],
+        }, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(f"Results saved to: {filepath}")
+    print(f"Machine-readable results saved to: {json_filepath}")
 
 
 # --- Signal Handling ---
@@ -470,16 +505,15 @@ def main() -> None:
             sys.exit(EXIT_AGENT_ERROR)
         config = _config_from_args(args, args.cve_id)
         result = process_single_cve(config, knowledge_base)
-        print(f"\n\u2713 {result.cve_id}: {result.status.value}")
+        assert result.outcome is not None
+        print(f"\n{result.cve_id}: {result.outcome.summary_state}")
         _log_result(config, result)
         if result.resolution_summary:
             print(f"  {result.resolution_summary}")
         if result.total_credits is not None:
             print(f"  credits: {result.total_credits:.2f} "
                   f"{result.credits_unit or 'credits'}")
-        if result.status not in (ResultStatus.SUCCESS,
-                                 ResultStatus.CONFLICT_RESOLVED,
-                                 ResultStatus.SKIPPED):
+        if not _command_succeeded(result):
             sys.exit(EXIT_AGENT_ERROR)
     else:
         cve_list = _read_cve_list(args.cve_list)
@@ -489,7 +523,7 @@ def main() -> None:
         _save_results(results)
         failed = sum(
             1 for r in results
-            if r.status in (ResultStatus.FAILED, ResultStatus.ESCALATED)
+            if not _command_succeeded(r)
         )
         if failed:
             sys.exit(EXIT_AGENT_ERROR)

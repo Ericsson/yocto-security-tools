@@ -536,8 +536,8 @@ def _run_single_resolution_attempt(
         print(f"  {conclusion_reason}")
         run_corrector(config, mark_not_applicable=conclusion_reason)
         return _AttemptOutcome(result=_make_result(
-            config.cve_id, ResultStatus.SKIPPED,
-            attempt, start_time, conclusion_reason
+            config.cve_id, ResultStatus.ESCALATED,
+            attempt, start_time, conclusion_reason, session_result.outcome,
         ))
 
     escalation = _read_escalation(workspace_path)
@@ -669,15 +669,20 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
             session_result.failure_reason or "Analysis session was not verified",
         )
 
-    reason = _read_conclusion(workspace_path)
-    if not reason:
-        reason = "Patch already applied — nothing to backport"
+    conclusion_reason = _read_conclusion(workspace_path)
+    reason = conclusion_reason or "Patch already applied — nothing to backport"
 
     print(f"Conclusion: {reason}")
     run_corrector(config, mark_not_applicable=reason)
 
-    return _make_result(config.cve_id, ResultStatus.SKIPPED, 0, start_time,
-                        reason)
+    return _make_result(
+        config.cve_id,
+        ResultStatus.ESCALATED if conclusion_reason else ResultStatus.SKIPPED,
+        0,
+        start_time,
+        reason,
+        session_result.outcome if conclusion_reason else None,
+    )
 
 
 def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
@@ -706,8 +711,10 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
         print(f"\n--- Agent concluded {config.cve_id} is not applicable ---")
         print(f"Reason: {conclusion_reason}")
         run_corrector(config, mark_not_applicable=conclusion_reason)
-        return _make_result(config.cve_id, ResultStatus.SKIPPED, 0,
-                            start_time, conclusion_reason)
+        return _make_result(
+            config.cve_id, ResultStatus.ESCALATED, 0,
+            start_time, conclusion_reason, session_result.outcome,
+        )
 
     escalation = _read_escalation(workspace_path)
     if escalation:

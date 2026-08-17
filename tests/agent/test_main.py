@@ -15,6 +15,7 @@ from cve_agent import (
     AgentConfig,
     CveResult,
     ResultStatus,
+    WorkflowStatus,
 )
 from cve_agent.__main__ import (
     _config_from_args,
@@ -231,6 +232,19 @@ class TestRunSingleResolutionAttempt:
         with patch("cve_agent.orchestrator.compute_allowed_files",
                    return_value={"a.c"}):
             yield
+
+    @patch("cve_agent.orchestrator._read_conclusion", return_value="code is absent")
+    @patch("cve_agent.orchestrator.run_corrector")
+    @patch("cve_agent.orchestrator.guarded_session",
+           return_value=SessionResult(resolved=True, duration=1.0))
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_model_not_applicable_requires_review(self, *_):
+        outcome = _run_single_resolution_attempt(
+            _cfg(), Path("/ws"), 1, {}, MagicMock(), 1, time.monotonic())
+
+        assert outcome.result.status is ResultStatus.ESCALATED
+        assert outcome.result.outcome.workflow_status is WorkflowStatus.ESCALATED
 
     @patch("cve_agent.orchestrator._read_conclusion", return_value=None)
     @patch("cve_agent.orchestrator._finalize_resolution")

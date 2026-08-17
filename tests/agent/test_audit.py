@@ -98,7 +98,7 @@ class TestLogResult:
         assert log.exists()
         content = log.read_text()
         assert 'CVE-1' in content
-        assert 'success' in content
+        assert 'WORKFLOW_COMPLETED_UNVERIFIED' in content
         assert '2.5s' in content
 
     def test_writes_credits(self, tmp_path):

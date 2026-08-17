@@ -7,6 +7,7 @@ import pytest
 
 from cve_agent import CveResult, ResultStatus
 from cve_agent.__main__ import (
+    _command_succeeded,
     _config_from_args,
     _get_version,
     _parse_args,
@@ -198,6 +199,23 @@ class TestMainSingleCveCostReport:
         out = capsys.readouterr().out
         assert 'credits:' not in out
 
+    def test_trusted_host_skip_exits_zero(self, monkeypatch):
+        result = CveResult('CVE-2025-0001', ResultStatus.SKIPPED)
+        self._run_main(monkeypatch, result)
+
+    def test_model_non_applicable_escalation_exits_nonzero(self, monkeypatch):
+        result = CveResult('CVE-2025-0001', ResultStatus.ESCALATED)
+        with pytest.raises(SystemExit):
+            self._run_main(monkeypatch, result)
+
+
+def test_command_success_distinguishes_host_skip_from_review_required():
+    skipped = CveResult('CVE-1', ResultStatus.SKIPPED)
+    review = CveResult('CVE-2', ResultStatus.ESCALATED)
+
+    assert _command_succeeded(skipped)
+    assert not _command_succeeded(review)
+
 
 class TestReadCveList:
     def test_valid_file(self, tmp_path):
@@ -220,8 +238,8 @@ class TestPrintBatchSummary:
         _print_batch_summary(results)
         out = capsys.readouterr().out
         assert 'Total CVEs processed: 2' in out
-        assert 'success: 1' in out
-        assert 'failed: 1' in out
+        assert 'WORKFLOW_COMPLETED_UNVERIFIED: 1' in out
+        assert 'WORKFLOW_FAILED: 1' in out
 
 
 class TestSaveResults:
@@ -234,7 +252,7 @@ class TestSaveResults:
         assert len(files) == 1
         content = files[0].read_text()
         assert 'CVE-1' in content
-        assert 'success' in content
+        assert 'WORKFLOW_COMPLETED_UNVERIFIED' in content
 
 
 class TestProcessBatch:
@@ -249,3 +267,17 @@ class TestProcessBatch:
         results = _process_batch(['CVE-1', 'CVE-2'], config, kb)
         assert len(results) == 2
         assert mock_process.call_count == 2
+
+    @patch('builtins.input')
+    @patch('cve_agent.__main__.process_single_cve')
+    @patch('cve_agent.__main__._log_result')
+    def test_trusted_host_skip_does_not_prompt(
+            self, mock_log, mock_process, mock_input):
+        from cve_agent import AgentConfig
+        mock_process.return_value = CveResult('CVE-1', ResultStatus.SKIPPED)
+        config = AgentConfig(cve_id='')
+
+        results = _process_batch(['CVE-1'], config, MagicMock())
+
+        assert len(results) == 1
+        mock_input.assert_not_called()

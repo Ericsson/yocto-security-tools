@@ -13,6 +13,11 @@
 
 Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 
+Agent result files separate workflow completion, current build evidence, and
+security validation. A successful agent/build workflow is reported as
+`WORKFLOW_COMPLETED_UNVERIFIED` until a trusted semantic validation phase
+accepts it; see [the versioned result schema](docs/result-schema.md).
+
 ## Tools
 
 | Tool | Purpose |

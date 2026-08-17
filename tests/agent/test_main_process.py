@@ -9,6 +9,7 @@ from cve_agent import (
     AgentConfig,
     CveResult,
     ResultStatus,
+    WorkflowStatus,
 )
 from cve_agent.__main__ import _process_batch
 from cve_agent.knowledge import KnowledgeBase
@@ -241,6 +242,20 @@ class TestProcessSingleCve:
 
 
 class TestHandleCleanApply:
+    @patch("cve_agent.orchestrator.run_corrector")
+    @patch("cve_agent.orchestrator._read_conclusion", return_value="feature is absent")
+    @patch("cve_agent.orchestrator.guarded_session",
+           return_value=SessionResult(resolved=True, duration=1.0))
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_model_not_applicable_requires_review(self, *mocks):
+        result = _handle_clean_apply(
+            _cfg(), Path("/ws"), {}, MagicMock(), time.monotonic())
+
+        assert result.status is ResultStatus.ESCALATED
+        assert result.outcome.workflow_status is WorkflowStatus.ESCALATED
+        mocks[-1].assert_called_once()
+
     @patch("cve_agent.orchestrator.request_approval")
     @patch("cve_agent.orchestrator._read_conclusion")
     @patch("cve_agent.orchestrator.guarded_session",
@@ -324,6 +339,21 @@ class TestHandleCleanApply:
 
 
 class TestHandleNotApplicable:
+    @patch("cve_agent.orchestrator.run_corrector")
+    @patch("cve_agent.orchestrator._read_conclusion", return_value="fix is present")
+    @patch("cve_agent.orchestrator.guarded_session",
+           return_value=SessionResult(resolved=True, duration=1.0))
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_model_conclusion_requires_review(self, *mocks):
+        result = _handle_not_applicable(
+            _cfg(), {}, MagicMock(), time.monotonic(),
+            cve_data={}, workspace_path=Path("/ws"))
+
+        assert result.status is ResultStatus.ESCALATED
+        assert result.outcome.workflow_status is WorkflowStatus.ESCALATED
+        mocks[-1].assert_called_once()
+
     @patch("cve_agent.orchestrator.run_corrector")
     @patch("cve_agent.orchestrator._read_conclusion")
     @patch("cve_agent.orchestrator.guarded_session",
