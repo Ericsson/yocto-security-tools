@@ -9,6 +9,7 @@ length budget (commit-msg hook).
 import difflib
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
@@ -219,10 +220,13 @@ def guarded_session(context_file: Path, workspace_path: Path,
     recipe = workspace_path.name
 
     preflight_deadline = SessionDeadline.from_timeout(timeout)
+    preflight_started = time.monotonic()
     preflight = RepositoryPreflight(
         workspace_path, allowed, preflight_deadline).run()
     if artifact_run is not None:
         try:
+            artifact_run.add_duration(
+                "preflight", max(0.0, time.monotonic() - preflight_started))
             artifact_run.atomic_json("preflight.json", preflight.to_dict())
             artifact_run.event(
                 "preflight_completed" if preflight.ok else "preflight_failed",
@@ -315,8 +319,12 @@ def guarded_session(context_file: Path, workspace_path: Path,
         # Re-capture immediately before handing control to any backend. This
         # also covers CLI backends that cannot enforce a host callback before
         # their first internal tool action.
+        verification_started = time.monotonic()
         verification = RepositoryPreflight(
             workspace_path, allowed, preflight_deadline).run()
+        if artifact_run is not None:
+            artifact_run.add_duration(
+                "preflight", max(0.0, time.monotonic() - verification_started))
         if (not verification.ok
                 or verification.state_fingerprint != preflight.state_fingerprint):
             code = PreflightErrorCode.WORKSPACE_CHANGED_DURING_CAPTURE
@@ -360,6 +368,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
     except BaseException as exc:
         primary_error = (exc, exc.__traceback__)
 
+    cleanup_started = time.monotonic()
     try:
         remove_scope_hook(workspace_path)
     except BaseException as exc:
@@ -381,6 +390,10 @@ def guarded_session(context_file: Path, workspace_path: Path,
                     pre_session_head)
             except BaseException as exc:
                 cleanup_errors.append(exc)
+
+    if artifact_run is not None:
+        artifact_run.add_duration(
+            "cleanup", max(0.0, time.monotonic() - cleanup_started))
 
     if primary_error is not None:
         if artifact_run is not None:

@@ -144,6 +144,7 @@ def _record_semantic_validation(
     *,
     tests_executed: bool,
 ) -> SemanticValidation:
+    started = time.monotonic()
     validation = validate_semantic_result(
         manifest,
         generated,
@@ -153,6 +154,8 @@ def _record_semantic_validation(
     )
     artifacts = current_run_artifacts()
     if artifacts is not None:
+        artifacts.add_duration(
+            "semantic_validation", max(0.0, time.monotonic() - started))
         artifacts.atomic_json("semantic-validation.json", validation.to_dict())
         artifacts.atomic_text(
             "semantic-validation.txt", validation.human_report())

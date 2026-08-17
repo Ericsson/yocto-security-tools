@@ -26,6 +26,7 @@ REQUIRE_SECURITY_STATUS="${REQUIRE_SECURITY_STATUS:-}"
 COMPONENTS=()  # empty = all
 RESULT_SCHEMA_TOOL="${SCRIPT_DIR}/result_schema.py"
 RESULTS_HEADER="cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_files,duration_s,schema_version,workflow_status,build_status,security_status,failure_class,failure_code,legacy_status,summary_state"
+EVALUATION_RUN_MODE="resume-compatible-legacy"
 
 # shellcheck source=test_common.sh
 source "${SCRIPT_DIR}/test_common.sh"
@@ -265,6 +266,7 @@ run_loop() {
 
     cat > "$summary_file" <<EOF
 === CVE Corrector Test Summary ($mode) ===
+Evaluation mode: $EVALUATION_RUN_MODE (not a valid crossover comparison)
 Date:       $(date)
 Branch:     test/<CVE-ID>
 Metadata:   $CVE_METADATA

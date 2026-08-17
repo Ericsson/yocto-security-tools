@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -74,16 +75,24 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
             cmd += ['--mainline-parent', str(config.mainline_parent)]
 
     output_lines = []
-    with subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        encoding=TEXT_ENCODING, errors=TEXT_ERRORS
-    ) as process:
-        if process.stdout:
-            for line in process.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                output_lines.append(line)
-        process.wait()
+    started = time.monotonic()
+    try:
+        with subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            encoding=TEXT_ENCODING, errors=TEXT_ERRORS
+        ) as process:
+            if process.stdout:
+                for line in process.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    output_lines.append(line)
+            process.wait()
+    finally:
+        from .artifacts import current_run_artifacts
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.add_duration(
+                "corrector", max(0.0, time.monotonic() - started))
     return process.returncode, ''.join(output_lines)
 
 
