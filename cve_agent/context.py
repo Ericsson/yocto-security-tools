@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from .knowledge import KnowledgeBase
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
+from shared.handoff import HandoffError
 
 from . import (
     EXIT_BUILD_ERROR,
@@ -32,6 +33,7 @@ from .git import (
     run_capture,
     run_git_stdout,
 )
+from .handoff import validate_repository_handoff
 from .interdiff import generate_interdiff
 
 # Per-phase workflow fragments embedded into context.md by exit code. The
@@ -134,11 +136,18 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     all_shas = get_all_upstream_shas(cve_info, workspace_path)
 
-    # The allowed file list is computed by the same helper the session's scope
-    # guard uses, so context.md can never advertise a different scope than the
-    # pre-commit hook enforces. It is merge-commit aware: `git show` prints no
-    # diff (and no file list) for a merge, which used to yield an empty list.
-    allowed_files = compute_allowed_files(cve_info, workspace_path)
+    # A validated corrector handoff is authoritative when present. Context
+    # rendering never widens that host-established scope.
+    try:
+        handoff = validate_repository_handoff(
+            workspace_path, cve_id, required=False)
+    except HandoffError:
+        handoff = None  # Session startup returns the precise trusted failure.
+    allowed_files = (
+        set(handoff.allowed_paths)
+        if handoff is not None
+        else compute_allowed_files(cve_info, workspace_path)
+    )
 
     allowed_list = '\n'.join(sorted(allowed_files))
 

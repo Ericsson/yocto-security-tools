@@ -70,6 +70,8 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
             cmd += ['--skip-source', source]
         if config.sign_off:
             cmd.append('--sign-off')
+        if config.mainline_parent is not None:
+            cmd += ['--mainline-parent', str(config.mainline_parent)]
 
     output_lines = []
     with subprocess.Popen(

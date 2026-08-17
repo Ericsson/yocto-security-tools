@@ -222,7 +222,8 @@ def is_merge_commit(workspace_path: Path, commit_hash: str) -> bool:
     return len(result.stdout.split()) > 2
 
 
-def cherry_pick_command(workspace_path: Path, commit_hash: str) -> list[str]:
+def cherry_pick_command(workspace_path: Path, commit_hash: str,
+                        mainline_parent: Optional[int] = None) -> list[str]:
     """Build the ``git cherry-pick`` command for a commit.
 
     A merge commit can never be cherry-picked without ``-m``: git refuses with
@@ -238,8 +239,12 @@ def cherry_pick_command(workspace_path: Path, commit_hash: str) -> list[str]:
         commit_hash: Commit to cherry-pick.
 
     Returns:
-        Full argv for the cherry-pick, with ``-m 1`` added for merge commits.
+        Full argv for the cherry-pick. An explicit mainline parent is retained;
+        otherwise ``-m 1`` is added for merge commits for compatibility with
+        callers that have already selected the conventional first parent.
     """
+    if mainline_parent is not None:
+        return ['git', 'cherry-pick', '-m', str(mainline_parent), commit_hash]
     if is_merge_commit(workspace_path, commit_hash):
         return ['git', 'cherry-pick', '-m', '1', commit_hash]
     return ['git', 'cherry-pick', commit_hash]
@@ -270,31 +275,43 @@ def has_conflict_state(workspace_path: Path) -> bool:
 
 
 def try_cherry_pick(workspace_path: Path, commit_hash: str,
-                    subproject: Optional[str] = None) -> bool:
+                    subproject: Optional[str] = None,
+                    mainline_parent: Optional[int] = None) -> bool:
     """Try to cherry-pick a commit, return True on success.
 
     When *subproject* is set, strips the subproject prefix from the patch
     so monorepo commits apply to a standalone source layout.
     """
+    parents = run_cmd_capture(
+        ['git', 'rev-list', '--parents', '-n', '1', commit_hash],
+        cwd=workspace_path)
+    if parents.returncode != 0 or not parents.stdout.strip():
+        return False
+    parent_count = max(0, len(parents.stdout.split()) - 1)
+    if parent_count > 1:
+        if mainline_parent is None or not 1 <= mainline_parent <= parent_count:
+            logger.error(
+                "Merge commit %s requires an explicit direct mainline parent",
+                commit_hash[:12])
+            return False
+    elif mainline_parent is not None:
+        logger.error("--mainline-parent is only valid for a merge commit")
+        return False
+
     if subproject:
+        if parent_count > 1:
+            logger.error("Merge mainline is not supported for subproject patch extraction")
+            return False
         return _cherry_pick_monorepo(workspace_path, commit_hash, subproject)
 
-    ret = run_cmd(['git', 'cherry-pick', commit_hash], cwd=workspace_path)
+    command = ['git', 'cherry-pick']
+    if mainline_parent is not None:
+        command += ['-m', str(mainline_parent)]
+    command.append(commit_hash)
+    ret = run_cmd(command, cwd=workspace_path)
     if ret == 0:
         return True
     run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
-
-    # Only try -m 1 if this is a merge commit (has more than one parent)
-    parents = run_cmd_capture(
-        ['git', 'cat-file', '-p', commit_hash], cwd=workspace_path)
-    parent_count = sum(1 for line in parents.stdout.splitlines()
-                       if line.startswith('parent '))
-    if parent_count > 1:
-        result = run_cmd_capture(
-            ['git', 'cherry-pick', '-m', '1', commit_hash], cwd=workspace_path)
-        if result.returncode == 0:
-            return True
-        run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
 
     return False
 

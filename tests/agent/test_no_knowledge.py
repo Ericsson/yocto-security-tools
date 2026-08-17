@@ -121,10 +121,25 @@ class TestNoKnowledgeCliWiring:
     def test_main_does_not_construct_kb_when_no_knowledge(
             self, mock_kb_cls, mock_validate, mock_process, mock_log,
             monkeypatch):
-        from cve_agent import CveResult, ResultStatus
+        from cve_agent import (
+            BuildStatus,
+            CveResult,
+            ResultOutcome,
+            ResultStatus,
+            SecurityStatus,
+            WorkflowStatus,
+        )
         from cve_agent.__main__ import main
 
-        mock_process.return_value = CveResult("CVE-1", ResultStatus.SUCCESS)
+        mock_process.return_value = CveResult(
+            "CVE-1",
+            ResultStatus.SUCCESS,
+            outcome=ResultOutcome(
+                WorkflowStatus.COMPLETED,
+                BuildStatus.PASSED,
+                SecurityStatus.EQUIVALENT,
+            ),
+        )
         monkeypatch.setattr('sys.argv', [
             'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json',
             '--no-knowledge', '--trust'])

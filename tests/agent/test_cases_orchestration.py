@@ -48,7 +48,8 @@ def _write_cve_json(tmp_path, cve_id, recipe, hashes, series=False):
 
 def _resolve_conflict_side_effect(context_file, workspace_path, upstream_sha,
                                    cve_info, model, timeout, cve_id,
-                                   interactive=False, backend_name="kiro"):
+                                   interactive=False, backend_name="kiro",
+                                   require_handoff=False):
     """Side effect that resolves cherry-pick conflicts."""
     if workspace_path.exists():
         git(workspace_path, 'checkout', '--theirs', '.', check=False)

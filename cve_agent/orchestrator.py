@@ -4,6 +4,7 @@
 import dataclasses
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -50,6 +51,7 @@ from .session import guarded_session
 # agent-suggested, human/trust-accepted commit appended to the chain. Prevents
 # a misbehaving session from suggesting an endless stream of commits.
 _MAX_CHAIN_EXTENSIONS = 3
+_HANDOFF_CODE_RE = re.compile(r"\b(HANDOFF_[A-Z0-9_]{1,96})\b")
 
 # Safety cap on how many times a single CVE run may be bounced back to the AI
 # purely to shorten over-budget ``Conflicts Resolved:`` notes. Past this, the
@@ -522,13 +524,14 @@ def _run_single_resolution_attempt(
     session_result = guarded_session(
         context_file, workspace_path, upstream_sha, cve_info, config.model,
         config.session_timeout, config.cve_id, config.interactive,
-        backend_name=config.backend)
+        backend_name=config.backend, require_handoff=True)
 
     if not session_result.resolved:
         print(f"{config.backend} session did not resolve conflicts for {config.cve_id}")
         if (session_result.outcome is not None
                 and session_result.outcome.failure_class
-                is FailureClass.HOST_INITIALIZATION):
+                in {FailureClass.HOST_INITIALIZATION,
+                    FailureClass.CORRECTOR_HANDOFF}):
             return _AttemptOutcome(result=_make_result(
                 config.cve_id,
                 ResultStatus.FAILED,
@@ -1006,7 +1009,21 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBas
     print(f"cve-corrector exited with code {exit_code}")
 
     if exit_code in UNRECOVERABLE_EXITS:
-        if exit_code == EXIT_ALREADY_APPLIED or '--allow-empty' in corrector_output:
+        handoff_match = _HANDOFF_CODE_RE.search(corrector_output[:64 * 1024])
+        if handoff_match:
+            code = handoff_match.group(1)
+            result = _make_result(
+                config.cve_id, ResultStatus.FAILED, 0, start_time,
+                f"Corrector handoff failed: {code}",
+                ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.CORRECTOR_HANDOFF,
+                    code,
+                ),
+            )
+        elif exit_code == EXIT_ALREADY_APPLIED or '--allow-empty' in corrector_output:
             result = _handle_not_applicable(
                 config, cve_info, knowledge_base, start_time,
                 cve_data=cve_data

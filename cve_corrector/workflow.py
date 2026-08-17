@@ -263,10 +263,21 @@ def _run_build_step(state: WorkflowState) -> None:
         return
     logger.info("Building %s", state.recipe)
     _clean_and_reset_sstate(state.workspace_path, state.recipe)
+    before_build = _capture_tracked_paths(state.workspace_path)
     if run_cmd(['devtool', 'build', state.recipe]) != 0:
+        after_build = _capture_tracked_paths(state.workspace_path)
+        state.known_generated_paths = sorted(after_build - before_build)
         save_progress(state, 'build_after_patch')
         print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Build failed for {state.recipe}")
+
+
+def _capture_tracked_paths(workspace_path: Path) -> set[str]:
+    """Capture tracked dirt only for a real repository (unit-test friendly)."""
+    if not (workspace_path / '.git').exists():
+        return set()
+    from shared.handoff import capture_handoff_state
+    return set(capture_handoff_state(workspace_path).tracked_paths)
 
 
 def _log_ptest_debug_conf() -> None:
@@ -472,7 +483,8 @@ def finish_cve_workflow(state: WorkflowState) -> None:
 def continue_from_conflict() -> WorkflowState:
     """Continue CVE correction after manual conflict resolution."""
     state_dir = get_state_dir()
-    state_files = list(state_dir.glob('*.json'))
+    state_files = [path for path in state_dir.glob('*.json')
+                   if not path.name.endswith('.handoff.json')]
     if not state_files:
         logger.error("No saved state found. Run without --continue first.")
         raise MetadataError("Metadata error")
@@ -532,7 +544,8 @@ def continue_from_conflict() -> WorkflowState:
             logger.info("[%d/%d] Cherry-picking %s...",
                         idx, len(remaining_commits), commit_hash[:8])
             if not try_cherry_pick(state.workspace_path, commit_hash,
-                                   subproject=state.subproject):
+                                   subproject=state.subproject,
+                                   mainline_parent=state.mainline_parent):
                 logger.error("Failed at commit %s", commit_hash[:8])
                 state.series_state['remaining_commits'] = remaining_commits[idx:]
                 save_workflow_state(state)
@@ -574,6 +587,7 @@ class WorkflowConfig:
     require_all_commits: bool = False
     sign_off: bool = False
     premirror: Optional[str] = None
+    mainline_parent: Optional[int] = None
 
 
 def _handle_failed_series(workspace_path, best_series, make_state, recipe):
@@ -587,7 +601,7 @@ def _handle_failed_series(workspace_path, best_series, make_state, recipe):
 
 
 def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
-                           require_all_commits=False):
+                           require_all_commits=False, mainline_parent=None):
     """Handle case where no commit applied cleanly.
 
     Raises:
@@ -606,11 +620,16 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
                      "resolve the conflict and resume with 'cve-corrector --continue'")
         raise ConflictError("Conflict detected")
     if hashes:
-        best_hash, conflicts = find_least_conflict_commit(workspace_path, hashes)
+        best_hash, conflicts = find_least_conflict_commit(
+            workspace_path, hashes, mainline_parent=mainline_parent)
         if best_hash and conflicts < float('inf'):
             logger.info("Applying commit %s with %s conflict(s)...",
                         best_hash[:8], conflicts)
-            run_cmd(cherry_pick_command(workspace_path, best_hash), cwd=workspace_path)
+            command = (cherry_pick_command(workspace_path, best_hash)
+                       if mainline_parent is None else
+                       cherry_pick_command(
+                           workspace_path, best_hash, mainline_parent))
+            run_cmd(command, cwd=workspace_path)
             # Only report a conflict when one actually exists. A cherry-pick
             # that git rejects before starting leaves a pristine workspace, and
             # claiming "conflict" there makes every resolver (human or AI) hunt
@@ -822,7 +841,8 @@ def initialize_cve_workflow(
             skip_build=config.skip_build, skip_ptest=config.skip_ptest,
             ptest_before=ptest_before, series_state=series_state,
             subproject=subproject, bbappend=config.bbappend,
-            version=version, sign_off=config.sign_off)
+            version=version, sign_off=config.sign_off,
+            mainline_parent=config.mainline_parent)
 
     if config.manual_mode:
         state = make_state(hashes[0] if hashes else '')
@@ -854,12 +874,14 @@ def initialize_cve_workflow(
     # commits individually — one commit alone is a partial fix.
     if not success and hashes and not config.require_all_commits:
         success, successful_hash = apply_single_commits(
-            workspace_path, hashes, subproject=subproject)
+            workspace_path, hashes, subproject=subproject,
+            mainline_parent=config.mainline_parent)
 
     if not success:
         _handle_no_clean_apply(
             workspace_path, hashes, series, make_state, recipe,
-            require_all_commits=config.require_all_commits)
+            require_all_commits=config.require_all_commits,
+            mainline_parent=config.mainline_parent)
 
     if config.edit_mode:
         save_workflow_state(make_state(successful_hash))

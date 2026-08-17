@@ -4,7 +4,7 @@
 import contextlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +66,10 @@ class GitError(WorkflowError):
     exit_code = EXIT_GIT_ERROR
 
 
+class CorrectorHandoffError(GitError):
+    """Trusted repository handoff invariants could not be established."""
+
+
 class DevtoolError(WorkflowError):
     """Devtool operation error."""
     exit_code = EXIT_DEVTOOL_ERROR
@@ -116,6 +120,8 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
     bbappend: bool = False
     version: Optional[str] = None
     sign_off: bool = False
+    mainline_parent: Optional[int] = None
+    known_generated_paths: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -136,7 +142,9 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             'subproject': self.subproject,
             'bbappend': self.bbappend,
             'version': self.version,
-            'sign_off': self.sign_off
+            'sign_off': self.sign_off,
+            'mainline_parent': self.mainline_parent,
+            'known_generated_paths': self.known_generated_paths,
         }
 
     @classmethod
@@ -159,7 +167,9 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             subproject=data.get('subproject'),
             bbappend=data.get('bbappend', False),
             version=data.get('version'),
-            sign_off=data.get('sign_off', False)
+            sign_off=data.get('sign_off', False),
+            mainline_parent=data.get('mainline_parent'),
+            known_generated_paths=data.get('known_generated_paths', []),
         )
 
 
@@ -197,6 +207,14 @@ def save_workflow_state(state: WorkflowState) -> None:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(state.to_dict(), f, indent=2)
         os.replace(tmp_path, state_file)
+        if (state.workspace_path / '.git').exists():
+            from shared.handoff import HandoffError
+
+            from .handoff import emit_handoff
+            try:
+                emit_handoff(state, state_dir)
+            except HandoffError as error:
+                raise CorrectorHandoffError(str(error)) from error
     except Exception:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)

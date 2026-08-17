@@ -77,7 +77,8 @@ class TestNoopSessionSkipsApproval:
 
         def _session_side_effect(context_file, workspace_path, upstream_sha,
                                  cve_info, model, timeout, cve_id,
-                                 interactive=False, backend_name="kiro"):
+                                 interactive=False, backend_name="kiro",
+                                 require_handoff=False):
             """First call: do nothing (no-op). Second call: amend commit."""
             session_call_count[0] += 1
             if session_call_count[0] == 1:
@@ -159,7 +160,8 @@ class TestNoopSessionSkipsApproval:
 
         def _session_fix(context_file, workspace_path, upstream_sha,
                          cve_info, model, timeout, cve_id,
-                         interactive=False, backend_name="kiro"):
+                         interactive=False, backend_name="kiro",
+                         require_handoff=False):
             (workspace_path / 'src' / 'tree.c').write_text(
                 '#include <stdint.h>\nsize_t lenn, lenp;\n')
             git(workspace_path, 'add', '-A', check=False)
@@ -231,7 +233,8 @@ class TestNoopSessionSkipsApproval:
 
         def _session_side_effect(context_file, workspace_path, upstream_sha,
                                  cve_info, model, timeout, cve_id,
-                                 interactive=False, backend_name="kiro"):
+                                 interactive=False, backend_name="kiro",
+                                 require_handoff=False):
             session_call_count[0] += 1
             if session_call_count[0] <= 2:
                 # Both first and second attempts: make a change that doesn't
@@ -309,7 +312,8 @@ class TestNoopSessionSkipsApproval:
 
         def _session_side_effect(context_file, workspace_path, upstream_sha,
                                  cve_info, model, timeout, cve_id,
-                                 interactive=False, backend_name="kiro"):
+                                 interactive=False, backend_name="kiro",
+                                 require_handoff=False):
             call_count[0] += 1
             if call_count[0] == 1:
                 return SessionResult(resolved=True, duration=1.0)
@@ -382,7 +386,8 @@ class TestNoopSessionSkipsApproval:
 
         def _session_resolve(context_file, workspace_path, upstream_sha,
                              cve_info, model, timeout, cve_id,
-                             interactive=False, backend_name="kiro"):
+                             interactive=False, backend_name="kiro",
+                             require_handoff=False):
             """Session resolves conflict by taking theirs."""
             git(workspace_path, 'checkout', '--theirs', '.', check=False)
             git(workspace_path, 'add', '-A', check=False)
