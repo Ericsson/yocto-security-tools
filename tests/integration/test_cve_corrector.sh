@@ -22,7 +22,10 @@ TEST_TIMEOUT=3600  # 60 minutes per CVE
 MIN_YEAR="${MIN_YEAR:-2024}"  # Skip CVEs older than this year
 SKIP_MIRRORS=false
 FULL_ONLY=false
+REQUIRE_SECURITY_STATUS="${REQUIRE_SECURITY_STATUS:-}"
 COMPONENTS=()  # empty = all
+RESULT_SCHEMA_TOOL="${SCRIPT_DIR}/result_schema.py"
+RESULTS_HEADER="cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_files,duration_s,schema_version,workflow_status,build_status,security_status,failure_class,failure_code,legacy_status,summary_state"
 
 # shellcheck source=test_common.sh
 source "${SCRIPT_DIR}/test_common.sh"
@@ -113,7 +116,10 @@ run_loop() {
     if [[ -n "$RESUME_DIR" ]]; then
         local prev_file="${RESUME_DIR}/results_${mode}.csv"
         if [[ -f "$prev_file" ]]; then
-            prev_results=$(awk -F, 'NR>1{print $1}' "$prev_file" | sort)
+            python3 "$RESULT_SCHEMA_TOOL" migrate "$prev_file" "$mode"
+            local -a resume_args=(resumable "$prev_file" "$mode")
+            [[ -n "$REQUIRE_SECURITY_STATUS" ]] && resume_args+=(--required "$REQUIRE_SECURITY_STATUS")
+            prev_results=$(python3 "$RESULT_SCHEMA_TOOL" "${resume_args[@]}" | sort)
             local prev_count
             prev_count=$(echo "$prev_results" | wc -l)
             log "Resuming: importing $prev_count results from $prev_file"
@@ -137,10 +143,10 @@ run_loop() {
             done < <(tail -n +2 "$prev_file")
         else
             log "No previous results for mode $mode, starting fresh"
-            echo "cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_files,duration_s" > "$results_file"
+            echo "$RESULTS_HEADER" > "$results_file"
         fi
     else
-        echo "cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_files,duration_s" > "$results_file"
+        echo "$RESULTS_HEADER" > "$results_file"
     fi
 
     local current=0
@@ -152,7 +158,9 @@ run_loop() {
         if [[ -n "$failed_recipes" ]] && echo "$failed_recipes" | grep -qx "$recipe"; then
             echo "SKIP (fetch failed)"
             skip=$((skip + 1))
-            echo "$cve_id,$recipe,SKIP_FETCH,,-,-,-,0" >> "$results_file"
+            local skip_fields
+            skip_fields=$(python3 "$RESULT_SCHEMA_TOOL" fields SKIP_FETCH)
+            echo "$cve_id,$recipe,SKIP_FETCH,,-,-,-,0,$skip_fields" >> "$results_file"
             continue
         fi
 
@@ -236,7 +244,14 @@ run_loop() {
                 echo "✗ $exit_name (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
         esac
 
-        echo "$cve_id,$recipe,$status,$exit_name,$diff_changes,$diff_patches,$diff_files,$duration" >> "$results_file"
+        local -a schema_args=(fields "$status")
+        if [[ "$mode" == "full" && "$exit_code" -eq 0 ]]; then
+            schema_args+=(--build-evidence)
+        fi
+        [[ "$status" == FAIL* ]] && schema_args+=(--failure-code "$exit_name")
+        local schema_fields
+        schema_fields=$(python3 "$RESULT_SCHEMA_TOOL" "${schema_args[@]}")
+        echo "$cve_id,$recipe,$status,$exit_name,$diff_changes,$diff_patches,$diff_files,$duration,$schema_fields" >> "$results_file"
         (( current % 10 == 0 )) && log "  Progress: $current/$total | ✓$success (${identical} identical) ✗$fail ⊘$skip"
     done <<< "$cve_list"
 
@@ -355,6 +370,15 @@ main() {
                     COMPONENTS+=("$1"); shift
                 done
                 continue
+                ;;
+            --require-security-status)
+                shift
+                [[ $# -gt 0 ]] || die "--require-security-status requires a value"
+                case "$1" in
+                    verified|equivalent|plausible_needs_review|divergent|rejected|not_evaluated) ;;
+                    *) die "invalid --require-security-status: $1" ;;
+                esac
+                REQUIRE_SECURITY_STATUS="$1"
                 ;;
             *) die "Unknown option: $1" ;;
         esac

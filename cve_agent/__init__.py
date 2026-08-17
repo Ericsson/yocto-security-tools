@@ -33,6 +33,16 @@ from shared.exit_codes import (
 )
 from shared.paths import data_dir
 
+from .result import (
+    BuildStatus,
+    FailureClass,
+    ResultOutcome,
+    SecurityStatus,
+    WorkflowStatus,
+    migrate_legacy_status,
+    outcome_for_host_skip,
+)
+
 # Exit codes that trigger the resolution loop (agent can attempt to fix)
 RECOVERABLE_EXITS = {EXIT_CONFLICT, EXIT_PTEST_ERROR, EXIT_BUILD_ERROR}
 
@@ -145,6 +155,40 @@ class CveResult:
     # backend reported no cost (e.g. claude, or an interrupted kiro session).
     total_credits: Optional[float] = None
     credits_unit: Optional[str] = None
+    outcome: Optional[ResultOutcome] = None
+    failure_class: Optional[FailureClass] = None
+    failure_code: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.outcome is None:
+            if self.status in {ResultStatus.SUCCESS, ResultStatus.CONFLICT_RESOLVED}:
+                self.outcome = migrate_legacy_status(
+                    self.status.value, build_evidence=True)
+            elif self.status is ResultStatus.SKIPPED:
+                self.outcome = outcome_for_host_skip()
+            else:
+                self.outcome = migrate_legacy_status(
+                    self.status.value, failure_code=self.failure_code)
+        if self.failure_class is None:
+            self.failure_class = self.outcome.failure_class
+        if self.failure_code is None:
+            self.failure_code = self.outcome.failure_code
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the authoritative outcome plus compatibility metadata."""
+        assert self.outcome is not None
+        value = self.outcome.to_dict()
+        value.update({
+            "cve_id": self.cve_id,
+            "retries": self.retries,
+            "duration": self.duration,
+            "resolution_summary": self.resolution_summary,
+            "total_credits": self.total_credits,
+            "credits_unit": self.credits_unit,
+            # Compatibility only.  Do not use this field for release gates.
+            "legacy_status": self.status.value,
+        })
+        return value
 
 
 def get_build_dir(workspace_path: Path) -> Path:
@@ -182,7 +226,8 @@ def get_agent_dir(workspace_path: Path) -> Path:
 
 
 __all__ = [
-    'AgentConfig', 'CveResult', 'ResultStatus',
+    'AgentConfig', 'CveResult', 'ResultStatus', 'ResultOutcome',
+    'WorkflowStatus', 'BuildStatus', 'SecurityStatus', 'FailureClass',
     'RECOVERABLE_EXITS', 'UNRECOVERABLE_EXITS',
     'DEFAULT_KNOWLEDGE_PATH', 'DEFAULT_MAX_RETRIES', 'DEFAULT_SESSION_TIMEOUT',
     'CORRECTOR_CMD', 'AGENT_INSTRUCTIONS', 'resolve_agent_instructions',

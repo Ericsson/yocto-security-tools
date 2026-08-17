@@ -404,6 +404,7 @@ class OpenAIAgentLoop:
             duration=duration,
             transcript_path=self.transcript.path,
             failure_reason="" if resolved else reason,
+            outcome=(self.runtime.session_result().outcome if resolved else None),
         )
 
     def _run_turns(self) -> tuple[bool, str]:

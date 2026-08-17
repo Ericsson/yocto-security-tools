@@ -371,6 +371,6 @@ def test_valid_cli_configuration_proceeds_to_processing(monkeypatch, capsys):
     monkeypatch.setattr("cve_agent.__main__.process_single_cve", process_cve)
     main()
     captured = capsys.readouterr()
-    assert "CVE-2025-0001: success" in captured.out
+    assert "CVE-2025-0001: WORKFLOW_COMPLETED_UNVERIFIED" in captured.out
     assert captured.err == ""
     assert called is True

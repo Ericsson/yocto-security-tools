@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .result import ResultOutcome
+
 
 class BackendConfigurationError(ValueError):
     """Invalid backend configuration supplied by the operator."""
@@ -64,6 +66,7 @@ class SessionResult:
     failure_reason: str = ""
     credits: Optional[float] = None
     credits_unit: Optional[str] = None
+    outcome: Optional[ResultOutcome] = None
 
 
 class AIBackend:

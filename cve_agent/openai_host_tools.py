@@ -39,6 +39,7 @@ from .openai_tools import (
     ToolValidationError,
     _ExecutionResult,
 )
+from .result import outcome_for_finish
 
 DEVTOOL_EXECUTABLE = "devtool"
 BUILD_LOG_NAME = "openai-build.log"
@@ -601,6 +602,8 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         return SessionResult(
             resolved=self._terminal_status is not None,
             duration=duration,
+            outcome=(outcome_for_finish(self._terminal_status)
+                     if self._terminal_status is not None else None),
         )
 
     def _check_runtime_available(self, tool: str, arguments: object) -> None:
