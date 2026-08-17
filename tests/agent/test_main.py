@@ -13,8 +13,10 @@ from cve_agent import (
     EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
     AgentConfig,
+    BuildStatus,
     CveResult,
     ResultStatus,
+    SecurityStatus,
     WorkflowStatus,
 )
 from cve_agent.__main__ import (
@@ -26,6 +28,7 @@ from cve_agent.__main__ import (
     _show_trust_warning,
     _sigint_handler,
 )
+from cve_agent.artifacts import RunArtifacts
 from cve_agent.corrector import get_workspace_path as _get_workspace_path
 from cve_agent.corrector import load_cve_metadata as _load_cve_metadata
 from cve_agent.corrector import run_corrector as _run_corrector
@@ -42,6 +45,7 @@ from cve_agent.orchestrator import (
     _AttemptOutcome,
     _finalize_resolution,
     _make_result,
+    _record_semantic_validation,
     _resolution_loop,
     _run_single_resolution_attempt,
     process_single_cve,
@@ -218,6 +222,45 @@ class TestFinalizeResolution:
         outcome = _finalize_resolution(_cfg(), MagicMock(), Path("/ws"), "abc", 1, time.monotonic())
         assert outcome.result is None
         assert outcome.next_step == 1
+
+
+class TestSemanticArtifacts:
+    @patch("cve_agent.orchestrator.validate_semantic_result")
+    def test_validation_is_persisted_with_transcript_event(
+            self, validate, tmp_path):
+        semantic = MagicMock()
+        semantic.status = SecurityStatus.EQUIVALENT
+        semantic.reason_code = "exact_patch"
+        semantic.exact_match = True
+        semantic.normalized_match = True
+        semantic.to_dict.return_value = {
+            "schema_version": 1,
+            "status": "equivalent",
+            "reason_code": "exact_patch",
+        }
+        semantic.human_report.return_value = (
+            "Semantic security status: equivalent\n")
+        validate.return_value = semantic
+        run = RunArtifacts.create(
+            "CVE-1", "openai", None, "model", root=tmp_path)
+        token = run.activate()
+        try:
+            result = _record_semantic_validation(
+                None, None, BuildStatus.PASSED, tests_executed=True)
+        finally:
+            run.deactivate(token)
+        run.finalize({"status": "complete"})
+
+        assert result is semantic
+        assert json.loads(
+            (run.path / "semantic-validation.json").read_text())[
+                "status"] == "equivalent"
+        events = [json.loads(line) for line in (
+            run.path / "agent-transcript.jsonl").read_text().splitlines()]
+        assert any(
+            event["event"] == "semantic_validation_completed"
+            and event["security_status"] == "equivalent"
+            for event in events)
 
 
 class TestRunSingleResolutionAttempt:

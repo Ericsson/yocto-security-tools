@@ -45,6 +45,16 @@ from .corrector import get_workspace_path, load_cve_metadata, run_corrector
 from .git import compute_allowed_files, get_changed_files, get_upstream_sha, run_git_stdout
 from .knowledge import KnowledgeBase, gather_pattern_details, save_knowledge_pattern
 from .review import build_change_summary, request_approval
+from .semantic_validation import (
+    TRUSTED_REPRODUCERS,
+    GeneratedSnapshot,
+    ReferenceManifest,
+    SemanticValidation,
+    SemanticValidationError,
+    build_reference_manifest,
+    capture_generated_snapshot,
+    validate_semantic_result,
+)
 from .session import guarded_session
 
 # Safety cap on how many times a single CVE run may be re-launched with an
@@ -84,6 +94,92 @@ class _Escalation:
     """
     reason: str
     suggested_commits: list[str] = dataclasses.field(default_factory=list)
+
+
+def _prepare_semantic_reference(
+    workspace_path: Path, cve_id: str, cve_info: dict,
+) -> ReferenceManifest | None:
+    """Create the trusted reference artifact before provider execution."""
+    artifacts = current_run_artifacts()
+    try:
+        manifest = build_reference_manifest(workspace_path, cve_id, cve_info)
+    except SemanticValidationError as error:
+        if artifacts is not None:
+            artifacts.atomic_json("reference-manifest.json", {
+                "schema_version": 1,
+                "status": "unavailable",
+                "reason": str(error)[:512],
+            })
+            artifacts.event(
+                "semantic_reference_failed",
+                reason_code="reference_manifest_unavailable")
+        return None
+    if artifacts is not None:
+        artifacts.atomic_json("reference-manifest.json", manifest.to_dict())
+        artifacts.event(
+            "semantic_reference_created",
+            changed_path_count=len(manifest.changed_paths),
+            runtime_path_count=len(manifest.runtime_paths),
+            test_path_count=len(manifest.test_paths),
+            prerequisite_count=len(manifest.prerequisite_commits),
+        )
+    return manifest
+
+
+def _capture_semantic_candidate(
+    workspace_path: Path, manifest: ReferenceManifest | None,
+) -> GeneratedSnapshot | None:
+    if manifest is None:
+        return None
+    try:
+        return capture_generated_snapshot(workspace_path, manifest)
+    except SemanticValidationError:
+        return None
+
+
+def _record_semantic_validation(
+    manifest: ReferenceManifest | None,
+    generated: GeneratedSnapshot | None,
+    build_status: BuildStatus,
+    *,
+    tests_executed: bool,
+) -> SemanticValidation:
+    validation = validate_semantic_result(
+        manifest,
+        generated,
+        build_status,
+        tests_executed=tests_executed,
+        reproducers=TRUSTED_REPRODUCERS,
+    )
+    artifacts = current_run_artifacts()
+    if artifacts is not None:
+        artifacts.atomic_json("semantic-validation.json", validation.to_dict())
+        artifacts.atomic_text(
+            "semantic-validation.txt", validation.human_report())
+        artifacts.event(
+            "semantic_validation_completed",
+            security_status=validation.status.value,
+            reason_code=validation.reason_code,
+            exact_match=validation.exact_match,
+            normalized_match=validation.normalized_match,
+        )
+    return validation
+
+
+def _completed_semantic_outcome(validation: SemanticValidation) -> ResultOutcome:
+    rejected = validation.status in {
+        SecurityStatus.DIVERGENT,
+        SecurityStatus.REJECTED,
+        SecurityStatus.NOT_EVALUATED,
+        SecurityStatus.PLAUSIBLE_NEEDS_REVIEW,
+    }
+    return ResultOutcome(
+        WorkflowStatus.COMPLETED,
+        BuildStatus.PASSED,
+        validation.status,
+        FailureClass.SEMANTIC_VALIDATION if rejected else None,
+        validation.reason_code if rejected else None,
+    )
 
 
 class _AcceptedSuggestion(Exception):
@@ -516,6 +612,8 @@ def _run_single_resolution_attempt(
         backend_profile=config.backend_profile,
     )
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
+    semantic_reference = _prepare_semantic_reference(
+        workspace_path, config.cve_id, cve_info)
 
     # Snapshot HEAD before the session to detect no-op resolutions
     pre_session_head = run_git_stdout(
@@ -621,31 +719,61 @@ def _run_single_resolution_attempt(
 
     return _finalize_resolution(
         config, knowledge_base, workspace_path,
-        upstream_sha, attempt, start_time
+        upstream_sha, attempt, start_time, semantic_reference
     )
 
 
 def _finalize_resolution(config: AgentConfig, knowledge_base: Optional[KnowledgeBase],
                          workspace_path: Path, upstream_sha: str,
-                         attempt: int, start_time: float) -> _AttemptOutcome:
+                         attempt: int, start_time: float,
+                         semantic_reference: ReferenceManifest | None = None,
+                         ) -> _AttemptOutcome:
     """Run --continue after approval and return outcome."""
     recipe = workspace_path.name
     summary = build_change_summary(workspace_path, upstream_sha)
     details = gather_pattern_details(workspace_path, upstream_sha)
+    generated = _capture_semantic_candidate(
+        workspace_path, semantic_reference)
 
     continue_exit, _ = run_corrector(config, continue_mode=True)
 
     if continue_exit in (EXIT_SUCCESS, EXIT_ALREADY_APPLIED):
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.atomic_json("build-summary.json", {
+                "schema_version": 1,
+                "status": "passed",
+                "source": "corrector_continue",
+                "ptest_executed": not config.skip_ptest,
+            })
+        validation = _record_semantic_validation(
+            semantic_reference,
+            generated,
+            BuildStatus.PASSED,
+            tests_executed=not config.skip_ptest,
+        )
         save_knowledge_pattern(
             config, knowledge_base, summary, upstream_sha, recipe,
             details=details
         )
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.CONFLICT_RESOLVED,
-            attempt, start_time, f"Resolved via {config.backend}"
+            attempt, start_time, f"Resolved via {config.backend}",
+            _completed_semantic_outcome(validation),
         ))
 
     if continue_exit in UNRECOVERABLE_EXITS:
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.atomic_json("build-summary.json", {
+                "schema_version": 1,
+                "status": "failed",
+                "source": "corrector_continue",
+                "exit_code": continue_exit,
+            })
+        _record_semantic_validation(
+            semantic_reference, generated, BuildStatus.FAILED,
+            tests_executed=False)
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.FAILED,
             attempt, start_time, f"Unrecoverable error (exit {continue_exit})"
@@ -721,6 +849,8 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     )
     print("\n--- Mandatory analysis phase ---")
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
+    semantic_reference = _prepare_semantic_reference(
+        workspace_path, config.cve_id, cve_info)
     session_result = guarded_session(
         context_file, workspace_path, upstream_sha, cve_info,
         config.model, config.session_timeout, config.cve_id,
@@ -761,17 +891,41 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     recipe = workspace_path.name
     summary = build_change_summary(workspace_path, upstream_sha)
     details = gather_pattern_details(workspace_path, upstream_sha)
+    generated = _capture_semantic_candidate(
+        workspace_path, semantic_reference)
     continue_exit, _ = run_corrector(config, continue_mode=True)
     if continue_exit in (EXIT_SUCCESS, EXIT_ALREADY_APPLIED):
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.atomic_json("build-summary.json", {
+                "schema_version": 1,
+                "status": "passed",
+                "source": "corrector_continue",
+                "ptest_executed": not config.skip_ptest,
+            })
+        validation = _record_semantic_validation(
+            semantic_reference, generated, BuildStatus.PASSED,
+            tests_executed=not config.skip_ptest)
         save_knowledge_pattern(
             config, knowledge_base, summary, upstream_sha, recipe,
             details=details
         )
         return _make_result(
             config.cve_id, ResultStatus.SUCCESS, 0, start_time,
-            "Clean apply with analysis"
+            "Clean apply with analysis", _completed_semantic_outcome(validation)
         )
     if continue_exit in UNRECOVERABLE_EXITS:
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.atomic_json("build-summary.json", {
+                "schema_version": 1,
+                "status": "failed",
+                "source": "corrector_continue",
+                "exit_code": continue_exit,
+            })
+        _record_semantic_validation(
+            semantic_reference, generated, BuildStatus.FAILED,
+            tests_executed=False)
         return _make_result(
             config.cve_id, ResultStatus.FAILED, 0, start_time,
             f"Failed after analysis (exit {continue_exit})"

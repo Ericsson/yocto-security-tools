@@ -5,7 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cve_agent import CveResult, ResultStatus
+from cve_agent import (
+    BuildStatus,
+    CveResult,
+    ResultOutcome,
+    ResultStatus,
+    SecurityStatus,
+    WorkflowStatus,
+)
 from cve_agent.__main__ import (
     _command_succeeded,
     _config_from_args,
@@ -30,6 +37,14 @@ class TestParseArgs:
             '--cve-info', '/tmp/cve.json'])
         args = _parse_args()
         assert args.cve_id == 'CVE-2025-0001'
+        assert args.security_gate == 'equivalent'
+
+    def test_verified_security_gate(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-2025-0001',
+            '--security-gate', 'verified'])
+        args = _parse_args()
+        assert args.security_gate == 'verified'
 
     def test_cve_list(self, monkeypatch):
         monkeypatch.setattr('sys.argv', [
@@ -188,16 +203,28 @@ class TestMainSingleCveCostReport:
 
     def test_prints_cost_when_present(self, monkeypatch, capsys):
         result = CveResult('CVE-2025-0001', ResultStatus.SUCCESS,
-                           total_credits=5.86, credits_unit='credits')
+                           total_credits=5.86, credits_unit='credits',
+                           outcome=ResultOutcome(
+                               WorkflowStatus.COMPLETED, BuildStatus.PASSED,
+                               SecurityStatus.EQUIVALENT))
         self._run_main(monkeypatch, result)
         out = capsys.readouterr().out
         assert 'credits: 5.86 credits' in out
 
     def test_omits_cost_when_none(self, monkeypatch, capsys):
-        result = CveResult('CVE-2025-0001', ResultStatus.SUCCESS)
+        result = CveResult(
+            'CVE-2025-0001', ResultStatus.SUCCESS,
+            outcome=ResultOutcome(
+                WorkflowStatus.COMPLETED, BuildStatus.PASSED,
+                SecurityStatus.EQUIVALENT))
         self._run_main(monkeypatch, result)
         out = capsys.readouterr().out
         assert 'credits:' not in out
+
+    def test_completed_but_unverified_exits_nonzero(self, monkeypatch):
+        result = CveResult('CVE-2025-0001', ResultStatus.SUCCESS)
+        with pytest.raises(SystemExit):
+            self._run_main(monkeypatch, result)
 
     def test_trusted_host_skip_exits_zero(self, monkeypatch):
         result = CveResult('CVE-2025-0001', ResultStatus.SKIPPED)
@@ -213,8 +240,8 @@ def test_command_success_distinguishes_host_skip_from_review_required():
     skipped = CveResult('CVE-1', ResultStatus.SKIPPED)
     review = CveResult('CVE-2', ResultStatus.ESCALATED)
 
-    assert _command_succeeded(skipped)
-    assert not _command_succeeded(review)
+    assert _command_succeeded(skipped, SecurityStatus.EQUIVALENT)
+    assert not _command_succeeded(review, SecurityStatus.EQUIVALENT)
 
 
 class TestReadCveList:

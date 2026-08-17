@@ -27,6 +27,7 @@ TRANSCRIPT_SCHEMA_VERSION = 1
 MAX_ARTIFACT_STRING_BYTES = 4096
 MAX_ARTIFACT_NODES = 1024
 MAX_ERROR_BYTES = 1024
+MAX_HUMAN_REPORT_BYTES = 64 * 1024
 MAX_ARTIFACT_MANIFEST_BYTES = 256 * 1024
 MAX_ARTIFACT_MANIFEST_ENTRIES = 256
 MAX_VERIFIED_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -319,8 +320,9 @@ class RunArtifacts:
                 if tool.startswith("read") or tool in {"git_status", "git_diff"}:
                     counters["read_calls"] += 1
                 if tool in {
-                    "replace_in_file", "write_file", "delete_file", "git_commit",
-                    "git_amend", "git_cherry_pick_start", "git_cherry_pick_continue",
+                    "replace_in_file", "apply_patch_hunks", "write_file",
+                    "delete_file", "git_commit", "git_amend",
+                    "git_cherry_pick_start", "git_cherry_pick_continue",
                 }:
                     counters["mutation_calls"] += 1
                 if tool == "build_recipe":
@@ -364,6 +366,42 @@ class RunArtifacts:
                 temporary.unlink()
             raise ArtifactError(f"unable to finalize artifact {name}") from error
 
+    def atomic_text(self, name: str, value: str) -> None:
+        """Write one bounded redacted human-readable mode-0600 artifact."""
+        if (not isinstance(value, str) or "/" in name or "\\" in name
+                or name in {"", ".", ".."}):
+            raise ArtifactError("invalid text artifact")
+        redacted = redact_openai_text(value, self._secrets)
+        try:
+            encoded = redacted.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise ArtifactError("unable to encode text artifact") from error
+        if len(encoded) > MAX_HUMAN_REPORT_BYTES:
+            raise ArtifactError("text artifact exceeds its size limit")
+        target = self.path / name
+        temporary = self.path / f".{name}.{uuid.uuid4().hex}.tmp"
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(encoded)
+                    output.flush()
+                    os.fsync(output.fileno())
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+                raise
+            os.replace(temporary, target)
+        except OSError as error:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            raise ArtifactError(f"unable to finalize artifact {name}") from error
+
     def finalize(self, result: object, error: BaseException | None = None) -> None:
         """Finalize result, telemetry, secret scan, and artifact hashes."""
         primary: BaseException | None = None
@@ -389,6 +427,19 @@ class RunArtifacts:
                     "schema_version": 1,
                     "status": "not_run",
                 })
+            if not (self.path / "semantic-validation.json").is_file():
+                self.atomic_json("semantic-validation.json", {
+                    "schema_version": 1,
+                    "status": "not_evaluated",
+                    "reason_code": "workflow_did_not_reach_semantic_validation",
+                    "reason": (
+                        "semantic validation was not reached before workflow exit"),
+                })
+                self.atomic_text(
+                    "semantic-validation.txt",
+                    "Semantic security status: not_evaluated\n"
+                    "Reason: workflow did not reach semantic validation\n",
+                )
             self.telemetry.durations["total"] = max(
                 0.0, self._monotonic() - self._started)
             self.atomic_json("result.json", result_value)

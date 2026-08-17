@@ -247,6 +247,7 @@ class TestHandleCleanApply:
     @patch("cve_agent.orchestrator.guarded_session",
            return_value=SessionResult(resolved=True, duration=1.0))
     @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator._prepare_semantic_reference", return_value=None)
     @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
     def test_model_not_applicable_requires_review(self, *mocks):
         result = _handle_clean_apply(
