@@ -54,6 +54,9 @@ _BUILD_RELEVANT_MUTATIONS = frozenset({
 _MUTATION_TOOLS = _BUILD_RELEVANT_MUTATIONS | frozenset({
     "git_stage", "git_unstage", "git_remove", "git_commit", "git_amend",
 })
+_READ_TOOLS = frozenset({
+    "read_file", "read_file_range", "list_directory", "search_text",
+})
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -135,6 +138,12 @@ class AgentLoopSharedState:
     mutation_calls: int = 0
     build_calls: int = 0
     provider_retries: int = 0
+    duplicate_calls: int = 0
+    tool_calls_by_class: dict[str, int] = field(default_factory=dict)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    complete_token_usage: bool = True
+    sessions_attempts: int = 0
 
 
 class JSONLTranscript:
@@ -291,8 +300,7 @@ class JSONLTranscript:
                 if (isinstance(duration, (int, float))
                         and not isinstance(duration, bool)
                         and math.isfinite(duration) and duration >= 0):
-                    prior = artifact_run.telemetry.durations["provider_wait"] or 0.0
-                    artifact_run.telemetry.durations["provider_wait"] = prior + duration
+                    artifact_run.add_duration("provider_wait", duration)
             if kind == "tool_request" and data.get("tool") == "build_recipe":
                 artifact_run.event("build_started")
             if kind == "tool_result" and data.get("tool") == "build_recipe":
@@ -451,6 +459,7 @@ class OpenAIAgentLoop:
 
     def run(self, model: str, interactive: bool) -> SessionResult:
         """Run until trusted finish or one independent session bound fires."""
+        self._shared.sessions_attempts += 1
         resolved = False
         reason = "session ended without a verified terminal outcome"
         audit_failed = False
@@ -539,6 +548,7 @@ class OpenAIAgentLoop:
                     "workspace permissions.")
         duration = max(0.0, self.deadline.clock() - self._started_at)
         self._shared.provider_retries = self.transcript.provider_retries
+        self._update_durable_telemetry()
         if (not resolved and failure_outcome is None
                 and ("max-steps" in reason or "max-tool-calls" in reason)):
             failure_outcome = _failure_outcome(
@@ -583,6 +593,7 @@ class OpenAIAgentLoop:
                     duration_seconds=max(
                         0.0, self.deadline.clock() - provider_started),
                 )
+            self._record_usage(response)
             self._append_assistant(response)
             self.transcript.write(
                 "assistant_response",
@@ -637,6 +648,7 @@ class OpenAIAgentLoop:
             for call in response.tool_calls:
                 self._tool_calls += 1
                 self._shared.tool_calls = self._tool_calls
+                self._record_tool_class(call.name)
                 result, dispatched, arguments_key = self._execute_call(call)
                 if dispatched and call.name == "build_recipe":
                     self._build_calls += 1
@@ -703,6 +715,7 @@ class OpenAIAgentLoop:
             argument_bytes=len(call.arguments.encode("utf-8")),
         )
         if call.id in self._seen_call_ids:
+            self._shared.duplicate_calls += 1
             return _synthetic_error(
                 call.name, "validation", "duplicate or replayed tool-call ID",
                 self.runtime.mutation_generation,
@@ -733,8 +746,61 @@ class OpenAIAgentLoop:
                    else "finish or escalation"),
                 self.runtime.mutation_generation,
             ), False, key
-        result = self.runtime.dispatch(call.name, arguments)
+        tool_started = self.deadline.clock()
+        try:
+            result = self.runtime.dispatch(call.name, arguments)
+        finally:
+            self._record_tool_duration(
+                call.name, max(0.0, self.deadline.clock() - tool_started))
         return result, True, key
+
+    def _record_tool_class(self, tool: str) -> None:
+        tool_class = _tool_class(tool)
+        self._shared.tool_calls_by_class[tool_class] = (
+            self._shared.tool_calls_by_class.get(tool_class, 0) + 1)
+
+    def _record_usage(self, response: AssistantResponse) -> None:
+        usage = response.usage
+        if (usage is None or usage.prompt_tokens is None
+                or usage.completion_tokens is None):
+            self._shared.complete_token_usage = False
+            return
+        self._shared.input_tokens += usage.prompt_tokens
+        self._shared.output_tokens += usage.completion_tokens
+
+    def _record_tool_duration(self, tool: str, duration: float) -> None:
+        from .artifacts import current_run_artifacts
+        artifact_run = current_run_artifacts()
+        if artifact_run is None:
+            return
+        artifact_run.add_duration("tool_execution", duration)
+        if tool == "build_recipe":
+            artifact_run.add_duration("build", duration)
+
+    def _update_durable_telemetry(self) -> None:
+        from .artifacts import current_run_artifacts
+        artifact_run = current_run_artifacts()
+        if artifact_run is None:
+            return
+        counters = artifact_run.telemetry.counters
+        counters["model_turns"] = self._shared.model_turns
+        counters["tool_calls"] = self._shared.tool_calls
+        counters["read_calls"] = self._shared.tool_calls_by_class.get("read", 0)
+        counters["mutation_calls"] = self._shared.tool_calls_by_class.get("mutation", 0)
+        counters["git_inspection_calls"] = self._shared.tool_calls_by_class.get(
+            "git_inspection", 0)
+        counters["finish_calls"] = self._shared.tool_calls_by_class.get("finish", 0)
+        counters["other_tool_calls"] = self._shared.tool_calls_by_class.get("other", 0)
+        counters["build_calls"] = self._shared.tool_calls_by_class.get("build", 0)
+        counters["duplicate_call_count"] = self._shared.duplicate_calls
+        counters["sessions_attempts"] = self._shared.sessions_attempts
+        counters["provider_retries"] = self._shared.provider_retries
+        artifact_run.telemetry.input_tokens = (
+            self._shared.input_tokens
+            if self._shared.complete_token_usage and self._shared.model_turns else None)
+        artifact_run.telemetry.output_tokens = (
+            self._shared.output_tokens
+            if self._shared.complete_token_usage and self._shared.model_turns else None)
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
         content: dict[str, object] = {
@@ -798,6 +864,7 @@ class OpenAIAgentLoop:
         for call in response.tool_calls:
             self._tool_calls += 1
             self._shared.tool_calls = self._tool_calls
+            self._record_tool_class(call.name)
             self._seen_call_ids.add(call.id)
             result = _synthetic_error(
                 call.name,
@@ -968,6 +1035,20 @@ def _synthetic_error(
 def _safe_filename_component(value: str) -> str:
     normalized = _SAFE_FILENAME_RE.sub("-", value).strip(".-")
     return (normalized or "model")[:48]
+
+
+def _tool_class(tool: str) -> str:
+    if tool == "build_recipe":
+        return "build"
+    if tool in _MUTATION_TOOLS:
+        return "mutation"
+    if tool.startswith("git_"):
+        return "git_inspection"
+    if tool in _READ_TOOLS:
+        return "read"
+    if tool == "finish":
+        return "finish"
+    return "other"
 
 
 def _user_facing_client_error(error: OpenAIClientError) -> str:

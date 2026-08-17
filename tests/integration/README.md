@@ -4,6 +4,13 @@ End-to-end tests that run `cve-corrector` and `cve-agent` against a real
 Yocto/OE-Core checkout. These require a full build environment and are not
 run in CI.
 
+> **Comparison warning:** `test_cve_corrector.sh` is the historical
+> `resume-compatible-legacy` runner. Its cumulative resume output must not be
+> reported as a standalone backend/model comparison. New crossover,
+> baseline-health, fallback-policy, and stability campaigns use
+> `cve_agent.evaluation`; see
+> [the evaluation guide](../../docs/evaluation-harness.md).
+
 ## Prerequisites
 
 - A Yocto build environment (OE-Core checkout + `oe-init-build-env` sourced)

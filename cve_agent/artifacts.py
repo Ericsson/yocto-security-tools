@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -136,14 +137,17 @@ class Telemetry:
 
     durations: dict[str, float | None] = field(default_factory=lambda: {
         name: 0.0 for name in (
-            "corrector_setup", "preflight", "provider_wait", "tool_execution",
-            "build", "ptest", "patch_transfer", "cleanup", "total",
+            "baseline_build", "corrector", "corrector_setup", "workspace_setup",
+            "preflight", "provider_wait", "tool_execution", "build", "ptest",
+            "semantic_validation", "patch_transfer", "cleanup", "total",
         )
     })
     counters: dict[str, int] = field(default_factory=lambda: {
         name: 0 for name in (
             "model_turns", "tool_calls", "read_calls", "mutation_calls",
-            "build_calls", "duplicate_call_count", "provider_retries",
+            "git_inspection_calls", "finish_calls", "other_tool_calls",
+            "build_calls", "duplicate_call_count", "sessions_attempts",
+            "provider_retries",
         )
     })
     input_tokens: int | None = None
@@ -270,6 +274,16 @@ class RunArtifacts:
 
     def activate(self) -> contextvars.Token[RunArtifacts | None]:
         return _CURRENT_RUN.set(self)
+
+    def add_duration(self, name: str, seconds: float) -> None:
+        """Accumulate one trusted finite duration in the fixed telemetry schema."""
+        if name not in self.telemetry.durations:
+            raise ArtifactError(f"unknown telemetry duration: {name}")
+        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds < 0):
+            raise ArtifactError("telemetry duration must be finite and nonnegative")
+        prior = self.telemetry.durations[name] or 0.0
+        self.telemetry.durations[name] = prior + seconds
 
     @staticmethod
     def deactivate(token: contextvars.Token[RunArtifacts | None]) -> None:

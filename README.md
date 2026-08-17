@@ -177,6 +177,12 @@ for the Ollama setup, exact API contract, configuration precedence, key and
 remote-endpoint gates, interactive approvals, transcript location, limitations,
 and troubleshooting.
 
+For backend/model campaigns, use the security-first
+[reproducible evaluation harness](docs/evaluation-harness.md). It enforces
+fresh identical snapshots, immutable same-campaign resume, complete crossover
+cohorts, baseline-health exclusions, decomposed telemetry, and semantic—not
+legacy union—success metrics.
+
 ## How It Works
 
 ```mermaid

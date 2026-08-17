@@ -311,6 +311,13 @@ def test_model_no_progress_fallback_reuses_runtime_deadline_scope_and_call_ids(
     assert fallback_summary["provider_attempt"] == "fallback"
     assert fallback_summary["status"] == "passed"
     assert telemetry["durations_seconds"]["provider_wait"] >= 0
+    assert telemetry["counters"]["model_turns"] == 5
+    assert telemetry["counters"]["tool_calls"] == 5
+    assert telemetry["counters"]["duplicate_call_count"] == 1
+    assert telemetry["counters"]["sessions_attempts"] == 2
+    assert telemetry["counters"]["finish_calls"] == 2
+    assert telemetry["counters"]["other_tool_calls"] == 3
+    assert telemetry["input_tokens"] is None
 
 
 @pytest.mark.parametrize("failure_class", [
