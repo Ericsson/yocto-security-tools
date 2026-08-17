@@ -18,6 +18,7 @@ venv/
 htmlcov/
 coverage.xml
 tests/integration/test-results/
+tests/benchmark/test-results/
 
 # IDE
 .idea/

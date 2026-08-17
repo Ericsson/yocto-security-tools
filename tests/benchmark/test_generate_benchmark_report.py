@@ -1,0 +1,100 @@
+# Copyright (C) 2026 Ericsson AB
+# SPDX-License-Identifier: MIT
+"""Tests for tests.benchmark.generate_benchmark_report."""
+from pathlib import Path
+
+from tests.benchmark.generate_benchmark_report import generate_report
+
+AGENT_HEADER = "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines"
+JUDGE_HEADER = "cve_id,model,judgment,judge_credits"
+
+
+def _write_agent_csv(results_dir: Path, rows: list[str]) -> None:
+    (results_dir / "agent_results.csv").write_text(
+        AGENT_HEADER + "\n" + "\n".join(rows) + "\n"
+    )
+
+
+def _write_judge_csv(results_dir: Path, rows: list[str]) -> None:
+    (results_dir / "judge_results.csv").write_text(
+        JUDGE_HEADER + "\n" + "\n".join(rows) + "\n"
+    )
+
+
+class TestGenerateReport:
+    def test_missing_agent_csv_exits(self, tmp_path):
+        import pytest
+        with pytest.raises(SystemExit):
+            generate_report(tmp_path)
+
+    def test_per_model_summary_table(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,easy,model-a,0,2.0,10,3,identical,0",
+            "CVE-2,medium,model-a,0,4.0,20,7,minor,5",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        assert "## Per-Model Summary" in report
+        assert "| model-a | 2 | 6.00 | 15.0 | 5.0 |" in report
+
+    def test_per_tier_bucket_distribution(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,easy,model-a,0,1.0,10,3,identical,0",
+            "CVE-2,easy,model-a,0,1.0,10,3,minor,5",
+            "CVE-3,medium,model-a,0,1.0,10,3,moderate,20",
+            "CVE-4,hard,model-a,1,1.0,10,3,major,80",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        assert "## Per-Tier Bucket Distribution" in report
+        lines = report.splitlines()
+        easy_line = next(line for line in lines if line.startswith("| easy |"))
+        assert easy_line == "| easy | 1 | 1 | 0 | 0 | 0 |"
+        medium_line = next(line for line in lines if line.startswith("| medium |"))
+        assert medium_line == "| medium | 0 | 0 | 1 | 0 | 0 |"
+        hard_line = next(line for line in lines if line.startswith("| hard |"))
+        assert hard_line == "| hard | 0 | 0 | 0 | 1 | 0 |"
+
+    def test_meaningful_vs_stylistic_split(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,medium,model-a,0,1.0,10,3,moderate,20",
+            "CVE-2,hard,model-a,0,1.0,10,3,major,80",
+            "CVE-3,hard,model-a,0,1.0,10,3,major,90",
+        ])
+        _write_judge_csv(tmp_path, [
+            "CVE-1,model-a,meaningful,0.1",
+            "CVE-2,model-a,stylistic,0.1",
+        ])
+        report = generate_report(tmp_path)
+
+        assert "## Meaningful vs Stylistic (Judged Moderate/Major Diffs)" in report
+        assert "| model-a | 1 | 1 | 1 |" in report
+
+    def test_minor_and_identical_excluded_from_judge_split(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,easy,model-a,0,1.0,10,3,identical,0",
+            "CVE-2,easy,model-a,0,1.0,10,3,minor,5",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        # Neither identical nor minor rows count toward the judged split —
+        # model-a has zero judgeable (moderate/major) rows, so it gets no
+        # row in that table at all.
+        split_section = report.split("## Meaningful vs Stylistic")[1]
+        assert "model-a" not in split_section
+
+    def test_judge_model_note_present(self, tmp_path):
+        _write_agent_csv(tmp_path, ["CVE-1,easy,model-a,0,1.0,10,3,identical,0"])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+        assert "claude-opus-4.8" in report
+
+    def test_missing_judge_csv_treated_as_empty(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,medium,model-a,0,1.0,10,3,moderate,20",
+        ])
+        report = generate_report(tmp_path)
+        assert "| model-a | 0 | 0 | 1 |" in report
