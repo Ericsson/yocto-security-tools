@@ -349,6 +349,10 @@ def _parse_args() -> argparse.Namespace:
     openai_group.add_argument('--openai-max-tool-calls', type=int,
                         help='Maximum total tool calls per session '
                              '(CVE_AGENT_OPENAI_MAX_TOOL_CALLS; default: 100)')
+    openai_group.add_argument(
+        '--openai-max-consecutive-no-progress', type=int,
+        help='Consecutive host-observed no-progress turns before termination '
+             '(1-10; CVE_AGENT_OPENAI_MAX_CONSECUTIVE_NO_PROGRESS; default: 3)')
     openai_group.add_argument('--openai-max-output-tokens', type=int,
                         help='Maximum output tokens requested per response '
                              '(CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS; default: 8192)')

@@ -161,6 +161,15 @@ def test_finalize_always_retains_semantic_status_and_human_report(tmp_path):
         run.path / "semantic-validation.txt").read_text(encoding="utf-8")
 
 
+def test_progress_warnings_increment_duplicate_telemetry(tmp_path):
+    run = RunArtifacts.create("CVE-1", "openai", None, "model", root=tmp_path)
+    run.event("progress_warning", consecutive=1)
+    run.event("progress_warning", consecutive=2)
+    run.finalize({"status": "failed"})
+    telemetry = json.loads((run.path / "telemetry.json").read_text())
+    assert telemetry["counters"]["duplicate_call_count"] == 2
+
+
 def test_large_values_are_bounded_with_hash(tmp_path):
     run = RunArtifacts.create("CVE-1", "openai", None, "model", root=tmp_path)
     large = "x" * 100_000

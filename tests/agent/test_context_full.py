@@ -126,6 +126,28 @@ class TestGatherBuildErrorContext:
         assert ".config.orig" not in result
         assert "cleansstate" not in result
 
+    @patch("cve_agent.context.run_git_stdout", return_value="commit stat")
+    def test_includes_only_bounded_current_cve_log_tail(self, _, tmp_path):
+        workspace = tmp_path / "build" / "workspace" / "sources" / "recipe"
+        workspace.mkdir(parents=True)
+        state_dir = tmp_path / "build" / "workspace" / "cve_corrector"
+        state_dir.mkdir()
+        (state_dir / "recipe.json").write_text(
+            json.dumps({"cve_id": "CVE-2026-12345"}), encoding="utf-8")
+        logs = tmp_path / "build" / "workspace" / "logs"
+        logs.mkdir()
+        (logs / "cve_corrector_CVE-2026-99999_20260101.log").write_text(
+            "unrelated secret diagnostic\n", encoding="utf-8")
+        expected = "compiler: relevant bounded failure"
+        (logs / "cve_corrector_CVE-2026-12345_20260102.log").write_text(
+            "old\n" + "x" * 20_000 + "\n" + expected + "\n",
+            encoding="utf-8")
+
+        result = _gather_build_error_context(workspace)
+        assert expected in result
+        assert "unrelated secret diagnostic" not in result
+        assert "earlier diagnostics compacted" in result
+
 
 class TestGatherPtestErrorContext:
     @patch("cve_agent.context.get_upstream_sha", return_value="3fb6b31c7166")
@@ -353,3 +375,32 @@ class TestBuildContext:
         mock_dir.return_value = agent_dir
         content = build_context(Path("/ws"), 0, "CVE-1", {"name": "r"}).read_text()
         assert "KB" in content
+
+    @patch("cve_agent.context._gather_knowledge", return_value="")
+    @patch("cve_agent.context._gather_context_for_exit_code",
+           return_value="## Huge Details\n" + "x" * 100_000)
+    @patch("cve_agent.context._build_phase_instructions", return_value="## I")
+    @patch("cve_agent.context._build_header", return_value="# H")
+    @patch("cve_agent.context.get_agent_dir")
+    def test_compaction_keeps_security_prerequisites_and_hashes(
+            self, mock_dir, _header, _instructions, _details, _knowledge,
+            tmp_path):
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        mock_dir.return_value = agent_dir
+        info = {
+            "name": "r",
+            "semantic_validation": {
+                "prerequisite_commits": ["a" * 40],
+                "expected_symbols": ["initialized_state"],
+                "required_tests": ["tests/security.c"],
+                "reproducer": "bounds_check",
+            },
+        }
+        content = build_context(
+            Path("/ws"), 0, "CVE-1", info).read_text(encoding="utf-8")
+        assert "Prerequisite commits" in content and "a" * 40 in content
+        assert "initialized_state" in content
+        assert "tests/security.c" in content and "bounds_check" in content
+        assert "Section compacted" in content
+        assert content.count("section-sha256:") >= 4

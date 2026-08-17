@@ -31,17 +31,29 @@ from .openai_client import (
     OpenAIRetryableServerError,
 )
 from .openai_deadline import SessionDeadline
+from .openai_progress import ProgressTracker
 from .openai_redaction import redact_openai_text
 from .openai_tools import ToolResult
+from .result import BuildStatus, FailureClass, ResultOutcome, SecurityStatus, WorkflowStatus
 
 DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE = 16
 DEFAULT_MAX_CONSECUTIVE_NONPROGRESS = 3
+MAX_CONSECUTIVE_NONPROGRESS_LIMIT = 10
 MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
 MAX_TOOL_ARGUMENT_DEPTH = 32
 MAX_TOOL_ARGUMENT_NODES = 20_000
 MAX_TRANSCRIPT_EVENT_BYTES = 16 * 1024
 MAX_TRANSCRIPT_STRING_CHARS = 4096
 MAX_TRANSCRIPT_NODES = 512
+
+_BUILD_RELEVANT_MUTATIONS = frozenset({
+    "replace_in_file", "apply_patch_hunks", "write_file", "delete_file",
+    "git_restore_conflict", "git_cherry_pick_start", "git_cherry_pick_continue",
+    "git_cherry_pick_abort", "git_cherry_pick_skip",
+})
+_MUTATION_TOOLS = _BUILD_RELEVANT_MUTATIONS | frozenset({
+    "git_stage", "git_unstage", "git_remove", "git_commit", "git_amend",
+})
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -100,6 +112,16 @@ class AgentLoopLimits:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.max_consecutive_nonprogress > MAX_CONSECUTIVE_NONPROGRESS_LIMIT:
+            raise ValueError(
+                "max_consecutive_nonprogress must not exceed "
+                f"{MAX_CONSECUTIVE_NONPROGRESS_LIMIT}")
+        if self.max_model_turns > 100:
+            raise ValueError("max_model_turns must not exceed 100")
+        if self.max_total_tool_calls > 1000:
+            raise ValueError("max_total_tool_calls must not exceed 1000")
+        if self.max_tool_calls_per_response > 64:
+            raise ValueError("max_tool_calls_per_response must not exceed 64")
 
 
 class JSONLTranscript:
@@ -120,6 +142,12 @@ class JSONLTranscript:
         self._secrets = tuple(secret for secret in secrets if secret)
         self._sequence = 0
         self._closed = False
+        self._provider_retries = 0
+
+    @property
+    def provider_retries(self) -> int:
+        """Return retries observed by this transcript's one shared client."""
+        return self._provider_retries
 
     @classmethod
     def create(
@@ -273,6 +301,8 @@ class JSONLTranscript:
     def client_event(self, event: OpenAIClientEvent) -> None:
         """Record credential-free transport attempts and retries."""
         kind = "retry" if event.kind == "retry" else f"http_{event.kind}"
+        if event.kind == "retry":
+            self._provider_retries += 1
         self.write(
             kind,
             attempt=event.attempt,
@@ -349,16 +379,19 @@ class OpenAIAgentLoop:
         self._turns = 0
         self._tool_calls = 0
         self._seen_call_ids: set[str] = set()
-        self._successful_inspections: set[tuple[str, str]] = set()
-        self._finish_corrections: set[str] = set()
+        self._progress = ProgressTracker()
         self._consecutive_nonprogress = 0
         self._corrective_message_sent = False
+        self._state_message_index: Optional[int] = None
+        self._mutation_calls = 0
+        self._build_calls = 0
 
     def run(self, model: str, interactive: bool) -> SessionResult:
         """Run until trusted finish or one independent session bound fires."""
         resolved = False
         reason = "session ended without a verified terminal outcome"
         audit_failed = False
+        failure_outcome: Optional[ResultOutcome] = None
         try:
             self.transcript.write(
                 "session_start",
@@ -383,23 +416,31 @@ class OpenAIAgentLoop:
                 "Native session deadline exhausted; increase --session-timeout "
                 "only after checking the transcript and build log.")
             self._best_effort_event("timeout", reason=reason)
+            failure_outcome = _failure_outcome(
+                FailureClass.PROVIDER_TIMEOUT, "overall_deadline_exhausted")
         except OpenAIRequestTimeoutError:
             resolved = False
             reason = (
                 "Chat Completions request timed out; check the endpoint and "
                 "--openai-request-timeout.")
             self._best_effort_event("timeout", reason=reason)
+            failure_outcome = _failure_outcome(
+                FailureClass.PROVIDER_TIMEOUT, "provider_request_timeout")
         except OpenAIClientError as exc:
             resolved = False
             reason = _user_facing_client_error(exc)
             self._best_effort_event(
                 "client_error", error_type=type(exc).__name__, message=reason)
+            failure_outcome = _failure_outcome(
+                FailureClass.PROVIDER_PROTOCOL, "provider_request_failed")
         except _NonprogressExhausted:
             resolved = False
             reason = (
                 "The model repeatedly made no tool progress; select a model "
                 "that reliably supports function tools and inspect the transcript.")
             self._best_effort_event("nonprogress_exhausted", reason=reason)
+            failure_outcome = _failure_outcome(
+                FailureClass.MODEL_NO_PROGRESS, "model_no_progress")
         except Exception as exc:
             resolved = False
             reason = (
@@ -434,17 +475,26 @@ class OpenAIAgentLoop:
                     "Mandatory native transcript failed; check the Yocto build "
                     "workspace permissions.")
         duration = max(0.0, self.deadline.clock() - self._started_at)
+        if (not resolved and failure_outcome is None
+                and ("max-steps" in reason or "max-tool-calls" in reason)):
+            failure_outcome = _failure_outcome(
+                FailureClass.MODEL_BUDGET, "model_budget_exhausted")
         return SessionResult(
             resolved=resolved,
             duration=duration,
             transcript_path=self.transcript.path,
             failure_reason="" if resolved else reason,
-            outcome=(self.runtime.session_result().outcome if resolved else None),
+            outcome=(self.runtime.session_result().outcome
+                     if resolved else failure_outcome),
         )
 
     def _run_turns(self) -> tuple[bool, str]:
         while self._turns < self.limits.max_model_turns:
             self._require_time("model turn")
+            if self._tool_calls >= self.limits.max_total_tool_calls:
+                return False, (
+                    "Native session reached --openai-max-tool-calls before finish.")
+            self._update_state_message()
             self._turns += 1
             self.transcript.write(
                 "model_request",
@@ -452,6 +502,8 @@ class OpenAIAgentLoop:
                 message_count=len(self.messages),
                 tool_count=len(self.tool_schemas),
                 total_tool_calls=self._tool_calls,
+                evidence_digest=self._progress.last_evidence_digest,
+                consecutive_nonprogress=self._consecutive_nonprogress,
             )
             response = self.client.complete(self.messages, self.tool_schemas)
             self._append_assistant(response)
@@ -508,9 +560,19 @@ class OpenAIAgentLoop:
             for call in response.tool_calls:
                 self._tool_calls += 1
                 result, dispatched, arguments_key = self._execute_call(call)
+                if dispatched and call.name == "build_recipe":
+                    self._build_calls += 1
+                if dispatched and call.name in _MUTATION_TOOLS:
+                    self._mutation_calls += 1
                 self._append_tool_result(call.id, result)
                 self._write_tool_result(call.id, call.name, result, dispatched)
-                if self._is_progress(call.name, arguments_key, result, dispatched):
+                event = self._progress.observe(
+                    call.name, arguments_key, result, dispatched=dispatched)
+                progress_data = event.to_dict()
+                progress_data["progress_kind"] = progress_data.pop("kind")
+                self.transcript.write(
+                    "progress_event", tool=call.name, **progress_data)
+                if event.progressed:
                     turn_progress = True
                 if result.success and result.terminal:
                     self.transcript.write(
@@ -570,11 +632,25 @@ class OpenAIAgentLoop:
                 call.name, "validation", str(exc),
                 self.runtime.mutation_generation,
             ), False, call.arguments
-        result = self.runtime.dispatch(call.name, arguments)
         key = json.dumps(
             arguments, ensure_ascii=False, sort_keys=True,
             separators=(",", ":"), allow_nan=False,
         )
+        remaining_after_call = self.limits.max_total_tool_calls - self._tool_calls
+        reserved_calls = (
+            2 if call.name in _BUILD_RELEVANT_MUTATIONS
+            else 1 if call.name in _MUTATION_TOOLS else 0
+        )
+        if reserved_calls and remaining_after_call < reserved_calls:
+            return _synthetic_error(
+                call.name,
+                "policy",
+                "late mutation rejected: terminal budget is reserved for "
+                + ("build and finish or escalation" if reserved_calls == 2
+                   else "finish or escalation"),
+                self.runtime.mutation_generation,
+            ), False, key
+        result = self.runtime.dispatch(call.name, arguments)
         return result, True, key
 
     def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
@@ -619,34 +695,6 @@ class OpenAIAgentLoop:
             payload_keys=sorted(result.payload),
         )
 
-    def _is_progress(
-        self, tool: str, arguments_key: str,
-        result: ToolResult, dispatched: bool,
-    ) -> bool:
-        if not dispatched:
-            return False
-        if result.success and result.terminal:
-            return True
-        if result.success and result.mutated:
-            return True
-        if tool == "build_recipe":
-            return True
-        signature = (tool, arguments_key)
-        if result.success:
-            if signature in self._successful_inspections:
-                return False
-            self._successful_inspections.add(signature)
-            return True
-        if tool == "finish":
-            correction = json.dumps(
-                result.payload, ensure_ascii=False, sort_keys=True,
-                separators=(",", ":"), allow_nan=False,
-            )
-            if correction not in self._finish_corrections:
-                self._finish_corrections.add(correction)
-                return True
-        return False
-
     def _handle_text_only_stop(self) -> Optional[str]:
         if self._corrective_message_sent:
             return (
@@ -684,8 +732,44 @@ class OpenAIAgentLoop:
 
     def _record_nonprogress(self) -> None:
         self._consecutive_nonprogress += 1
+        remaining = self.limits.max_total_tool_calls - self._tool_calls
+        stage = (
+            "different_action_required" if self._consecutive_nonprogress > 1
+            else "warning")
+        warning = {
+            "host_no_progress": True,
+            "stage": stage,
+            "consecutive": self._consecutive_nonprogress,
+            "threshold": self.limits.max_consecutive_nonprogress,
+            "tool_calls_remaining": max(0, remaining),
+            "steps_remaining": max(
+                0, self.limits.max_model_turns - self._turns),
+            "required": (
+                "use a different action class or call finish with a specific "
+                "escalation blocker"),
+        }
+        self.transcript.write("progress_warning", **warning)
         if self._consecutive_nonprogress >= self.limits.max_consecutive_nonprogress:
             raise _NonprogressExhausted
+
+    def _update_state_message(self) -> None:
+        summary = self._progress.state_summary(
+            mutation_generation=self.runtime.mutation_generation,
+            validated_generation=self.runtime.validated_generation,
+            consecutive_nonprogress=self._consecutive_nonprogress,
+            turns_remaining=self.limits.max_model_turns - self._turns,
+            tool_calls_remaining=self.limits.max_total_tool_calls - self._tool_calls,
+            mutation_calls=self._mutation_calls,
+            build_calls=self._build_calls,
+            provider_retries=self.transcript.provider_retries,
+            deadline_remaining=self.deadline.remaining(),
+        )
+        message: dict[str, object] = {"role": "user", "content": summary}
+        if self._state_message_index is None:
+            self._state_message_index = len(self.messages)
+            self.messages.append(message)
+        else:
+            self.messages[self._state_message_index] = message
 
     def _require_time(self, operation: str) -> float:
         remaining = self.deadline.remaining()
@@ -850,3 +934,14 @@ def _tool_error_recoverable(result: ToolResult) -> bool:
     if result.success:
         return False
     return result.error_kind in {"validation", "policy", "approval", "operation"}
+
+
+def _failure_outcome(failure: FailureClass, code: str) -> ResultOutcome:
+    """Create one classified unresolved native-session outcome."""
+    return ResultOutcome(
+        WorkflowStatus.FAILED,
+        BuildStatus.NOT_RUN,
+        SecurityStatus.NOT_EVALUATED,
+        failure,
+        code,
+    )
