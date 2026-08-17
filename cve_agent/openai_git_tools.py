@@ -7,6 +7,7 @@ argv, executable names, configuration, environment values, hooks, pathspec
 syntax, and shell text are all constructed by trusted host code.
 """
 import contextlib
+import hashlib
 import os
 import selectors
 import signal
@@ -148,6 +149,7 @@ _OPERATION_VERBS: Mapping[str, str] = {
     "cherry_pick_continue": "cherry-pick",
     "cherry_pick_abort": "cherry-pick",
     "cherry_pick_skip": "cherry-pick",
+    "rollback_paths": "restore",
 }
 
 _FORBIDDEN_ARGV = frozenset({
@@ -168,7 +170,7 @@ class GitScopeError(ToolPolicyError):
 
     def __init__(self, message: str, rejected_paths: Iterable[str]) -> None:
         super().__init__(message)
-        self.payload = {
+        self.payload: dict[str, object] = {
             "rejected_paths": list(rejected_paths)[:MAX_GIT_PATHS],
         }
 
@@ -245,6 +247,42 @@ class RepositorySnapshot:
 
     head: str
     operations: Mapping[str, bool]
+
+
+@dataclass
+class TrustedGitState:
+    """Host-owned commit lineage and build-relevant repository state."""
+
+    session_root_head: str
+    session_root_tree: str
+    trusted_head: str
+    trusted_tree: str
+    trusted_parent_basis: tuple[str, ...]
+    last_host_git_operation: Optional[str]
+    mutation_generation: int
+    built_generation: Optional[int]
+    allowed_path_digest: str
+    initial_trust_source: str
+    handoff_digest: Optional[str]
+    transition_count: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        """Return bounded provenance suitable for durable audit artifacts."""
+        return {
+            "schema_version": 1,
+            "session_root_head": self.session_root_head,
+            "session_root_tree": self.session_root_tree,
+            "trusted_head": self.trusted_head,
+            "trusted_tree": self.trusted_tree,
+            "trusted_parent_basis": list(self.trusted_parent_basis),
+            "last_host_git_operation": self.last_host_git_operation,
+            "mutation_generation": self.mutation_generation,
+            "built_generation": self.built_generation,
+            "allowed_path_digest": self.allowed_path_digest,
+            "initial_trust_source": self.initial_trust_source,
+            "handoff_digest": self.handoff_digest,
+            "transition_count": self.transition_count,
+        }
 
 
 class GitCommandExecutor:
@@ -582,13 +620,13 @@ GIT_TOOL_CONTRACTS: dict[str, ToolContract] = {
     ),
     "git_cherry_pick_abort": ToolContract(
         "git_cherry_pick_abort",
-        "Abort only an active cherry-pick.",
+        "Abort an active cherry-pick and discard its typed working changes.",
         {},
         "_git_cherry_pick_abort",
     ),
     "git_cherry_pick_skip": ToolContract(
         "git_cherry_pick_skip",
-        "Skip only an active single-commit cherry-pick.",
+        "Skip one active commit and discard its typed working changes.",
         {},
         "_git_cherry_pick_skip",
     ),
@@ -698,10 +736,49 @@ class GitToolRuntime(FileToolRuntime):
         self._git_directory = self._discover_git_directory()
         self._executor.git_directory = self._git_directory
         head = self._resolve_initial_head()
+        tree = self._commit_tree(head)
         self.repository_snapshot = RepositorySnapshot(
             head=head,
             operations=self._operation_state(),
         )
+        allowed_path_digest = hashlib.sha256(
+            "\0".join(sorted(self.policy.allowed_files)).encode("utf-8")
+        ).hexdigest()
+        from .handoff import current_validated_handoff_digest
+        handoff_digest = current_validated_handoff_digest()
+        self.trusted_git_state = TrustedGitState(
+            session_root_head=head,
+            session_root_tree=tree,
+            trusted_head=head,
+            trusted_tree=tree,
+            trusted_parent_basis=tuple(self._commit_parents(head)),
+            last_host_git_operation=None,
+            mutation_generation=0,
+            built_generation=None,
+            allowed_path_digest=allowed_path_digest,
+            initial_trust_source=(
+                "validated_handoff" if handoff_digest is not None
+                else "session_preflight"
+            ),
+            handoff_digest=handoff_digest,
+        )
+
+    def _after_successful_execution(
+        self, tool: str, execution: _ExecutionResult,
+    ) -> None:
+        completed_transition = tool in {
+            "git_commit",
+            "git_amend",
+            "git_cherry_pick_continue",
+            "git_cherry_pick_abort",
+            "git_cherry_pick_skip",
+        }
+        if (tool == "git_cherry_pick_start"
+                and execution.payload.get("conflicted") is False):
+            completed_transition = True
+        if completed_transition:
+            self._typed_mutation_paths.clear()
+        self.trusted_git_state.mutation_generation = self.mutation_generation
 
     def _discover_git_directory(self) -> Path:
         result = self._executor.run(
@@ -887,14 +964,16 @@ class GitToolRuntime(FileToolRuntime):
         paths = self._mutation_paths(arguments, "git_stage", allow_missing=True)
         result = self._executor.run("stage", ["add", "--", *paths])
         self._require_returncode(result, "Git stage")
-        return _ExecutionResult({"staged": paths}, mutated=True)
+        return _ExecutionResult(
+            {"staged": paths}, mutated=True, advances_generation=False)
 
     def _git_unstage(self, arguments: dict[str, object]) -> _ExecutionResult:
         paths = self._mutation_paths(arguments, "git_unstage", allow_missing=True)
         result = self._executor.run(
             "unstage", ["restore", "--staged", "--", *paths])
         self._require_returncode(result, "Git unstage")
-        return _ExecutionResult({"unstaged": paths}, mutated=True)
+        return _ExecutionResult(
+            {"unstaged": paths}, mutated=True, advances_generation=False)
 
     def _git_remove(self, arguments: dict[str, object]) -> _ExecutionResult:
         paths = self._mutation_paths(arguments, "git_remove", allow_missing=True)
@@ -968,6 +1047,7 @@ class GitToolRuntime(FileToolRuntime):
             )
 
     def _git_cherry_pick_start(self, arguments: dict[str, object]) -> _ExecutionResult:
+        self._require_current_trusted_head()
         if any(self._operation_state().values()):
             raise ToolPolicyError("another Git operation is already in progress")
         self._require_clean_cherry_pick_start()
@@ -1005,14 +1085,22 @@ class GitToolRuntime(FileToolRuntime):
         if rejected:
             raise GitScopeError(
                 "cherry-pick scope changed before execution", rejected)
+        # A clean start state is the boundary for rollback provenance. Paths
+        # changed by an earlier completed operation must never authorize
+        # discarding an external edit during this cherry-pick.
+        self._typed_mutation_paths.clear()
         result = self._executor.run(
             "cherry_pick_start", ["cherry-pick", "-x", commit])
         state = self._operation_state()
         if result.returncode == 0:
+            transition = self._validate_trusted_transition(
+                "cherry_pick_start", self.trusted_git_state.trusted_head,
+                amend=False)
             return _ExecutionResult({
                 "commit": commit,
                 "changed_paths": sorted({item.path for item in changed}),
                 "conflicted": False,
+                "trusted_transition": transition,
             }, mutated=True)
         if state["cherry_pick"]:
             return _ExecutionResult({
@@ -1025,6 +1113,7 @@ class GitToolRuntime(FileToolRuntime):
 
     def _git_cherry_pick_continue(
             self, arguments: dict[str, object]) -> _ExecutionResult:
+        self._require_current_trusted_head()
         self._require_cherry_pick()
         if self._unmerged_entries():
             raise ToolPolicyError("unmerged paths remain")
@@ -1061,11 +1150,15 @@ class GitToolRuntime(FileToolRuntime):
             raise
         after_head = self._current_head()
         if result.returncode == 0 or after_head != before_head:
+            self._require_returncode(result, "Git cherry-pick continue")
+            transition = self._validate_trusted_transition(
+                "cherry_pick_continue", before_head, amend=False)
             return _ExecutionResult({
                 "commit": after_head,
                 "continued": True,
                 "staged_paths": staged,
-            }, mutated=True)
+                "trusted_transition": transition,
+            }, mutated=True, advances_generation=False)
         if self._operation_state()["cherry_pick"]:
             with contextlib.suppress(OSError):
                 self._replace_internal_message_bytes(message_path, original_bytes)
@@ -1084,41 +1177,59 @@ class GitToolRuntime(FileToolRuntime):
         }
         unexpected = sorted(set(staged) - expected)
         if unexpected:
-            raise GitScopeError(
+            error = GitScopeError(
                 "staged paths were not changed by the active cherry-pick",
                 unexpected,
             )
+            error.payload.update({
+                "recovery_tool": "git_cherry_pick_skip",
+                "reapply_after_rollback": True,
+                "recovery": (
+                    "For a moved-path adaptation, skip the active single commit; "
+                    "rollback discards typed edits, so reapply the destination "
+                    "change and record it with git_commit."
+                ),
+            })
+            raise error
         self._validate_staged_modes(staged)
         return staged
 
     def _git_cherry_pick_abort(self, arguments: dict[str, object]) -> _ExecutionResult:
+        trusted_head = self._require_current_trusted_head()
         self._require_cherry_pick()
-        self._validate_active_cherry_pick_scope()
+        discarded = self._validate_cherry_pick_rollback()
         if self._before_operation is not None:
             self._before_operation("git_cherry_pick_abort", self.workspace)
-        self._validate_active_cherry_pick_scope()
+        discarded = self._validate_cherry_pick_rollback()
         result = self._executor.run(
             "cherry_pick_abort", ["cherry-pick", "--abort"])
         self._require_returncode(result, "Git cherry-pick abort")
+        self._discard_typed_mutations(trusted_head)
+        self._validate_cherry_pick_rollback_result(trusted_head)
         return _ExecutionResult({
             "aborted": True,
             "head": self._current_head(),
+            "discarded_paths": discarded,
         }, mutated=True)
 
     def _git_cherry_pick_skip(self, arguments: dict[str, object]) -> _ExecutionResult:
+        trusted_head = self._require_current_trusted_head()
         self._require_cherry_pick()
         if self._has_pending_sequencer_commits():
             raise ToolPolicyError("skip is not allowed for a multi-commit sequence")
-        self._validate_active_cherry_pick_scope()
+        discarded = self._validate_cherry_pick_rollback()
         if self._before_operation is not None:
             self._before_operation("git_cherry_pick_skip", self.workspace)
-        self._validate_active_cherry_pick_scope()
+        discarded = self._validate_cherry_pick_rollback()
         result = self._executor.run(
             "cherry_pick_skip", ["cherry-pick", "--skip"])
         self._require_returncode(result, "Git cherry-pick skip")
+        self._discard_typed_mutations(trusted_head)
+        self._validate_cherry_pick_rollback_result(trusted_head)
         return _ExecutionResult({
             "skipped": True,
             "head": self._current_head(),
+            "discarded_paths": discarded,
         }, mutated=True)
 
     def _stage_commit_paths(
@@ -1204,12 +1315,14 @@ class GitToolRuntime(FileToolRuntime):
         expected_head: Optional[str] = None,
     ) -> _ExecutionResult:
         before_head = self._current_head()
+        self._require_current_trusted_head(before_head)
         if expected_head is not None and before_head != expected_head:
             raise GitStateError("HEAD changed before the commit operation", {})
         result = self._executor.run(operation, argv)
         after_head = self._current_head()
         if after_head == before_head:
             self._raise_git_failure(f"Git {operation}", result)
+        self._require_returncode(result, f"Git {operation}")
 
         changed = self._changed_paths(after_head)
         changed_paths = sorted({item.path for item in changed})
@@ -1234,12 +1347,15 @@ class GitToolRuntime(FileToolRuntime):
                     "resulting commit does not match the validated staged paths",
                     {"unexpected_paths": unexpected, "missing_paths": missing},
                 )
+        transition = self._validate_trusted_transition(
+            operation, before_head, amend=operation == "amend")
         return _ExecutionResult(
             {
                 "commit": after_head,
                 "amended": operation == "amend",
                 "staged_paths": list(staged),
                 "changed_paths": changed_paths,
+                "trusted_transition": transition,
             },
             mutated=True,
             advances_generation=False,
@@ -1247,6 +1363,7 @@ class GitToolRuntime(FileToolRuntime):
 
     def _preflight_amend_scope(self) -> str:
         head = self._current_head()
+        self._require_current_trusted_head(head)
         if len(self._commit_parents(head)) > 1:
             raise ToolPolicyError("amending merge commits is not supported")
         changed = self._changed_paths(head)
@@ -1263,6 +1380,99 @@ class GitToolRuntime(FileToolRuntime):
                 rejected,
             )
         return head
+
+    def _require_current_trusted_head(self, current_head: Optional[str] = None) -> str:
+        head = self._current_head() if current_head is None else current_head
+        if head != self.trusted_git_state.trusted_head:
+            raise GitStateError(
+                "HEAD changed outside a typed trusted Git operation",
+                {
+                    "expected_head": self.trusted_git_state.trusted_head,
+                    "current_head": head,
+                },
+            )
+        return head
+
+    def _validate_trusted_transition(
+        self,
+        operation: str,
+        before_head: str,
+        *,
+        amend: bool,
+    ) -> dict[str, object]:
+        """Validate one host-executed commit transition before trusting it."""
+        self._require_current_trusted_head(before_head)
+        after_head = self._current_head()
+        if after_head == before_head:
+            raise GitStateError("typed Git operation did not create a commit", {})
+        expected_parents = (
+            self.trusted_git_state.trusted_parent_basis
+            if amend else (before_head,)
+        )
+        actual_parents = tuple(self._commit_parents(after_head))
+        if actual_parents != expected_parents:
+            raise GitStateError(
+                "typed Git operation produced an unexpected parent basis",
+                {
+                    "expected_parents": list(expected_parents),
+                    "actual_parents": list(actual_parents),
+                },
+            )
+        operations = self._operation_state()
+        active = sorted(name for name, present in operations.items() if present)
+        if active:
+            raise GitStateError(
+                "typed Git operation left repository state in progress",
+                {"operations": active},
+            )
+        unmerged = self._unmerged_entries()
+        if unmerged:
+            raise GitStateError(
+                "typed Git operation left unresolved conflicts",
+                {"paths": [item["path"] for item in unmerged[:MAX_GIT_PATHS]]},
+            )
+        staged = self._staged_paths()
+        if staged:
+            raise GitStateError(
+                "typed Git operation left staged changes",
+                {"paths": staged[:MAX_GIT_PATHS]},
+            )
+        durable = self._changed_paths_between(
+            self.trusted_git_state.session_root_head, after_head)
+        unsupported = sorted({
+            item.path for item in durable
+            if item.old_mode in {"120000", "160000"}
+            or item.new_mode in {"120000", "160000"}
+        })
+        rejected = sorted(
+            set(unsupported) | set(self._preflight_changed_paths(durable)))
+        if rejected:
+            raise GitScopeError(
+                "trusted commit lineage reaches unauthorized paths", rejected)
+        old_tree = self.trusted_git_state.trusted_tree
+        new_tree = self._commit_tree(after_head)
+        transition: dict[str, object] = {
+            "operation": operation,
+            "old_head": before_head,
+            "new_head": after_head,
+            "old_tree": old_tree,
+            "new_tree": new_tree,
+            "parent_basis": list(expected_parents),
+            "allowed_path_digest": self.trusted_git_state.allowed_path_digest,
+            "invariants": {
+                "pre_head_trusted": True,
+                "parents_match": True,
+                "durable_paths_allowed": True,
+                "operation_state_idle": True,
+                "index_resolved": True,
+            },
+        }
+        self.trusted_git_state.trusted_head = after_head
+        self.trusted_git_state.trusted_tree = new_tree
+        self.trusted_git_state.trusted_parent_basis = actual_parents
+        self.trusted_git_state.last_host_git_operation = operation
+        self.trusted_git_state.transition_count += 1
+        return transition
 
     @contextlib.contextmanager
     def _temporary_commit_message(self, message: str) -> Iterator[Path]:
@@ -1520,21 +1730,12 @@ class GitToolRuntime(FileToolRuntime):
                 dirty,
             )
 
-    def _validate_active_cherry_pick_scope(self) -> None:
+    def _validate_cherry_pick_rollback(self) -> list[str]:
+        """Permit rollback of active and typed changes, never unrelated edits."""
+        self._require_current_trusted_head()
         commit = self._resolve_commit("CHERRY_PICK_HEAD")
         changed = self._changed_paths(commit)
-        unsupported = sorted({
-            item.path for item in changed
-            if item.old_mode in {"120000", "160000"}
-            or item.new_mode in {"120000", "160000"}
-        })
-        rejected = sorted(set(unsupported) | set(self._preflight_changed_paths(changed)))
-        if rejected:
-            raise GitScopeError(
-                "active cherry-pick reaches unsupported or unauthorized paths",
-                rejected,
-            )
-        expected = {item.path for item in changed}
+        expected = {item.path for item in changed} | self._typed_mutation_paths
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
@@ -1554,6 +1755,55 @@ class GitToolRuntime(FileToolRuntime):
                 "active cherry-pick state includes unrelated tracked paths",
                 unexpected,
             )
+        return sorted(dirty)
+
+    def _validate_cherry_pick_rollback_result(self, trusted_head: str) -> None:
+        """Require rollback to reproduce the trusted committed repository state."""
+        if self._current_head() != trusted_head:
+            raise GitStateError("cherry-pick rollback changed the trusted HEAD", {})
+        if self._operation_state()["cherry_pick"]:
+            raise GitStateError("cherry-pick rollback left the operation active", {})
+        if self._commit_tree(trusted_head) != self.trusted_git_state.trusted_tree:
+            raise GitStateError("cherry-pick rollback changed the trusted tree", {})
+        result = self._executor.run(
+            "status",
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+        )
+        self._require_complete(result, "cherry-pick rollback status")
+        status = self._parse_status(result.stdout)
+        dirty = {
+            key: status[key]
+            for key in ("staged", "unstaged", "deleted", "conflicted")
+            if status[key]
+        }
+        if dirty:
+            raise GitStateError("cherry-pick rollback left tracked changes", dirty)
+
+    def _discard_typed_mutations(self, trusted_head: str) -> None:
+        """Restore exact typed paths that Git rollback intentionally preserves."""
+        paths = sorted(self._typed_mutation_paths)
+        tracked = [path for path in paths if self._is_tracked_regular(path)]
+        if tracked:
+            result = self._executor.run(
+                "rollback_paths",
+                ["restore", f"--source={trusted_head}", "--staged", "--worktree",
+                 "--", *tracked],
+            )
+            self._require_returncode(result, "Git typed-path rollback")
+
+        status_result = self._executor.run(
+            "status",
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+        )
+        self._require_complete(status_result, "typed-path rollback status")
+        status = self._parse_status(status_result.stdout)
+        untracked = status["untracked"]
+        if not isinstance(untracked, list):
+            raise ToolOperationalError("typed-path rollback status is malformed")
+        for path in sorted(set(untracked) & self._typed_mutation_paths):
+            deleted = self._delete_file({"path": path})
+            if deleted.payload.get("deleted") is not True:
+                raise ToolOperationalError("typed-path rollback could not remove a file")
 
     def _commit_parents(self, commit: str) -> list[str]:
         result = self._executor.run(
@@ -1568,7 +1818,19 @@ class GitToolRuntime(FileToolRuntime):
              "-M", "-C", "--find-copies-harder", commit],
         )
         self._require_complete(result, "Git changed-path preflight")
-        tokens = result.stdout.split("\x00")
+        return self._parse_changed_paths(result.stdout)
+
+    def _changed_paths_between(self, old: str, new: str) -> list[ChangedPath]:
+        result = self._executor.run(
+            "changed_paths",
+            ["diff-tree", "--no-commit-id", "--raw", "-z", "-r",
+             "-M", "-C", "--find-copies-harder", old, new],
+        )
+        self._require_complete(result, "Git durable changed-path inspection")
+        return self._parse_changed_paths(result.stdout)
+
+    def _parse_changed_paths(self, output: str) -> list[ChangedPath]:
+        tokens = output.split("\x00")
         changed: list[ChangedPath] = []
         index = 0
         while index < len(tokens):
@@ -1592,6 +1854,18 @@ class GitToolRuntime(FileToolRuntime):
             if len(changed) > self.git_limits.max_paths:
                 raise ToolPolicyError("commit exceeds the changed-path limit")
         return changed
+
+    def _commit_tree(self, commit: str) -> str:
+        result = self._executor.run(
+            "initial_head",
+            ["rev-parse", "--verify", "--quiet", "--end-of-options",
+             f"{commit}^{{tree}}"],
+        )
+        self._require_complete(result, "commit tree resolution")
+        tree = result.stdout.strip().lower()
+        if not tree or any(character not in "0123456789abcdef" for character in tree):
+            raise ToolOperationalError("Git returned an invalid tree identifier")
+        return tree
 
     def _preflight_changed_paths(self, changed: Sequence[ChangedPath]) -> list[str]:
         rejected = []

@@ -627,6 +627,7 @@ class FileToolRuntime:
         self._before_operation = before_operation
         self._before_replace = before_replace
         self._mutation_generation = 0
+        self._typed_mutation_paths: set[str] = set()
 
     @property
     def mutation_generation(self) -> int:
@@ -650,8 +651,11 @@ class FileToolRuntime:
             self._authorize_tool_call(tool_name, validated)
             handler = getattr(self, contract.handler)
             execution: _ExecutionResult = handler(validated)
+            if execution.mutated:
+                self._record_typed_mutation_paths(execution.payload)
             if execution.mutated and execution.advances_generation:
                 self._mutation_generation += 1
+            self._after_successful_execution(tool_name, execution)
             result = ToolResult(
                 success=True,
                 payload=execution.payload,
@@ -694,6 +698,31 @@ class FileToolRuntime:
     def _authorize_tool_call(self, tool: str,
                              arguments: Mapping[str, object]) -> None:
         """Allow composed runtimes to gate side effects after validation."""
+
+    def _after_successful_execution(
+        self, tool: str, execution: _ExecutionResult,
+    ) -> None:
+        """Allow composed runtimes to synchronize trusted post-state."""
+
+    def _record_typed_mutation_paths(
+        self, payload: Mapping[str, object],
+    ) -> None:
+        """Remember exact authorized paths changed through typed operations."""
+        candidates: list[str] = []
+        path = payload.get("path")
+        if isinstance(path, str):
+            candidates.append(path)
+        for key in ("changed_paths", "removed"):
+            values = payload.get(key)
+            if isinstance(values, list):
+                candidates.extend(value for value in values if isinstance(value, str))
+        for candidate in candidates:
+            try:
+                authorized = self.policy.authorize_write(candidate)
+            except (ToolPolicyError, ToolValidationError):
+                continue
+            if authorized.repository_path is not None:
+                self._typed_mutation_paths.add(authorized.repository_path)
 
     def _error_result(self, tool: str, kind: str, message: str,
                       audit_fields: Mapping[str, object],

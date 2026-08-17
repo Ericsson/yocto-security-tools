@@ -3,6 +3,7 @@
 """Consumer-side validation of the corrector repository handoff."""
 from __future__ import annotations
 
+import contextvars
 import json
 from pathlib import Path
 
@@ -15,6 +16,28 @@ from shared.handoff import (
 )
 
 from .openai_tools import FileToolPathPolicy, ToolPolicyError, ToolValidationError
+
+_VALIDATED_HANDOFF_DIGEST: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("cve_agent_validated_handoff_digest", default=None)
+)
+
+
+def activate_validated_handoff(
+    handoff: RepositoryHandoff | None,
+) -> contextvars.Token[str | None]:
+    """Bind validated handoff provenance to one provider session."""
+    digest = None if handoff is None else handoff.critical_sha256
+    return _VALIDATED_HANDOFF_DIGEST.set(digest)
+
+
+def deactivate_validated_handoff(token: contextvars.Token[str | None]) -> None:
+    """Remove session-local handoff provenance."""
+    _VALIDATED_HANDOFF_DIGEST.reset(token)
+
+
+def current_validated_handoff_digest() -> str | None:
+    """Return only provenance established by full handoff validation."""
+    return _VALIDATED_HANDOFF_DIGEST.get()
 
 
 def repository_handoff_path(workspace: Path) -> Path:

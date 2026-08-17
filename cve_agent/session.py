@@ -45,7 +45,12 @@ from .git import (
     upstream_changed_files,
     warn_if_hooks_disabled,
 )
-from .handoff import read_transfer_artifact, validate_repository_handoff
+from .handoff import (
+    activate_validated_handoff,
+    deactivate_validated_handoff,
+    read_transfer_artifact,
+    validate_repository_handoff,
+)
 from .openai_deadline import SessionDeadline
 from .openai_preflight import PreflightErrorCode, RepositoryPreflight
 
@@ -346,8 +351,12 @@ def guarded_session(context_file: Path, workspace_path: Path,
                     backend=backend_name,
                     model=model,
                 )
-            result = backend.run_session(
-                prompt, workspace_path, allowed, model, timeout, interactive)
+            handoff_token = activate_validated_handoff(handoff)
+            try:
+                result = backend.run_session(
+                    prompt, workspace_path, allowed, model, timeout, interactive)
+            finally:
+                deactivate_validated_handoff(handoff_token)
     except BaseException as exc:
         primary_error = (exc, exc.__traceback__)
 
