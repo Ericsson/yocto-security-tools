@@ -103,6 +103,11 @@ cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend claude -
 
 # Use a custom backend plugin from extra/
 cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend my_backend
+
+# Disable the knowledge base for this run (no similar-pattern lookups, no
+# pattern saved on success) -- useful for benchmarking a model's unaided
+# performance
+cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust --no-knowledge
 ```
 
 **AI backends.** `kiro` (default) drives [kiro-cli](https://github.com/kirodotdev/Kiro);

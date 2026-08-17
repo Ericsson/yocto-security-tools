@@ -290,7 +290,7 @@ def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
 
 def _resolution_loop(config: AgentConfig, workspace_path: Path,
                      exit_code: int, cve_info: dict,
-                     knowledge_base: KnowledgeBase) -> CveResult:
+                     knowledge_base: Optional[KnowledgeBase]) -> CveResult:
     """Run the resolution loop: context -> AI backend -> approval -> continue."""
     start_time = time.monotonic()
     current_step = exit_code
@@ -330,7 +330,7 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
 
 def _run_single_resolution_attempt(
         config: AgentConfig, workspace_path: Path, exit_code: int,
-        cve_info: dict, knowledge_base: KnowledgeBase,
+        cve_info: dict, knowledge_base: Optional[KnowledgeBase],
         attempt: int, start_time: float) -> _AttemptOutcome:
     """Execute one resolution attempt: context -> session -> approval -> continue."""
     print("Building AI context (upstream diffs, knowledge, conflict details)...")
@@ -428,7 +428,7 @@ def _run_single_resolution_attempt(
     )
 
 
-def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase,
+def _finalize_resolution(config: AgentConfig, knowledge_base: Optional[KnowledgeBase],
                          workspace_path: Path, upstream_sha: str,
                          attempt: int, start_time: float) -> _AttemptOutcome:
     """Run --continue after approval and return outcome."""
@@ -459,7 +459,7 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase,
 
 
 def _handle_not_applicable(config: AgentConfig, cve_info: dict,
-                           knowledge_base: KnowledgeBase,
+                           knowledge_base: Optional[KnowledgeBase],
                            start_time: float,
                            cve_data: Optional[dict] = None,
                            workspace_path: Optional[Path] = None) -> CveResult:
@@ -501,7 +501,7 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
 
 
 def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
-                        cve_info: dict, knowledge_base: KnowledgeBase,
+                        cve_info: dict, knowledge_base: Optional[KnowledgeBase],
                         start_time: float) -> CveResult:
     """Handle the analysis phase after a clean apply (exit 0)."""
     context_file = build_context(
@@ -563,7 +563,7 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
 
 
 def process_single_cve(config: AgentConfig,
-                       knowledge_base: KnowledgeBase) -> CveResult:
+                       knowledge_base: Optional[KnowledgeBase]) -> CveResult:
     """Process a single CVE through the full agent workflow.
 
     Wraps :func:`_run_cve_pipeline` in a re-run loop: when the agent suggests a
@@ -683,7 +683,7 @@ def _agent_dir_for(config: AgentConfig) -> Optional[Path]:
     return Path(bbpath.split(':')[0]) / 'workspace' / 'cve_agent' / recipe
 
 
-def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase,
+def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBase],
                       start_time: float) -> CveResult:
     """Run the CVE pipeline once (corrector -> resolution loop).
 
