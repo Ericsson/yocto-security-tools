@@ -12,7 +12,11 @@ from cve_agent import (
 )
 from cve_agent.__main__ import _process_batch
 from cve_agent.knowledge import KnowledgeBase
-from cve_agent.orchestrator import _handle_clean_apply, process_single_cve
+from cve_agent.orchestrator import (
+    _handle_clean_apply,
+    _handle_not_applicable,
+    process_single_cve,
+)
 from cve_agent.session import SessionResult
 
 
@@ -237,6 +241,23 @@ class TestProcessSingleCve:
 
 
 class TestHandleCleanApply:
+    @patch("cve_agent.orchestrator.request_approval")
+    @patch("cve_agent.orchestrator._read_conclusion")
+    @patch("cve_agent.orchestrator.guarded_session",
+           return_value=SessionResult(
+               resolved=False, duration=1.0,
+               failure_reason="mandatory transcript failed"))
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_unresolved_session_cannot_reach_conclusion_or_approval(
+            self, _context, _sha, _session, read_conclusion, approval):
+        result = _handle_clean_apply(
+            _cfg(), Path("/ws"), {}, MagicMock(), time.monotonic())
+        assert result.status == ResultStatus.ESCALATED
+        assert "mandatory transcript failed" in result.resolution_summary
+        read_conclusion.assert_not_called()
+        approval.assert_not_called()
+
     @patch("cve_agent.orchestrator._read_conclusion", return_value=None)
     @patch("cve_agent.orchestrator.run_corrector", return_value=(0, ""))
     @patch("cve_agent.orchestrator.save_knowledge_pattern")
@@ -300,6 +321,26 @@ class TestHandleCleanApply:
     def test_continue_recoverable_enters_loop(self, *_):
         result = _handle_clean_apply(_cfg(), Path("/ws"), {}, MagicMock(), time.monotonic())
         assert result.status == ResultStatus.CONFLICT_RESOLVED
+
+
+class TestHandleNotApplicable:
+    @patch("cve_agent.orchestrator.run_corrector")
+    @patch("cve_agent.orchestrator._read_conclusion")
+    @patch("cve_agent.orchestrator.guarded_session",
+           return_value=SessionResult(
+               resolved=False, duration=1.0,
+               failure_reason="audit flush failed"))
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_unresolved_session_cannot_mark_not_applicable(
+            self, _context, _sha, _session, read_conclusion, corrector):
+        result = _handle_not_applicable(
+            _cfg(), {}, MagicMock(), time.monotonic(),
+            cve_data={}, workspace_path=Path("/ws"))
+        assert result.status == ResultStatus.ESCALATED
+        assert "audit flush failed" in result.resolution_summary
+        read_conclusion.assert_not_called()
+        corrector.assert_not_called()
 
 
 class TestProcessBatch:

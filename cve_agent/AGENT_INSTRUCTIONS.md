@@ -2,17 +2,22 @@
 
 ## Available Tools
 
-You have file read/inspection tools and a bash-equivalent command runner —
-the exact tool names depend on your runtime and are described in the
-preamble that precedes these instructions. The rules below apply regardless
-of tool names:
+The backend preamble that precedes these instructions is authoritative about
+which tools exist. CLI backends provide file tools and a bash-equivalent
+command runner. A native backend may instead advertise only typed file, Git,
+build, and terminal tools, with no shell at all. When no shell tool is
+advertised, every shell command below is a semantic workflow example only:
+perform the equivalent operation with an advertised typed tool and never emit
+shell syntax or guess an unavailable tool name.
+
+The rules below apply regardless of the concrete tool names:
 
 - Use your file/directory inspection tool for ALL file and directory
   inspection — reading `context.md`, checking whether a file exists,
   listing a directory, viewing build logs, etc. Do NOT shell out to `ls`,
   `find`, or `cat` for this; it is already fully trusted and works for
   every path you need.
-- Your bash-equivalent runner is restricted to a fixed allow-list (git
+- When advertised, your bash-equivalent runner is restricted to a fixed allow-list (git
   plumbing, `devtool build`, log tailing, and `tee`/`echo` for build-log
   capture). Commands not on that list
   are rejected outright with no prompt — there is no fallback, so don't
@@ -50,7 +55,7 @@ of tool names:
   because both `devtool build *` and `tee` are allowed; `git status | grep x`
   does not, because `grep` is not.
 
-Bash commands you CAN run:
+CLI-backend bash commands you CAN run when the preamble advertises a shell:
 
 - Inspect: `git status`, `git status --porcelain`,
   `git status --porcelain -- <path>...`,
@@ -198,15 +203,19 @@ branch in any form is it a real prerequisite.** Then choose one of:
   - it is a large or structural change (a refactor or API redesign);
   - it itself depends on further prerequisites (a dependency chain).
 
-  Write an escalation conclusion and stop — do not mark the CVE not-applicable,
-  because it *is* applicable, just not safe to automate. Create
-  `<agent_dir>/conclusion.json` **with your file-writing tool** (not the shell —
-  see Available Tools) with these contents:
+  Record an escalation conclusion and stop — do not mark the CVE
+  not-applicable, because it *is* applicable, just not safe to automate. CLI
+  backends create the established `<agent_dir>/conclusion.json` artifact with
+  their advertised permitted file-write tool, never shell redirection. A
+  native backend whose preamble advertises `finish` calls `finish` with
+  `status` set to `needs_human`; trusted host code creates the artifact. In
+  either case the semantic payload is:
   ```json
-  {"needs_human": true, "reason": "<why this prerequisite can't be safely automated, naming the prerequisite SHA and what it changes>"}
+  {"needs_human": true, "reason": "why this prerequisite cannot be safely automated, naming the prerequisite SHA and what it changes"}
   ```
-  Replace `<agent_dir>` with the actual agent dir path from the context header.
-  After writing the file, **stop — make no other changes.**
+  Replace `<agent_dir>` with the actual agent dir path from the context header
+  for a CLI backend. After recording the conclusion, **stop — make no other
+  changes.**
 
   **Suggesting a commit for a scope extension.** When the blocker is a specific
   companion or prerequisite commit that touches files **outside** your Allowed
@@ -320,15 +329,17 @@ If the patch is incompatible with the stable base, adapt it.
 
 If the CVE fix is **not applicable** to this version (e.g. the vulnerable code
 path, function, struct, or feature does not exist in the stable branch), do NOT
-make any code changes. Instead, write a conclusion file **with your
-file-writing tool** (not the shell — see Available Tools) at
-`<agent_dir>/conclusion.json` with these contents:
+make any code changes. CLI backends create `<agent_dir>/conclusion.json` with
+their advertised permitted file-write tool. A native backend whose preamble
+advertises `finish` calls `finish` with `status` set to `not_applicable`;
+trusted host code creates the artifact. The semantic payload is:
 
 ```json
-{"not_applicable": true, "reason": "<one-line explanation of why the CVE does not apply>"}
+{"not_applicable": true, "reason": "one-line explanation of why the CVE does not apply"}
 ```
 
-Replace `<agent_dir>` with the actual agent dir path from the context header.
+Replace `<agent_dir>` with the actual agent dir path from the context header
+for a CLI backend.
 The reason should be specific — mention the missing function, struct, code path,
 or feature and the version. Example:
 `"PBMAC1 infrastructure (PBMAC1PARAM, PBMAC1_get1_pbkdf2_param) does not exist in 3.2.6; CVE-2025-11187 is not applicable to this version"`
@@ -346,14 +357,20 @@ without confirming `devtool build` exits with code 0. This is a hard
 requirement — the orchestrator will reject your session if the build still
 fails.
 
-Run the build as a **single command on ONE line** — do NOT split it across
-lines and do NOT wrap it in a `BUILD_LOG=` variable. A multi-line submission
-matches no allowed command and is rejected outright:
+For a CLI backend with a shell, run the build as a **single command on ONE
+line** — do NOT split it across lines and do NOT wrap it in a `BUILD_LOG=`
+variable. A multi-line submission matches no allowed command and is rejected
+outright:
 ```bash
 devtool build <recipe> 2>&1 | tee <agent_dir>/build.log; echo "Exit code: ${PIPESTATUS[0]}"
 ```
 Substitute `<recipe>` and `<agent_dir>` with the values from the context
 header (keep it all on one physical line).
+
+For a native backend with no shell, call the advertised typed build operation;
+the host derives the recipe, captures the complete build log, and returns a
+bounded diagnostic tail. In both cases a successful build must occur after
+the latest change before completion may be claimed.
 
 Do **not** rewrite this as `devtool build <recipe> > <agent_dir>/build.log
 2>&1` — `>` redirection is refused by the command guard (see "Available
@@ -374,9 +391,10 @@ regardless of what the tool result says.
 **After running the build:**
 - **Exit code 0**: the build passed. **Stop — your work is done.** Do not
   read or tail the log file.
-- **Exit code non-zero**: the build failed. Read ONLY the error:
-  `tail -50 <agent_dir>/build.log`. Fix the code, `git commit --amend
-  --no-edit`, and re-run the build.
+- **Exit code non-zero**: the build failed. Read ONLY the error using the
+  advertised file-read mechanism (or, for a CLI shell,
+  `tail -50 <agent_dir>/build.log`). Fix the code, amend the existing commit
+  through the permitted Git mechanism, and re-run the build.
   (`--amend --no-edit` is right here — you are fixing *code*, not the message.
   Never use it to recover from a `commit-msg` note-budget rejection: it
   resubmits the same rejected message. See **Commit Message Format**.)
@@ -402,17 +420,31 @@ file contains the original upstream commit subject and body. You MUST keep it
 intact and only **append** your backport notes after it. Never replace or rewrite
 the original message.
 
-**If this is a retry** (e.g. a build or ptest failure triggered another
+For CLI backends, use the permitted file-editing and Git mechanisms to apply
+the exact format below. Do not use shell redirection. For a native backend,
+do not edit Git-internal files: supply a concise resolution note to the
+advertised typed continuation operation. Trusted host code preserves the
+original message and appends one `Backport-resolution:` line plus one
+`Assisted-by: openai:<model>` trailer. If the preamble advertises no permitted
+way to create or amend the required commit, stop for human review rather than
+leave uncommitted changes.
+
+For a CLI backend retry (e.g. a build or ptest failure triggered another
 session after conflicts were already resolved), run `git log -1 --format=%B`
 first. If it already contains a `Conflicts Resolved:` block from a previous
 attempt, **update that existing block in place** — amend it to reflect the
 current state of the resolution — rather than appending a second block. The
-final commit message must contain exactly one `Conflicts Resolved:` block
-and one `Assisted-by:` trailer. The length budget below applies to the updated
-block exactly as it does to a fresh one — an amend is re-checked by the hook.
+final CLI-created commit message must contain exactly one
+`Conflicts Resolved:` block and one `Assisted-by:` trailer. For a native retry,
+inspect the current commit through the advertised typed Git inspection and
+supply an updated concise resolution note through the permitted continuation;
+trusted host code keeps exactly one native provenance line and trailer.
+The length budget below applies to an updated CLI block exactly as it does to a
+fresh one — an amend is re-checked by the hook.
 
-Only append notes if you adapted the patch. Use EXACTLY this markdown format — no
-alternative headers like "Conflict resolution notes:" or "Backport changes:".
+For a CLI backend, only append notes if you adapted the patch. Use EXACTLY this
+markdown format — no alternative headers like "Conflict resolution notes:" or
+"Backport changes:".
 
 Append the following block after the original commit message (separated by a
 blank line):
@@ -465,7 +497,7 @@ Rules:
   `<file>: omitted (depends on <missing infrastructure>)`. These one-liners are
   exempt from the length budget.
 - Do NOT add a "Changes from upstream" section (the agent generates that)
-- If you adapted the patch (not a verbatim cherry-pick), add a trailer line
+- For a CLI backend, if you adapted the patch (not a verbatim cherry-pick), add a trailer line
   after a blank line at the end of the commit message:
   `Assisted-by: <backend>:<model>` where `<backend>` and `<model>` are the
   **Backend** and **Model** values from the context header (e.g.

@@ -657,9 +657,15 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
         model=config.model, backend=config.backend
     )
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
-    guarded_session(context_file, workspace_path, upstream_sha, cve_info,
-                         config.model, config.session_timeout, config.cve_id,
-                         config.interactive, backend_name=config.backend)
+    session_result = guarded_session(
+        context_file, workspace_path, upstream_sha, cve_info,
+        config.model, config.session_timeout, config.cve_id,
+        config.interactive, backend_name=config.backend)
+    if not session_result.resolved:
+        return _make_result(
+            config.cve_id, ResultStatus.ESCALATED, 0, start_time,
+            session_result.failure_reason or "Analysis session was not verified",
+        )
 
     reason = _read_conclusion(workspace_path)
     if not reason:
@@ -682,9 +688,15 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     )
     print("\n--- Mandatory analysis phase ---")
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
-    guarded_session(context_file, workspace_path, upstream_sha, cve_info,
-                         config.model, config.session_timeout, config.cve_id,
-                         config.interactive, backend_name=config.backend)
+    session_result = guarded_session(
+        context_file, workspace_path, upstream_sha, cve_info,
+        config.model, config.session_timeout, config.cve_id,
+        config.interactive, backend_name=config.backend)
+    if not session_result.resolved:
+        return _make_result(
+            config.cve_id, ResultStatus.ESCALATED, 0, start_time,
+            session_result.failure_reason or "Analysis session was not verified",
+        )
 
     conclusion_reason = _read_conclusion(workspace_path)
     if conclusion_reason:

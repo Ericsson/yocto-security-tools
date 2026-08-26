@@ -26,13 +26,10 @@ from shared.git_runner import run_capture
 from .backend import AIBackend, SessionResult
 from .git import has_in_progress_operation
 
-# Agent instructions injected as the Claude system prompt for parity with
-# the kiro agent (whose ``prompt`` field points at the same content, synced
-# via cve_agent.setup.sync_agent_instructions()). Resolved lazily in
-# _build_command() via cve_agent.resolve_agent_instructions() rather than
-# frozen at import time, so a sync that happens later in the same process
-# (ensure_agents(), called from __main__.main() before this runs) is picked
-# up instead of a stale value from before the sync.
+# Agent instructions are assembled lazily as the Claude-specific preamble plus
+# the packaged backend-neutral content. The stable XDG prompt copy is reserved
+# for kiro-cli and already contains Kiro's preamble, so consuming it here would
+# advertise contradictory tools.
 
 # Map kiro-style model names to Claude Code aliases. Valid Claude aliases and
 # full model IDs pass through unchanged; an empty value falls back to "sonnet".
@@ -181,8 +178,6 @@ class ClaudeBackend(AIBackend):
 
     def _build_command(self, prompt: str, agent_dir: Path,
                        model: str, interactive: bool) -> list[str]:
-        from . import resolve_agent_instructions
-
         cmd = ["claude"]
         if not interactive:
             cmd.append("-p")
@@ -190,16 +185,15 @@ class ClaudeBackend(AIBackend):
         cmd += ["--permission-mode", "acceptEdits" if not interactive else "default"]
         # The context file and agent artifacts live outside the session cwd.
         cmd += ["--add-dir", str(agent_dir)]
-        agent_instructions = resolve_agent_instructions()
-        if agent_instructions.is_file():
-            system_prompt = (self.tool_preamble()
-                            + agent_instructions.read_text(encoding="utf-8"))
-            cmd += ["--append-system-prompt", system_prompt]
-        else:
+        try:
+            system_prompt = self.assembled_instructions()
+        except (OSError, RuntimeError) as exc:
             logging.warning(
-                "Agent instructions not found (%s); running without a system "
+                "Agent instructions unavailable (%s); running without a system "
                 "prompt. File scope is still enforced by the pre-commit hook.",
-                agent_instructions)
+                exc)
+        else:
+            cmd += ["--append-system-prompt", system_prompt]
         for tool in _ALLOWED_TOOLS:
             cmd += ["--allowedTools", tool]
         for path in _DENIED_READ_WRITE:

@@ -161,6 +161,23 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     if yocto_tmp:
         log_lines += f"\n- **Yocto tmp dir**: `{yocto_tmp}` (task logs under `work/<arch>/{recipe}/*/temp/`)"
 
+    if backend == "openai":
+        execution_guidance = (
+            "- **Tool execution**: this native session has no shell. Use only "
+            "the typed file, Git, build, and terminal tools advertised by the "
+            "backend; pass workspace-relative paths where requested.\n"
+        )
+        allowed_heading = "Allowed Files (ONLY these may be modified or staged)"
+    else:
+        execution_guidance = (
+            "- **Working directory**: your shell ALREADY runs inside the "
+            "workspace above. Run every command **bare** (e.g. `git status`) — "
+            "do NOT prefix `cd` and do NOT chain with `&&`, `;`, or `|`. The "
+            "command allow-list matches whole commands, so `cd ... && git "
+            "status` is rejected while a plain `git status` is accepted.\n"
+        )
+        allowed_heading = "Allowed Files (ONLY these may be staged with `git add`)"
+
     return (
         f"# CVE Agent Context: {cve_id}\n\n"
         f"- **Recipe**: {recipe}\n"
@@ -168,14 +185,10 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
         f"- **Backend**: {backend}\n"
         f"- **Model**: {model}\n"
         f"- **Workspace**: `{workspace_path}`\n"
-        f"- **Working directory**: your shell ALREADY runs inside the "
-        f"workspace above. Run every command **bare** (e.g. `git status`) — "
-        f"do NOT prefix `cd` and do NOT chain with `&&`, `;`, or `|`. The "
-        f"command allow-list matches whole commands, so `cd ... && git "
-        f"status` is rejected while a plain `git status` is accepted.\n"
+        f"{execution_guidance}"
         f"- **Upstream SHA(s)**: {sha_display}\n"
         f"{log_lines}\n\n"
-        f"## Allowed Files (ONLY these may be staged with `git add`)\n\n"
+        f"## {allowed_heading}\n\n"
         f"```\n{allowed_list}\n```\n\n"
         f"**Any file not in this list MUST NOT be staged or modified.**"
     )
@@ -187,11 +200,11 @@ def _build_phase_instructions(exit_code: int) -> str:
     The phase-independent core (tools, scope rules, analysis, build
     verification, commit format) reaches the model via the session's system
     prompt (kiro-cli's ``prompt: file://...`` / the ``claude`` CLI's
-    ``--append-system-prompt``; see ``cve_agent.kiro_backend`` /
-    ``cve_agent.claude_backend``). The per-phase steps live in small fragment
-    files under ``cve_agent/instructions/`` and are embedded here into
-    ``context.md`` for the matching exit code ONLY, so a session receives just
-    the workflow its phase needs instead of the whole manual.
+    ``--append-system-prompt`` / the native OpenAI-compatible conversation;
+    see the backend modules). The per-phase steps live in small fragment files
+    under ``cve_agent/instructions/`` and are embedded here into ``context.md``
+    for the matching exit code ONLY, so a session receives just the workflow
+    its phase needs instead of the whole manual.
 
     Returns an empty string when there is no fragment for the exit code
     (analysis / exit 0) or the file is missing, so ``build_context`` omits the

@@ -57,6 +57,17 @@ class TestContextModelName:
                                model='claude-sonnet-4-20250514')
         assert 'claude-sonnet-4-20250514' in result
 
+    @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
+    @patch('cve_agent.context.get_upstream_sha', return_value='abc')
+    @patch('cve_agent.context.run_git_stdout', return_value='file.c')
+    def test_native_header_requires_typed_tools_without_shell_syntax(self, *_):
+        result = _build_header(
+            'CVE-1', 'r', 0, Path('/ws'), {}, model='local', backend='openai')
+        assert 'this native session has no shell' in result
+        assert 'typed file, Git, build, and terminal tools' in result
+        assert 'git status' not in result
+        assert 'staged with `git add`' not in result
+
 
 class TestContextMultiSha:
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['aaa', 'bbb', 'ccc'])
