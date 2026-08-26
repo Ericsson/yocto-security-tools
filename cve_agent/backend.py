@@ -3,9 +3,18 @@
 """Pluggable AI backend interface for CVE agent sessions."""
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+
+class BackendConfigurationError(ValueError):
+    """Invalid backend configuration supplied by the operator."""
+
+
+class BackendRuntimeUnavailableError(RuntimeError):
+    """A configured backend has no runnable session implementation."""
 
 
 @dataclass
@@ -21,6 +30,7 @@ class SessionResult:
     resolved: bool
     duration: float
     transcript_path: Optional[Path] = None
+    failure_reason: str = ""
     credits: Optional[float] = None
     credits_unit: Optional[str] = None
 
@@ -32,6 +42,7 @@ class AIBackend:
     Place the file in extra/ for auto-discovery.
     """
     name: str = ""
+    default_model: Optional[str] = "claude-sonnet-5"
 
     def run_session(self, prompt: str, workspace_path: Path,
                    allowed_files: set, model: str,
@@ -46,6 +57,25 @@ class AIBackend:
     def setup(self, **kwargs) -> None:
         """Perform any one-time setup."""
 
+    def configure(self, options: Mapping[str, object],
+                  environ: Optional[Mapping[str, str]] = None) -> None:
+        """Validate and store backend-specific configuration.
+
+        This optional hook is deliberately concrete so existing external
+        backends do not need to implement it. Backend-specific options stay
+        out of :meth:`run_session`, whose signature is part of the plugin API.
+        """
+
+    def resolve_model(self, requested: Optional[str],
+                      environ: Optional[Mapping[str, str]] = None) -> str:
+        """Resolve a requested model while preserving the historic default."""
+        if requested:
+            return requested
+        if self.default_model is None:
+            raise BackendConfigurationError(
+                f"backend '{self.name}' requires an explicit model")
+        return self.default_model
+
     def tool_preamble(self) -> str:
         """Backend-specific tool-name guidance to prepend to AGENT_INSTRUCTIONS.md.
 
@@ -59,6 +89,12 @@ class AIBackend:
         the model independently of these instructions.
         """
         return ""
+
+    def assembled_instructions(self) -> str:
+        """Return this backend's preamble followed by pure shared guidance."""
+        from . import read_shared_agent_instructions
+
+        return self.tool_preamble() + read_shared_agent_instructions()
 
 
 _BACKENDS: dict[str, AIBackend] = {}
@@ -81,6 +117,9 @@ def _ensure_builtin_backends() -> None:
     if "claude" not in _BACKENDS:
         from .claude_backend import ClaudeBackend
         _BACKENDS["claude"] = ClaudeBackend()
+    if "openai" not in _BACKENDS:
+        from .openai_backend import OpenAICompatibleBackend
+        _BACKENDS["openai"] = OpenAICompatibleBackend()
 
 
 def register_backend(backend: AIBackend) -> None:

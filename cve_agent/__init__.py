@@ -71,6 +71,31 @@ def resolve_agent_instructions() -> Path:
     return PACKAGED_AGENT_INSTRUCTIONS
 
 
+def read_shared_agent_instructions() -> str:
+    """Read the packaged backend-neutral instructions for runtime assembly.
+
+    The stable copy used by kiro-cli's static ``file://`` prompt includes the
+    Kiro-specific tool preamble. Runtime backends must therefore read the
+    packaged source directly before adding their own preamble, or a Claude or
+    native session could receive contradictory Kiro tool names.
+    """
+    from .setup import PACKAGED_AGENT_INSTRUCTIONS
+
+    if not PACKAGED_AGENT_INSTRUCTIONS.is_file():
+        raise FileNotFoundError(
+            f"Packaged agent instructions not found: {PACKAGED_AGENT_INSTRUCTIONS}")
+    return PACKAGED_AGENT_INSTRUCTIONS.read_text(encoding="utf-8")
+
+
+# Kept for backward compatibility (existing tests/callers patch this
+# constant directly). Computed once at import time; DO NOT use in new code —
+# call resolve_agent_instructions() instead, which re-checks the stable
+# synced copy on every call and picks up a sync that happens later in the
+# same process (e.g. ensure_agents() runs before context building in the
+# real CLI flow).
+AGENT_INSTRUCTIONS = resolve_agent_instructions()
+
+
 class ResultStatus(Enum):
     """Outcome status for a CVE processing attempt."""
     SUCCESS = "success"
@@ -158,7 +183,8 @@ __all__ = [
     'AgentConfig', 'CveResult', 'ResultStatus',
     'RECOVERABLE_EXITS', 'UNRECOVERABLE_EXITS',
     'DEFAULT_KNOWLEDGE_PATH', 'DEFAULT_MAX_RETRIES', 'DEFAULT_SESSION_TIMEOUT',
-    'CORRECTOR_CMD', 'resolve_agent_instructions',
+    'CORRECTOR_CMD', 'AGENT_INSTRUCTIONS', 'resolve_agent_instructions',
+    'read_shared_agent_instructions',
     'get_build_dir', 'get_agent_dir',
     'EXIT_SUCCESS', 'EXIT_CONFLICT', 'EXIT_CHECKOUT_ERROR', 'EXIT_PTEST_ERROR',
     'EXIT_BUILD_ERROR', 'EXIT_PATCH_ERROR', 'EXIT_METADATA_ERROR', 'EXIT_GIT_ERROR',
