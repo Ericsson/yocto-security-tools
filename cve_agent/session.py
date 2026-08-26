@@ -11,6 +11,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
 from typing import Optional
 
 from shared.git_runner import (
@@ -157,8 +158,14 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # the hook (and stripped post-session), which is the mechanical signal
     # for the agent to fall back to human review rather than widen its scope.
     # Both guards are installed inside the try: if installing the second one
-    # fails, or anything between here and the session raises, the finally must
-    # still be able to strip whichever hook did get written.
+    # fails, or anything between here and the session raises, cleanup must
+    # still strip whichever hook did get written.
+    result: SessionResult | None = None
+    primary_error: tuple[BaseException, TracebackType | None] | None = None
+    cleanup_errors: list[BaseException] = []
+    pre_session_head: str | None = None
+    # Cleanup must also run for KeyboardInterrupt/SystemExit, but the original
+    # control-flow exception is preserved and re-raised after every guard step.
     try:
         install_scope_hook(workspace_path, allowed)
         # Same lifecycle as the scope guard: rejects the AI's own commits when
@@ -194,9 +201,50 @@ def guarded_session(context_file: Path, workspace_path: Path,
         print(f"Starting {backend_name} session (timeout {timeout}s)...")
         result = backend.run_session(
             prompt, workspace_path, allowed, model, timeout, interactive)
-    finally:
+    except BaseException as exc:
+        primary_error = (exc, exc.__traceback__)
+
+    try:
         remove_scope_hook(workspace_path)
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
         remove_notes_hook(workspace_path)
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+
+    if workspace_path.exists():
+        try:
+            revert_unauthorized_changes(workspace_path, allowed)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+        if pre_session_head is not None:
+            try:
+                _write_audit_log(
+                    workspace_path, recipe, cve_id, all_shas, upstream_diffs,
+                    pre_session_head)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+
+    if primary_error is not None:
+        for cleanup_error in cleanup_errors:
+            print(
+                "Session cleanup also failed: "
+                f"{type(cleanup_error).__name__}",
+                file=sys.stderr,
+            )
+        error, traceback = primary_error
+        raise error.with_traceback(traceback)
+    if cleanup_errors:
+        error = cleanup_errors[0]
+        for secondary in cleanup_errors[1:]:
+            print(
+                f"Additional session cleanup failure: {type(secondary).__name__}",
+                file=sys.stderr,
+            )
+        raise error.with_traceback(error.__traceback__)
+    if result is None:
+        raise RuntimeError("backend returned no session result")
 
     _log_session_end(agent_dir, result)
 
@@ -208,12 +256,6 @@ def guarded_session(context_file: Path, workspace_path: Path,
             file=sys.stderr,
         )
 
-    if not workspace_path.exists():
-        return result
-
-    revert_unauthorized_changes(workspace_path, allowed)
-    _write_audit_log(workspace_path, recipe, cve_id, all_shas, upstream_diffs,
-                     pre_session_head)
     return result
 
 
