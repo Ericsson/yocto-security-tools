@@ -8,6 +8,7 @@ graph TB
         exit_codes["exit_codes.py"]
         paths["paths.py"]
         json_cache["json_cache.py"]
+        shared_handoff["handoff.py"]
         url_parser["url_parser.py"]
         shared_init["__init__.py (build_git_env)"]
     end
@@ -37,6 +38,8 @@ graph TB
         ptest["ptest.py"]
         meta_layer["meta_layer.py"]
         ui["ui.py"]
+        transfer["transfer.py"]
+        corrector_handoff["handoff.py"]
     end
     subgraph agent["cve_agent/ — AI Orchestration"]
         orchestrator["orchestrator.py"]
@@ -48,6 +51,10 @@ graph TB
         agent_git["git.py"]
         setup["setup.py"]
         corrector_mod["corrector.py"]
+        result["result.py"]
+        artifacts["artifacts.py"]
+        semantic_validation["semantic_validation.py"]
+        evaluation["evaluation.py"]
     end
 ```
 
@@ -55,9 +62,10 @@ graph TB
 
 | File | Responsibility |
 |------|---------------|
-| `exit_codes.py` | Single source of truth for all exit codes (0–15) |
+| `exit_codes.py` | Single source of truth for all exit codes (0–16) |
 | `paths.py` | XDG-compliant `data_dir()` and `cache_dir()` with env overrides |
 | `json_cache.py` | Gzip-compressed JSON cache with atomic writes (`cache_load`, `cache_dump`) |
+| `handoff.py` | Versioned corrector-to-agent repository state and scope contract |
 | `url_parser.py` | Structure-aware commit-URL parsing (GitHub/GitLab, cgit, gitweb, Gitiles, kernel.org shortlinks, Pagure, SourceForge, Fossil), extract hashes, fetch PR commit lists. `HASH_RE` is shared and intentionally unanchored — `cve_metadata_extractor/debian.py` scans free-text notes with `findall()` |
 | `__init__.py` | `GIT_ENV_ALLOWLIST` and `build_git_env()` for safe subprocess environments |
 
@@ -94,6 +102,8 @@ graph TB
 | `ptest.py` | ptest execution: enable ptest, run tests, compare before/after results |
 | `meta_layer.py` | Meta-layer commit creation: CVE status writing, patch export |
 | `ui.py` | Terminal UI: conflict/edit/manual instruction display |
+| `transfer.py` | Verified cross-layout commit mapping, adaptation, and rollback |
+| `handoff.py` | Produce the trusted corrector-to-agent repository manifest |
 | `__main__.py` | CLI entry point: argument parsing, bitbake env validation, interrupt handling |
 | `version.py` | PEP 440-compatible version comparison for tag matching |
 
@@ -114,6 +124,17 @@ graph TB
 | `openai_git_tools.py` | Closed Git schemas, bounded executor, parsed inspection, exact staging/commit/amend, cherry-pick preflight, and trusted provenance |
 | `openai_deadline.py` | Injectable monotonic session deadline and distinct runtime timeout error |
 | `openai_host_tools.py` | Interactive approval, controlled `devtool build`, protected artifacts, and host-verified `finish` outcomes |
+| `openai_provider.py` | Provider capability schema and bounded stable failure taxonomy/evidence |
+| `openai_probe.py` | Source-free opt-in provider conformance probe |
+| `openai_ollama.py` | Bounded native Ollama alias preparation, preload, and context verification |
+| `openai_profile.py` | Strict named-profile parsing, validation, and fallback selection |
+| `openai_preflight.py` | Bounded repository initialization and precise pre-provider diagnostics |
+| `openai_progress.py` | Host-evidence progress digests and no-progress accounting |
+| `artifacts.py` | Per-attempt restrictive manifests, redacted transcript, summaries, and telemetry |
+| `handoff.py` | Validation and activation of the corrector's trusted repository handoff |
+| `result.py` | Versioned workflow, build, security, and failure outcomes |
+| `semantic_validation.py` | Reference/generated diff evidence and independent security-status decision |
+| `evaluation.py` | Immutable campaign manifests, fresh-snapshot execution, metrics, and deterministic reports |
 | `context.py` | Build AI prompt context: conflict details, build logs, ptest results, knowledge |
 | `knowledge.py` | `KnowledgeBase` class: store/retrieve resolution patterns with file-locking |
 | `review.py` | Post-resolution review: diff display, commit amendment, approval workflow |
@@ -135,6 +156,7 @@ Plugin directory (`.gitignore`'d). Contains symlinks to private plugins. Auto-di
 | `tests/agent/` | Orchestration, session, backend, context, knowledge, review, git, security |
 | `tests/agent/test_openai_compatibility.py` | CLI/env/docs/instruction/Ollama-shape compatibility contract |
 | `tests/agent/test_openai_protocol_integration.py` | Disposable socket-to-runtime success/failure, authority, cleanup, and redaction flows |
+| `tests/integration/test_evaluation.py` | Offline campaign, provenance, comparison, resume, and deterministic-report gate |
 | `tests/agent/test_openai_live.py` | Explicitly opted-in disposable Ollama read/finish smoke; skipped by default |
 | `tests/corrector/` | Workflow, cherry-pick, blame, git ops, recipe ops, state, ptest, monorepo |
 | `tests/extractor/` | Each source (debian, osv, cvelistv5, ubuntu), processing, utils |

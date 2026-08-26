@@ -183,6 +183,12 @@ fresh identical snapshots, immutable same-campaign resume, complete crossover
 cohorts, baseline-health exclusions, decomposed telemetry, and semantic—not
 legacy union—success metrics.
 
+Before a controlled evaluation release, run the
+[adversarial release gate](docs/adversarial-release-gate.md). It maps the
+report-derived false positives and hostile model/provider/repository cases to
+offline deterministic tests. Passing this gate does not make build success a
+security proof or remove mandatory semantic and human review.
+
 ## How It Works
 
 ```mermaid

@@ -174,6 +174,16 @@ out-of-scope changes and writes its independent audit. The orchestrator does
 not read a conclusion or advance the corrector unless that guarded result is
 resolved; unresolved terminal artifacts are removed.
 
+After workflow/build completion, semantic validation independently compares
+the host-captured reference and generated trees. Exact and normalized-
+equivalent results can be security-accepted when required build/test evidence
+exists; missing prerequisites and runtime changes are rejected, while omitted
+tests and structural adaptations require review. Evaluation campaigns run
+each backend from a fresh identical snapshot and report these security states
+rather than treating workflow completion or historical union rows as fixes.
+See `docs/adversarial-release-gate.md` for the maintained A–L hostile-input
+matrix and controlled-evaluation release posture.
+
 ## Knowledge Base Workflow
 
 ```mermaid
