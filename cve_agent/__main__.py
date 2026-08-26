@@ -25,6 +25,7 @@ from . import (
     CveResult,
     ResultStatus,
 )
+from .backend import AIBackend, BackendRuntimeUnavailableError, get_backend
 from .corrector import get_workspace_path, load_cve_metadata
 from .git import run_git_stdout
 from .knowledge import KnowledgeBase
@@ -215,7 +216,11 @@ def _sigint_handler(results: list[CveResult]):
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="CVE Backporting Agent - AI-assisted CVE fix orchestration"
+        description="CVE Backporting Agent - AI-assisted CVE fix orchestration",
+        epilog=(
+            "Native OpenAI-compatible sessions print their mandatory transcript "
+            "path after each run. See docs/openai-compatible-backend.md."
+        ),
     )
     parser.add_argument('--version', action='version',
                         version=f'%(prog)s {_get_version()}')
@@ -245,10 +250,14 @@ def _parse_args() -> argparse.Namespace:
     # --- AI session ---
     ai_group = parser.add_argument_group('AI session')
     ai_group.add_argument('--backend', default='kiro',
-                        help='AI backend: kiro or claude (default: %(default)s)')
-    ai_group.add_argument('--model', default='claude-sonnet-5',
+                        help='AI backend: kiro, claude, or openai (native '
+                             'Chat Completions) '
+                             '(default: %(default)s)')
+    ai_group.add_argument('--model',
                         help='Model for AI sessions; the claude backend also '
-                             'accepts aliases like sonnet/opus (default: %(default)s)')
+                             'accepts aliases like sonnet/opus. Kiro and Claude '
+                             'default to claude-sonnet-5; OpenAI requires this '
+                             'option or CVE_AGENT_OPENAI_MODEL.')
     ai_group.add_argument('--max-retries', type=int, default=DEFAULT_MAX_RETRIES,
                         help='Max resolution attempts (default: %(default)s)')
     ai_group.add_argument('--session-timeout', type=int,
@@ -263,7 +272,45 @@ def _parse_args() -> argparse.Namespace:
                              'saved on success.')
     ai_group.add_argument('-i', '--interactive', action='store_true',
                         help='Enable interactive mode (human-in-the-loop). '
-                             'Omit for non-interactive/CI use (default).')
+                             'The native openai backend prompts before side '
+                             'effects. Omit for non-interactive/CI use (default).')
+
+    # --- Native OpenAI-compatible backend ---
+    openai_group = parser.add_argument_group(
+        'OpenAI-compatible backend',
+        'Direct non-streaming /chat/completions client; no external agent CLI.')
+    openai_group.add_argument('--openai-base-url',
+                        help='OpenAI-compatible API root (CLI overrides '
+                             'CVE_AGENT_OPENAI_BASE_URL and OPENAI_BASE_URL; '
+                             'default: http://127.0.0.1:11434/v1)')
+    openai_group.add_argument('--openai-api-key-env', metavar='NAME',
+                        help='Name of an environment variable containing the '
+                             'API key (CVE_AGENT_OPENAI_API_KEY_ENV; default '
+                             'name: OPENAI_API_KEY); never pass the key itself')
+    openai_group.add_argument('--openai-max-steps', type=int,
+                        help='Maximum model turns per session '
+                             '(CVE_AGENT_OPENAI_MAX_STEPS; default: 20)')
+    openai_group.add_argument('--openai-max-tool-calls', type=int,
+                        help='Maximum total tool calls per session '
+                             '(CVE_AGENT_OPENAI_MAX_TOOL_CALLS; default: 100)')
+    openai_group.add_argument('--openai-max-output-tokens', type=int,
+                        help='Maximum output tokens requested per response '
+                             '(CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS; default: 8192)')
+    openai_group.add_argument('--openai-connect-timeout', type=int,
+                        help='Endpoint connection timeout in seconds '
+                             '(CVE_AGENT_OPENAI_CONNECT_TIMEOUT; default: 10)')
+    openai_group.add_argument('--openai-request-timeout', type=int,
+                        help='Per-request timeout in seconds '
+                             '(CVE_AGENT_OPENAI_REQUEST_TIMEOUT; default: 120)')
+    openai_group.add_argument('--openai-allow-remote', action='store_true',
+                        default=None, dest='openai_allow_remote_endpoint',
+                        help='Explicitly allow a non-loopback endpoint '
+                             '(or CVE_AGENT_OPENAI_ALLOW_REMOTE=true)')
+    openai_group.add_argument('--openai-allow-insecure-remote-http',
+                        action='store_true', default=None,
+                        help='Allow HTTP to a non-loopback endpoint; requires '
+                             '--openai-allow-remote and exposes inference data '
+                             'in transit (or set CVE_AGENT_OPENAI_ALLOW_INSECURE_REMOTE_HTTP=true)')
 
     # --- Build control ---
     build_group = parser.add_argument_group('build control')
@@ -333,6 +380,14 @@ def _config_from_args(args: argparse.Namespace,
     )
 
 
+def _configure_backend(args: argparse.Namespace) -> AIBackend:
+    """Resolve generic model defaults and backend-specific configuration."""
+    backend = get_backend(args.backend)
+    args.model = backend.resolve_model(args.model, os.environ)
+    backend.configure(vars(args), os.environ)
+    return backend
+
+
 def main() -> None:
     """Main entry point for the CVE agent."""
     results: list[CveResult] = []
@@ -354,20 +409,24 @@ def main() -> None:
               "--cve-info", file=sys.stderr)
         sys.exit(EXIT_AGENT_ERROR)
 
-    if args.backend == 'kiro':
+    try:
+        backend = _configure_backend(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(EXIT_AGENT_ERROR)
+
+    if backend.name == 'kiro':
         ensure_agents(interactive=not args.trust)
     else:
-        from .backend import get_backend
-        try:
-            backend = get_backend(args.backend)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(EXIT_AGENT_ERROR)
         if not backend.is_available():
             print(f"Error: backend '{args.backend}' prerequisites not met — "
                   "is the required CLI installed and on PATH?", file=sys.stderr)
             sys.exit(EXIT_AGENT_ERROR)
-        backend.setup(interactive=not args.trust)
+        try:
+            backend.setup(interactive=not args.trust)
+        except BackendRuntimeUnavailableError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(EXIT_AGENT_ERROR)
 
     if args.trust and not _show_trust_warning():
         print("Trust mode declined. Exiting.")

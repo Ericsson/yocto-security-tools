@@ -8,6 +8,7 @@ length budget (commit-msg hook).
 """
 import difflib
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -198,6 +199,14 @@ def guarded_session(context_file: Path, workspace_path: Path,
         remove_notes_hook(workspace_path)
 
     _log_session_end(agent_dir, result)
+
+    if result.transcript_path is not None:
+        print(f"{backend_name} transcript: {result.transcript_path}")
+    if result.failure_reason:
+        print(
+            f"{backend_name} session unresolved: {result.failure_reason}",
+            file=sys.stderr,
+        )
 
     if not workspace_path.exists():
         return result

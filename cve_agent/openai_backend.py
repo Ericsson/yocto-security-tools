@@ -475,6 +475,7 @@ class OpenAICompatibleBackend(AIBackend):
                 interactive=interactive,
                 deadline=deadline,
                 event_sink=transcript.runtime_event,
+                protected_secrets=(secret,) if secret else (),
             )
             client_factory = self._client_factory or OpenAIChatCompletionsClient
             client = client_factory(
@@ -499,7 +500,14 @@ class OpenAICompatibleBackend(AIBackend):
         except Exception as exc:
             return self._initialization_failure(
                 transcript, deadline, started, type(exc).__name__)
-        return loop.run(session_model, interactive)
+        result = loop.run(session_model, interactive)
+        if not result.resolved:
+            try:
+                runtime.discard_terminal_artifacts()
+            except (OSError, RuntimeError):
+                logging.error(
+                    "OpenAI session could not remove an untrusted terminal artifact")
+        return result
 
     @staticmethod
     def _initialization_failure(

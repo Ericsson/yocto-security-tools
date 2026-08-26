@@ -57,7 +57,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 markers = [
     "integration: tests that create git repos or require external resources",
-    "live: opt-in tests that drive a real AI backend CLI (needs binary + auth)",
+    "live: opt-in tests that contact a real AI backend CLI or model endpoint",
 ]
 
 [tool.coverage.run]

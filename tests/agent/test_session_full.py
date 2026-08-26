@@ -308,6 +308,40 @@ class TestGuardedKiroSession:
         m_unhook.assert_called_once_with(ws)
         m_notes_remove.assert_called_once_with(ws)
 
+    def test_unresolved_native_result_still_removes_hook_reverts_and_audits(
+            self, tmp_path, capsys):
+        ws = tmp_path / "workspace" / "sources" / "recipe"
+        ws.mkdir(parents=True)
+        agent = tmp_path / "agent"
+        agent.mkdir()
+        backend = MagicMock()
+        backend.run_session.return_value = SessionResult(
+            resolved=False,
+            duration=1.0,
+            transcript_path=agent / "session.jsonl",
+            failure_reason="check --openai-base-url",
+        )
+        with patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
+                patch("cve_agent.session.get_changed_files", return_value=set()), \
+                patch("cve_agent.session.run_git_stdout", return_value=""), \
+                patch("cve_agent.session.install_scope_hook") as install, \
+                patch("cve_agent.session.remove_scope_hook") as remove, \
+                patch("cve_agent.session.revert_unauthorized_changes") as revert, \
+                patch("cve_agent.session._write_audit_log") as audit, \
+                patch("cve_agent.session.get_backend", return_value=backend), \
+                patch("cve_agent.session.get_agent_dir", return_value=agent):
+            result = guarded_session(
+                agent / "context.md", ws, "unknown", {}, "model", 30,
+                "CVE-1", backend_name="openai")
+        assert result.resolved is False
+        install.assert_called_once()
+        remove.assert_called_once()
+        revert.assert_called_once()
+        audit.assert_called_once()
+        captured = capsys.readouterr()
+        assert f"openai transcript: {agent / 'session.jsonl'}" in captured.out
+        assert "openai session unresolved: check --openai-base-url" in captured.err
+
 
 class TestWriteAuditLog:
     @patch("cve_agent.session._get_backport_note", return_value="adapted")

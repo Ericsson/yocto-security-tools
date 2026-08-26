@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from cve_agent.openai_git_tools import GIT_TOOL_CONTRACTS
 from tests.agent.allowlist_model import kiro_permits
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -602,3 +603,22 @@ def test_no_blanket_tests_deny_rule(agent):
     denied = _load(_MANIFESTS["kiro"], agent)["toolsSettings"]["fs_write"][
         "deniedPaths"]
     assert "**/tests/**" not in denied
+
+
+def test_native_git_runtime_has_no_generic_process_escape_hatch():
+    """The native backend's permission matrix is its closed typed registry."""
+    assert not ({
+        "git", "run_git", "run_process", "execute_bash", "shell",
+    } & set(GIT_TOOL_CONTRACTS))
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "argv", "command", "config", "environment", "executable", "flags",
+        "hook", "options", "pathspec", "shell", "subcommand",
+    ],
+)
+def test_native_git_runtime_denies_untyped_command_fields(field):
+    assert all(field not in contract.fields
+               for contract in GIT_TOOL_CONTRACTS.values())
