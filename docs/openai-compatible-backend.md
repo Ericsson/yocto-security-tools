@@ -214,6 +214,31 @@ temperature = 0..2
 top_p = >0..1
 reasoning_effort = none|low|medium|high|max
 
+[capabilities]
+chat_completions_path = chat/completions
+supports_tools = true|false
+supports_parallel_tool_calls = true|false
+supports_tool_choice = true|false
+tool_choice_values = auto[,none,required]
+output_token_field = max_tokens|max_completion_tokens
+reasoning_request_field = none|reasoning_effort
+reasoning_response_field = none|reasoning|reasoning_content
+requires_reasoning_replay = true|false
+supports_response_usage = true|false
+supports_request_ids = true|false
+max_request_bytes = 1024..1048576
+max_response_bytes = 1024..1048576
+
+[probe]
+enabled = true|false
+
+[fallback]
+selector = openai-<different-profile>
+allow_timeout = true|false
+allow_rate_limit = true|false
+preserve_mutations = true|false
+min_remaining_seconds = 1..3600
+
 [ollama]
 api_base_url = ...
 source_model = ...
@@ -232,6 +257,80 @@ world-writable files, and secret-bearing keys are rejected. `api_key_env` names
 an environment variable; a profile can never contain an API-key value or add
 custom headers/body fields. Absent `[chat]` values are omitted from JSON rather
 than sent as `null`.
+
+### Provider capabilities and conformance probe
+
+`[capabilities]` is a schema-versioned, allowlisted description of the selected
+Chat Completions dialect. It controls only the relative chat path, tool and
+parallel-call support, accepted `tool_choice` values, the output-token field,
+portable reasoning request/response/replay fields, optional usage/request-ID
+support, and lower request/response byte ceilings. Paths are relative and
+bounded. Unknown fields and contradictory combinations—such as parallel tools
+without tool support or required replay without a reasoning response field—are
+configuration errors. Static declarations remain authoritative; runtime
+responses cannot silently turn on a capability.
+
+`[probe] enabled = true` runs a fixed, harmless four-request sequence after the
+mandatory transcript exists and before the CVE prompt is sent: basic text, one
+`probe_echo` call, its tool-result continuation, and final text. Configured
+reasoning replay is checked as part of the tool continuation. The probe contains
+only a fixed marker and never repository paths, source, diffs, context, or build
+output. Its status, profile/capability digests, safe request IDs, and bounded
+redacted failure evidence are retained in the run artifacts. It is opt-in and
+does not make argument parsing, profile loading, `--help`, or backend setup
+network-active.
+
+### Failure-aware provider fallback
+
+A primary named profile can select one distinct native profile in `[fallback]`.
+This is a single bounded cascade, not a plugin lookup or an unbounded chain;
+the fallback profile cannot itself name another fallback. The core contains no
+provider or model names, so a Qwen-first/DeepSeek-fallback deployment is a site
+policy expressed only in profiles.
+
+Fallback is considered for model no-progress/budget exhaustion, a build failure
+after agent work, and selected provider protocol failures: model not found,
+request rejection, unsupported tool/reasoning protocol, truncation, malformed
+response, selected server errors, or connection loss. Timeout and rate-limit
+fallback require their separate booleans and sufficient remaining deadline.
+Authentication failures and deterministic host initialization, handoff,
+transfer, semantic, policy, or operator-denial failures never fall back.
+
+Before switching, the host revalidates the trusted HEAD/tree, operation state,
+allowed dirty-path set, and unchanged scope. `preserve_mutations = false`
+prevents switching after any mutation. Both attempts share the same monotonic
+deadline, tool/model counters, duplicate tool-call-ID set, progress evidence,
+runtime instance, trusted baseline, and allowed files. The fallback receives a
+small host-generated state summary—not hidden reasoning or a copy of the
+primary transcript—and has a distinct transcript/provider-attempt identity in
+the same per-CVE artifact directory.
+
+Provider failures use these stable codes:
+
+```text
+PROVIDER_AUTH
+PROVIDER_MODEL_NOT_FOUND
+PROVIDER_REQUEST_REJECTED
+PROVIDER_TOOL_PROTOCOL_UNSUPPORTED
+PROVIDER_REASONING_PROTOCOL_UNSUPPORTED
+PROVIDER_RESPONSE_TRUNCATED
+PROVIDER_MALFORMED_RESPONSE
+PROVIDER_RESPONSE_TOO_LARGE
+PROVIDER_CONNECT_TIMEOUT
+PROVIDER_READ_TIMEOUT
+PROVIDER_RATE_LIMIT
+PROVIDER_SERVER_ERROR
+PROVIDER_CONNECTION_LOST
+PROVIDER_DEADLINE_EXHAUSTED
+```
+
+Retained evidence is limited to the status, validated request ID and capped
+`Retry-After`, response SHA-256 and redacted excerpt, and exact allowlisted
+request features. Authorization is never retained. Connection attempts and
+selected 429/502/503/504 responses use a small capped backoff under the one
+deadline. Connect and read timeouts are distinct. A failure after a response
+stream begins, malformed JSON, and truncated/partial tool arguments are not
+blindly retried; no partial tool JSON is executed. Redirects remain disabled.
 
 ### Optional Ollama preparation
 
