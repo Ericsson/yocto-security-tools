@@ -12,6 +12,7 @@ from cve_agent.openai_backend import OpenAICompatibleBackend
 from cve_agent.openai_client import (
     AssistantResponse,
     FunctionToolCall,
+    OpenAIChatCompletionsClient,
     OpenAIClientEvent,
     OpenAIConnectionError,
 )
@@ -20,6 +21,7 @@ from cve_agent.openai_host_tools import (
     BuildCommandResult,
     OpenAIHostToolRuntime,
 )
+from cve_agent.openai_ollama import OllamaPreparationClient
 from cve_agent.orchestrator import _read_conclusion, _read_escalation
 
 
@@ -202,3 +204,309 @@ def test_backend_refuses_to_run_when_transcript_creation_fails(tmp_path):
         f"Read {context}", repo, {"a.c"}, "scripted-model", 30, False)
     assert not result.resolved and result.transcript_path is None
     assert called is False
+
+
+def test_named_profile_without_ollama_section_makes_no_native_api_calls(
+    tmp_path, monkeypatch,
+):
+    repo, agent, context = _repository(tmp_path)
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    profile = profiles / "openai-chat-only.cfg"
+    profile.write_text(
+        "[openai]\nmodel = scripted-model\nbase_url = http://localhost:11434/v1\n",
+        encoding="utf-8",
+    )
+    profile.chmod(0o600)
+    monkeypatch.setenv("CVE_AGENT_OPENAI_CONFIG_DIR", str(profiles))
+    native_called = False
+
+    def ollama_factory(*args, **kwargs):
+        nonlocal native_called
+        native_called = True
+        raise AssertionError("profile without [ollama] must remain transport-free")
+
+    def client_factory(config, deadline, event_sink=None):
+        client = ScriptedClient([
+            _response(_call(
+                "context", "read_file", json.dumps({"path": str(context)}))),
+            _response(_call(
+                "finish", "finish",
+                '{"status":"needs_human","reason":"inspection complete"}')),
+        ], event_sink)
+        return client
+
+    backend = OpenAICompatibleBackend(
+        client_factory=client_factory,
+        ollama_factory=ollama_factory,
+    )
+    backend.configure({"backend_profile": "chat-only", "model": None}, os.environ)
+    result = backend.run_session(
+        f"Read {context}", repo, {"a.c"}, "scripted-model", 30, False)
+    assert result.resolved
+    assert native_called is False
+
+
+def test_preparation_failure_returns_transcript_and_never_enters_model_loop(
+    tmp_path, monkeypatch,
+):
+    repo, _agent, context = _repository(tmp_path)
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    profile = profiles / "openai-prep-failure.cfg"
+    profile.write_text("""\
+[openai]
+model = target-model
+base_url = http://localhost:11434/v1
+
+[ollama]
+source_model = source-model
+target_model = target-model
+num_ctx = 4096
+create_if_missing = false
+""", encoding="utf-8")
+    profile.chmod(0o600)
+    monkeypatch.setenv("CVE_AGENT_OPENAI_CONFIG_DIR", str(profiles))
+    model_called = False
+
+    class FailingPreparer:
+        def prepare(self):
+            raise RuntimeError("bounded setup failure")
+
+    def ollama_factory(*args, **kwargs):
+        return FailingPreparer()
+
+    def client_factory(*args, **kwargs):
+        nonlocal model_called
+        model_called = True
+        raise AssertionError("model client must not be constructed")
+
+    backend = OpenAICompatibleBackend(
+        client_factory=client_factory,
+        ollama_factory=ollama_factory,
+    )
+    backend.configure({"backend_profile": "prep-failure", "model": None}, os.environ)
+    result = backend.run_session(
+        f"Read {context}", repo, {"a.c"}, "target-model", 30, False)
+    assert not result.resolved
+    assert result.transcript_path is not None
+    assert model_called is False
+    assert "Ollama preparation failed" in result.failure_reason
+    transcript = result.transcript_path.read_text(encoding="utf-8")
+    assert "profile_loaded" in transcript
+    assert "ollama_preparation" in transcript
+    assert "bounded setup failure" in transcript
+
+
+class _HTTPResponse:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self.headers = {}
+        self.body = json.dumps(payload).encode("utf-8")
+
+    def iter_content(self, chunk_size, decode_unicode=False):
+        yield self.body
+
+    def close(self):
+        pass
+
+
+class _OllamaTransport:
+    def __init__(self, order):
+        self.order = order
+        self.calls = []
+        show = {
+            "parameters": "num_ctx 32768\n",
+            "capabilities": ["completion", "tools"],
+            "model_info": {"qwen.context_length": 65536},
+        }
+        self.actions = [
+            _HTTPResponse(404, {}),
+            _HTTPResponse(200, show),
+            _HTTPResponse(200, {}),
+            _HTTPResponse(200, show),
+            _HTTPResponse(200, {}),
+            _HTTPResponse(200, {
+                "models": [{
+                    "name": "profile-model:latest",
+                    "context_length": 32768,
+                }],
+            }),
+        ]
+
+    def request(self, method, url, **kwargs):
+        self.order.append("ollama")
+        self.calls.append((method, url, kwargs))
+        return self.actions.pop(0)
+
+
+class _ChatTransport:
+    def __init__(self, order, context):
+        self.order = order
+        self.context = context
+        self.calls = []
+        self.actions = [
+            _HTTPResponse(200, {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "context",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps({"path": str(context)}),
+                                },
+                            },
+                            {
+                                "id": "status",
+                                "type": "function",
+                                "function": {"name": "git_status", "arguments": "{}"},
+                            },
+                            {
+                                "id": "build",
+                                "type": "function",
+                                "function": {"name": "build_recipe", "arguments": "{}"},
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+            }),
+            _HTTPResponse(200, {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "finish",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": json.dumps({
+                                    "status": "done",
+                                    "reason": "verified",
+                                    "summary": "profile flow passed",
+                                }),
+                            },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+            }),
+        ]
+
+    def post(self, url, **kwargs):
+        self.order.append("chat")
+        self.calls.append((url, kwargs))
+        return self.actions.pop(0)
+
+
+def test_profile_preparation_precedes_deterministic_typed_tool_loop(
+    tmp_path, monkeypatch,
+):
+    repo, agent, context = _repository(tmp_path)
+    runner = FakeBuildRunner(agent)
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    profile_path = profiles / "openai-integration.cfg"
+    profile_path.write_text("""\
+[openai]
+base_url = http://localhost:11434/v1
+model = profile-model
+api_key_env = PROFILE_API_KEY
+max_steps = 8
+max_tool_calls = 16
+
+[chat]
+temperature = 0.0
+top_p = 0.95
+reasoning_effort = none
+
+[ollama]
+source_model = source-model
+target_model = profile-model
+num_ctx = 32768
+create_if_missing = true
+recreate_if_mismatch = true
+require_tools = true
+preload = true
+keep_alive = 30m
+verify_context = true
+""", encoding="utf-8")
+    profile_path.chmod(0o600)
+    monkeypatch.setenv("CVE_AGENT_OPENAI_CONFIG_DIR", str(profiles))
+    monkeypatch.setenv("PROFILE_API_KEY", "integration-secret")
+
+    order = []
+    ollama_transport = _OllamaTransport(order)
+    chat_transport = _ChatTransport(order, context)
+
+    def ollama_factory(config, openai_config, deadline, **kwargs):
+        return OllamaPreparationClient(
+            config,
+            openai_config,
+            deadline,
+            transport=ollama_transport,
+            environ=os.environ,
+            sleep=lambda _delay: None,
+            event_sink=kwargs.get("event_sink"),
+            approvals=kwargs.get("approvals"),
+        )
+
+    def client_factory(config, deadline, event_sink=None):
+        return OpenAIChatCompletionsClient(
+            config,
+            deadline,
+            transport=chat_transport,
+            environ=os.environ,
+            event_sink=event_sink,
+        )
+
+    def runtime_factory(*args, **kwargs):
+        kwargs["build_runner"] = runner
+        return OpenAIHostToolRuntime(*args, **kwargs)
+
+    backend = OpenAICompatibleBackend(
+        client_factory=client_factory,
+        runtime_factory=runtime_factory,
+        ollama_factory=ollama_factory,
+    )
+    backend.configure({"backend_profile": "integration", "model": None}, os.environ)
+    result = backend.run_session(
+        f"Read {context}", repo, {"a.c"}, "profile-model", 30, False)
+
+    assert result.resolved and result.transcript_path is not None
+    assert order[:6] == ["ollama"] * 6
+    assert order[6:] == ["chat", "chat"]
+    request = json.loads(chat_transport.calls[0][1]["data"])
+    assert request["model"] == "profile-model"
+    assert request["temperature"] == 0.0
+    assert request["top_p"] == 0.95
+    assert request["reasoning_effort"] == "none"
+    assert runner.calls == ["recipe"]
+    assert all(
+        call[2]["headers"]["Authorization"] == "Bearer integration-secret"
+        for call in ollama_transport.calls
+    )
+    events = [
+        json.loads(line)
+        for line in result.transcript_path.read_text(encoding="utf-8").splitlines()
+    ]
+    profile_event = next(event for event in events if event["event"] == "profile_loaded")
+    assert profile_event["backend"] == "openai"
+    assert profile_event["profile"] == "integration"
+    assert len(profile_event["sha256"]) == 64
+    assert next(event for event in events if event["event"] == "session_start")[
+        "backend"] == "openai"
+    assert "integration-secret" not in result.transcript_path.read_text(encoding="utf-8")
+    assert _git_status(repo) == ""
+
+
+def _git_status(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo,
+        capture_output=True, text=True, check=True)
+    return result.stdout

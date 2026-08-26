@@ -370,6 +370,17 @@ class OpenAIChatCompletionsClient:
         normalized_messages: list[dict[str, object]] = []
         normalized_tools: list[dict[str, object]] = []
         estimated = len(self.config.model.encode("utf-8")) + 128
+        portable_fields: dict[str, object] = {}
+        if self.config.temperature is not None:
+            portable_fields["temperature"] = self.config.temperature
+        if self.config.top_p is not None:
+            portable_fields["top_p"] = self.config.top_p
+        if self.config.reasoning_effort is not None:
+            portable_fields["reasoning_effort"] = self.config.reasoning_effort
+        if portable_fields:
+            estimated += len(json.dumps(
+                portable_fields, separators=(",", ":"),
+                allow_nan=False).encode("utf-8"))
         for message in messages:
             normalized, encoded = self._bounded_input_object(
                 message, self.limits.max_message_bytes, "message")
@@ -393,6 +404,7 @@ class OpenAIChatCompletionsClient:
             "stream": False,
             "max_tokens": self.config.max_output_tokens,
         }
+        body.update(portable_fields)
         if normalized_tools:
             body["tools"] = normalized_tools
             body["tool_choice"] = "auto"

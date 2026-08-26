@@ -46,7 +46,8 @@ _PHASE_INSTRUCTION_FILES = {
 
 def build_context(workspace_path: Path, exit_code: int, cve_id: str,
                   cve_info: dict, knowledge_base: KnowledgeBase | None = None,
-                  model: str = "", backend: str = "") -> Path:
+                  model: str = "", backend: str = "",
+                  backend_profile: str | None = None) -> Path:
     """Build a context file for kiro-cli with all relevant information.
 
     Args:
@@ -67,7 +68,7 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
 
     sections = [
         _build_header(cve_id, recipe, exit_code, workspace_path, cve_info,
-                      model, backend),
+                      model, backend, backend_profile),
         _build_phase_instructions(exit_code),
         _gather_context_for_exit_code(workspace_path, exit_code, cve_info),
     ]
@@ -107,7 +108,8 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
 
 def _build_header(cve_id: str, recipe: str, exit_code: int,
                   workspace_path: Path, cve_info: dict,
-                  model: str = "", backend: str = "") -> str:
+                  model: str = "", backend: str = "",
+                  backend_profile: str | None = None) -> str:
     """Build the context file header with CVE and workspace info.
 
     Args:
@@ -178,11 +180,16 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
         )
         allowed_heading = "Allowed Files (ONLY these may be staged with `git add`)"
 
+    profile_line = (
+        f"- **Backend profile**: {backend_profile}\n"
+        if backend_profile is not None else ""
+    )
     return (
         f"# CVE Agent Context: {cve_id}\n\n"
         f"- **Recipe**: {recipe}\n"
         f"- **Phase**: {phase}\n"
         f"- **Backend**: {backend}\n"
+        f"{profile_line}"
         f"- **Model**: {model}\n"
         f"- **Workspace**: `{workspace_path}`\n"
         f"{execution_guidance}"

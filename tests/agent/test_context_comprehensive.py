@@ -62,9 +62,12 @@ class TestContextModelName:
     @patch('cve_agent.context.run_git_stdout', return_value='file.c')
     def test_native_header_requires_typed_tools_without_shell_syntax(self, *_):
         result = _build_header(
-            'CVE-1', 'r', 0, Path('/ws'), {}, model='local', backend='openai')
+            'CVE-1', 'r', 0, Path('/ws'), {}, model='local', backend='openai',
+            backend_profile='qwen-coder-next-l40s')
         assert 'this native session has no shell' in result
         assert 'typed file, Git, build, and terminal tools' in result
+        assert '**Backend**: openai' in result
+        assert '**Backend profile**: qwen-coder-next-l40s' in result
         assert 'git status' not in result
         assert 'staged with `git add`' not in result
 

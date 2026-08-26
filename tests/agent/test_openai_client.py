@@ -227,6 +227,55 @@ def test_minimal_portable_request_without_tools():
                  "parallel_tool_calls", "reasoning_effort"} & set(body))
 
 
+def test_allowlisted_portable_chat_fields_are_encoded_once():
+    transport = FakeTransport(FakeResponse())
+    config = _config(
+        openai_temperature=0.0,
+        openai_top_p=0.95,
+        openai_reasoning_effort="none",
+    )
+    _client(transport, config=config).complete(
+        [{"role": "user", "content": "hello"}], [])
+    encoded = transport.calls[0][1]["data"]
+    body = json.loads(encoded)
+    assert body["temperature"] == 0.0
+    assert body["top_p"] == 0.95
+    assert body["reasoning_effort"] == "none"
+    assert encoded.count(b'"temperature"') == 1
+    assert encoded.count(b'"top_p"') == 1
+    assert encoded.count(b'"reasoning_effort"') == 1
+    assert not ({"extra_body", "headers", "num_ctx"} & set(body))
+
+
+def test_request_size_limit_accounts_for_portable_chat_fields():
+    message = [{"role": "user", "content": "hello"}]
+    limits = OpenAIClientLimits(max_request_bytes=200)
+    _client(FakeTransport(FakeResponse()), limits=limits).complete(message, [])
+    configured = _config(
+        openai_temperature=0.0,
+        openai_top_p=0.95,
+        openai_reasoning_effort="none",
+    )
+    with pytest.raises(OpenAILocalRequestError, match="request.*byte"):
+        _client(
+            FakeTransport(FakeResponse()), config=configured, limits=limits,
+        ).complete(message, [])
+
+
+@pytest.mark.parametrize(("option", "value", "match"), [
+    ("openai_temperature", float("nan"), "temperature"),
+    ("openai_temperature", float("inf"), "temperature"),
+    ("openai_temperature", -0.1, "temperature"),
+    ("openai_temperature", 2.1, "temperature"),
+    ("openai_top_p", 0, "top_p"),
+    ("openai_top_p", 1.1, "top_p"),
+    ("openai_reasoning_effort", "unbounded", "reasoning effort"),
+])
+def test_portable_chat_fields_reject_nonfinite_or_out_of_range(option, value, match):
+    with pytest.raises(OpenAIConfigurationError, match=match):
+        _config(**{option: value})
+
+
 def test_opted_in_remote_endpoint_keeps_normal_proxy_configuration():
     config = _config(
         openai_base_url="https://remote.example/v1",
