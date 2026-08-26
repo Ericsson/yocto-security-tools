@@ -8,7 +8,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -124,6 +124,19 @@ class AgentLoopLimits:
             raise ValueError("max_tool_calls_per_response must not exceed 64")
 
 
+@dataclass
+class AgentLoopSharedState:
+    """Trusted counters and evidence retained across provider attempts."""
+
+    progress: ProgressTracker = field(default_factory=ProgressTracker)
+    seen_call_ids: set[str] = field(default_factory=set)
+    model_turns: int = 0
+    tool_calls: int = 0
+    mutation_calls: int = 0
+    build_calls: int = 0
+    provider_retries: int = 0
+
+
 class JSONLTranscript:
     """Descriptor-anchored, bounded, credential-redacting JSONL audit log."""
 
@@ -143,11 +156,22 @@ class JSONLTranscript:
         self._sequence = 0
         self._closed = False
         self._provider_retries = 0
+        self._provider_retry_offset = 0
+        self._provider_attempt = "primary"
 
     @property
     def provider_retries(self) -> int:
         """Return retries observed by this transcript's one shared client."""
-        return self._provider_retries
+        return self._provider_retry_offset + self._provider_retries
+
+    def set_provider_attempt(self, attempt: str, retry_offset: int = 0) -> None:
+        if attempt not in {"primary", "fallback"}:
+            raise ValueError("invalid provider attempt ID")
+        if isinstance(retry_offset, bool) or not isinstance(retry_offset, int) \
+                or retry_offset < 0:
+            raise ValueError("invalid provider retry offset")
+        self._provider_attempt = attempt
+        self._provider_retry_offset = retry_offset
 
     @classmethod
     def create(
@@ -211,6 +235,7 @@ class JSONLTranscript:
             "event": kind,
             "elapsed": max(0.0, self._deadline.clock() - self._started_at),
             "remaining": self._deadline.remaining(),
+            "provider_attempt": self._provider_attempt,
         }
         event.update(data)
         safe_event = self._sanitize(event)
@@ -255,7 +280,19 @@ class JSONLTranscript:
                 "tool_result": "tool_call_completed",
                 "terminal_result": "finish_requested",
             }.get(kind, kind)
-            artifact_run.event(durable_kind, provider_event=kind, **data)
+            artifact_run.event(
+                durable_kind,
+                provider_event=kind,
+                provider_attempt=self._provider_attempt,
+                **data,
+            )
+            if kind == "provider_wait_completed":
+                duration = data.get("duration_seconds")
+                if (isinstance(duration, (int, float))
+                        and not isinstance(duration, bool)
+                        and math.isfinite(duration) and duration >= 0):
+                    prior = artifact_run.telemetry.durations["provider_wait"] or 0.0
+                    artifact_run.telemetry.durations["provider_wait"] = prior + duration
             if kind == "tool_request" and data.get("tool") == "build_recipe":
                 artifact_run.event("build_started")
             if kind == "tool_result" and data.get("tool") == "build_recipe":
@@ -278,6 +315,26 @@ class JSONLTranscript:
                     tool=data.get("tool"),
                     mutation_generation=data.get("mutation_generation"),
                 )
+            if kind == "http_failure" and isinstance(data.get("failure"), dict):
+                provider_failure = {
+                    "schema_version": 1,
+                    "status": "failed",
+                    "provider_attempt": self._provider_attempt,
+                    "failure": data["failure"],
+                }
+                artifact_run.atomic_json(
+                    f"provider-{self._provider_attempt}.json", provider_failure)
+                artifact_run.atomic_json("provider-summary.json", provider_failure)
+            if kind == "session_end" and data.get("resolved") is True:
+                provider_success = {
+                    "schema_version": 1,
+                    "status": "passed",
+                    "provider_attempt": self._provider_attempt,
+                    "provider_retries": self.provider_retries,
+                }
+                artifact_run.atomic_json(
+                    f"provider-{self._provider_attempt}.json", provider_success)
+                artifact_run.atomic_json("provider-summary.json", provider_success)
 
     def sync(self) -> None:
         """Durably flush terminal/session boundary events."""
@@ -308,6 +365,10 @@ class JSONLTranscript:
             attempt=event.attempt,
             status_code=event.status_code,
             delay=event.delay,
+            request_id=event.request_id,
+            request_features=list(event.request_features),
+            failure=(
+                event.failure.to_dict() if event.failure is not None else None),
         )
 
     def runtime_event(self, kind: str, data: Mapping[str, object]) -> None:
@@ -364,6 +425,7 @@ class OpenAIAgentLoop:
         tool_schemas: Sequence[dict[str, object]],
         system_message: str,
         user_message: str,
+        shared_state: AgentLoopSharedState | None = None,
     ) -> None:
         self.client = client
         self.runtime = runtime
@@ -376,15 +438,16 @@ class OpenAIAgentLoop:
             {"role": "user", "content": user_message},
         ]
         self._started_at = deadline.clock()
-        self._turns = 0
-        self._tool_calls = 0
-        self._seen_call_ids: set[str] = set()
-        self._progress = ProgressTracker()
+        self._shared = shared_state or AgentLoopSharedState()
+        self._turns = self._shared.model_turns
+        self._tool_calls = self._shared.tool_calls
+        self._seen_call_ids = self._shared.seen_call_ids
+        self._progress = self._shared.progress
         self._consecutive_nonprogress = 0
         self._corrective_message_sent = False
         self._state_message_index: Optional[int] = None
-        self._mutation_calls = 0
-        self._build_calls = 0
+        self._mutation_calls = self._shared.mutation_calls
+        self._build_calls = self._shared.build_calls
 
     def run(self, model: str, interactive: bool) -> SessionResult:
         """Run until trusted finish or one independent session bound fires."""
@@ -410,29 +473,29 @@ class OpenAIAgentLoop:
             reason = (
                 "Mandatory native transcript failed; check the Yocto build "
                 "workspace permissions.")
-        except OpenAIDeadlineExceededError:
+        except OpenAIDeadlineExceededError as exc:
             resolved = False
             reason = (
                 "Native session deadline exhausted; increase --session-timeout "
                 "only after checking the transcript and build log.")
             self._best_effort_event("timeout", reason=reason)
             failure_outcome = _failure_outcome(
-                FailureClass.PROVIDER_TIMEOUT, "overall_deadline_exhausted")
-        except OpenAIRequestTimeoutError:
+                FailureClass.PROVIDER_TIMEOUT, exc.code.value)
+        except OpenAIRequestTimeoutError as exc:
             resolved = False
             reason = (
                 "Chat Completions request timed out; check the endpoint and "
                 "--openai-request-timeout.")
             self._best_effort_event("timeout", reason=reason)
             failure_outcome = _failure_outcome(
-                FailureClass.PROVIDER_TIMEOUT, "provider_request_timeout")
+                FailureClass.PROVIDER_TIMEOUT, exc.code.value)
         except OpenAIClientError as exc:
             resolved = False
             reason = _user_facing_client_error(exc)
             self._best_effort_event(
                 "client_error", error_type=type(exc).__name__, message=reason)
             failure_outcome = _failure_outcome(
-                FailureClass.PROVIDER_PROTOCOL, "provider_request_failed")
+                FailureClass.PROVIDER_PROTOCOL, exc.code.value)
         except _NonprogressExhausted:
             resolved = False
             reason = (
@@ -475,10 +538,14 @@ class OpenAIAgentLoop:
                     "Mandatory native transcript failed; check the Yocto build "
                     "workspace permissions.")
         duration = max(0.0, self.deadline.clock() - self._started_at)
+        self._shared.provider_retries = self.transcript.provider_retries
         if (not resolved and failure_outcome is None
                 and ("max-steps" in reason or "max-tool-calls" in reason)):
             failure_outcome = _failure_outcome(
                 FailureClass.MODEL_BUDGET, "model_budget_exhausted")
+        if not resolved and failure_outcome is None and "truncated" in reason:
+            failure_outcome = _failure_outcome(
+                FailureClass.PROVIDER_PROTOCOL, "PROVIDER_RESPONSE_TRUNCATED")
         return SessionResult(
             resolved=resolved,
             duration=duration,
@@ -496,6 +563,7 @@ class OpenAIAgentLoop:
                     "Native session reached --openai-max-tool-calls before finish.")
             self._update_state_message()
             self._turns += 1
+            self._shared.model_turns = self._turns
             self.transcript.write(
                 "model_request",
                 turn=self._turns,
@@ -505,7 +573,16 @@ class OpenAIAgentLoop:
                 evidence_digest=self._progress.last_evidence_digest,
                 consecutive_nonprogress=self._consecutive_nonprogress,
             )
-            response = self.client.complete(self.messages, self.tool_schemas)
+            provider_started = self.deadline.clock()
+            try:
+                response = self.client.complete(self.messages, self.tool_schemas)
+            finally:
+                self.transcript.write(
+                    "provider_wait_completed",
+                    turn=self._turns,
+                    duration_seconds=max(
+                        0.0, self.deadline.clock() - provider_started),
+                )
             self._append_assistant(response)
             self.transcript.write(
                 "assistant_response",
@@ -559,11 +636,14 @@ class OpenAIAgentLoop:
             turn_progress = False
             for call in response.tool_calls:
                 self._tool_calls += 1
+                self._shared.tool_calls = self._tool_calls
                 result, dispatched, arguments_key = self._execute_call(call)
                 if dispatched and call.name == "build_recipe":
                     self._build_calls += 1
+                    self._shared.build_calls = self._build_calls
                 if dispatched and call.name in _MUTATION_TOOLS:
                     self._mutation_calls += 1
+                    self._shared.mutation_calls = self._mutation_calls
                 self._append_tool_result(call.id, result)
                 self._write_tool_result(call.id, call.name, result, dispatched)
                 event = self._progress.observe(
@@ -610,6 +690,9 @@ class OpenAIAgentLoop:
                 }
                 for call in response.tool_calls
             ]
+        if response.reasoning_replay is not None:
+            field, value = response.reasoning_replay
+            message[field] = value
         self.messages.append(message)
 
     def _execute_call(self, call) -> tuple[ToolResult, bool, str]:
@@ -714,6 +797,7 @@ class OpenAIAgentLoop:
     def _reject_unsafe_terminal_batch(self, response: AssistantResponse) -> None:
         for call in response.tool_calls:
             self._tool_calls += 1
+            self._shared.tool_calls = self._tool_calls
             self._seen_call_ids.add(call.id)
             result = _synthetic_error(
                 call.name,

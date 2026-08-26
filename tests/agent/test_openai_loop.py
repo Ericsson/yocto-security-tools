@@ -360,6 +360,10 @@ def test_truncated_filtered_or_unsupported_finish_reason_never_executes(
         [_response(_call("finish", "finish"), finish_reason=finish_reason)],
         runtime=runtime)
     assert not result.resolved and runtime.calls == []
+    if finish_reason == "length":
+        assert result.outcome is not None
+        assert result.outcome.failure_class is FailureClass.PROVIDER_PROTOCOL
+        assert result.outcome.failure_code == "PROVIDER_RESPONSE_TRUNCATED"
 
 
 def test_independent_turn_total_per_response_and_nonprogress_bounds(tmp_path):
