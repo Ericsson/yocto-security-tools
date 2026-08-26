@@ -125,6 +125,8 @@ class AgentConfig:
     fix_urls: list[str] = field(default_factory=list)
     recipe: Optional[str] = None
     backend: str = "kiro"
+    backend_profile: Optional[str] = None
+    backend_selector: Optional[str] = None
     skip_sources: list[str] = field(default_factory=list)
     sign_off: bool = False
     no_knowledge: bool = False

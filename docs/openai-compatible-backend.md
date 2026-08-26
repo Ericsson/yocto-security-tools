@@ -23,8 +23,9 @@ JSON objects, as returned by some Ollama-compatible servers. Deterministic
 tests cover both forms.
 
 The backend does not require `/models`, Responses API conversation state,
-streaming, provider-specific reasoning controls, image/audio input, or
-arbitrary custom tools. Compatibility with those features is not claimed.
+streaming, image/audio input, arbitrary custom tools, arbitrary headers, or an
+arbitrary request-body extension. Named profiles may add only the portable
+`temperature`, `top_p`, and `reasoning_effort` fields described below.
 
 ## Typed commit recording
 
@@ -78,10 +79,12 @@ The invocation supplies the actual required `cve-agent` inputs: one of
 build options.
 
 Ollama's model configuration controls the context window; the portable Chat
-Completions request does not set it. Operational guidance is to select a
-context window comfortably larger than the expected context file, tool
-schemas, diffs, and build-diagnostic history. A larger window does not
-guarantee correct tool use.
+Completions request cannot set a model's context size. A named profile can
+therefore create a dedicated Ollama alias with a bounded `num_ctx`, leaving the
+installed source model unchanged. Operational guidance is to select a context
+window comfortably larger than the expected context file, tool schemas, diffs,
+and build-diagnostic history. A larger window does not guarantee correct tool
+use.
 
 Local Ollama normally needs no API key. The default loopback URL is already
 `http://127.0.0.1:11434/v1`, so `CVE_AGENT_OPENAI_BASE_URL` is shown above for
@@ -89,7 +92,8 @@ clarity rather than necessity.
 
 ## Configuration and precedence
 
-CLI values override environment values, which override defaults:
+`--backend openai` remains file-free. CLI values override environment values,
+which override defaults:
 
 | Setting | Precedence, highest first | Default |
 |---|---|---|
@@ -101,6 +105,9 @@ CLI values override environment values, which override defaults:
 | Output-token request | `--openai-max-output-tokens`, `CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS` | `8192` |
 | Connect timeout | `--openai-connect-timeout`, `CVE_AGENT_OPENAI_CONNECT_TIMEOUT` | `10` seconds |
 | Request timeout | `--openai-request-timeout`, `CVE_AGENT_OPENAI_REQUEST_TIMEOUT` | `120` seconds |
+| Temperature | `--openai-temperature`, `CVE_AGENT_OPENAI_TEMPERATURE` | omitted |
+| Top-p | `--openai-top-p`, `CVE_AGENT_OPENAI_TOP_P` | omitted |
+| Reasoning effort | `--openai-reasoning-effort`, `CVE_AGENT_OPENAI_REASONING_EFFORT` | omitted |
 | Remote opt-in | `--openai-allow-remote`, `CVE_AGENT_OPENAI_ALLOW_REMOTE` | false |
 | Remote HTTP opt-in | `--openai-allow-insecure-remote-http`, `CVE_AGENT_OPENAI_ALLOW_INSECURE_REMOTE_HTTP` | false |
 
@@ -108,6 +115,103 @@ CLI values override environment values, which override defaults:
 Claude-specific or generic OpenAI model default. The environment variable
 named by the key-variable setting contains the secret. There is no command-line
 option that accepts a secret value.
+
+### Named profiles
+
+`--backend openai-<profile>` reserves the selector suffix for the native
+backend. The canonical backend remains `openai`; the profile is recorded
+separately in context and transcript metadata. Names are lowercase ASCII,
+1–64 characters, begin with a letter or digit, use only letters, digits, `.`,
+`_`, or `-`, and may not contain `..`.
+
+The default file is `<repository-root>/etc/openai-<profile>.cfg`, derived from
+the installed module location rather than the current directory. An absolute
+`CVE_AGENT_OPENAI_CONFIG_DIR` replaces that directory. The agent never searches
+the Yocto workspace, parent directories, the working directory, or user
+fallback locations. A requested profile must exist; there is no fallback to
+plain `openai`.
+
+Profile precedence is:
+
+```text
+explicit CLI option > selected profile > environment variable > existing default
+```
+
+The file is strict UTF-8 INI, limited to 64 KiB, read once, and may contain
+only these sections and keys:
+
+```ini
+[openai]
+base_url = ...
+model = ...
+api_key_env = ...
+max_steps = ...
+max_tool_calls = ...
+max_output_tokens = ...
+connect_timeout = ...
+request_timeout = ...
+allow_remote_endpoint = true|false
+allow_insecure_remote_http = true|false
+
+[chat]
+temperature = 0..2
+top_p = >0..1
+reasoning_effort = none|low|medium|high|max
+
+[ollama]
+api_base_url = ...
+source_model = ...
+target_model = ...
+num_ctx = ...
+create_if_missing = true|false
+recreate_if_mismatch = true|false
+require_tools = true|false
+preload = true|false
+keep_alive = ...
+verify_context = true|false
+```
+
+Unknown/duplicate sections or keys, `[DEFAULT]`, malformed values, symlinked or
+world-writable files, and secret-bearing keys are rejected. `api_key_env` names
+an environment variable; a profile can never contain an API-key value or add
+custom headers/body fields. Absent `[chat]` values are omitted from JSON rather
+than sent as `null`.
+
+### Optional Ollama preparation
+
+`[ollama]` is profile-only. Its native API origin must exactly match the
+validated OpenAI endpoint's scheme, normalized hostname, and effective port;
+the same remote and insecure-HTTP opt-ins apply. When `api_base_url` is absent,
+it can be derived only from an unambiguous OpenAI `/v1` root. The OpenAI model
+must exactly identify the normalized target alias.
+
+After the mandatory transcript is created and before the first Chat
+Completions request, preparation performs this bounded sequence:
+
+1. `POST /api/show` for the target.
+2. If missing and allowed, verify that the source is installed, then
+   `POST /api/create` for the dedicated alias with `parameters.num_ctx` and
+   `stream: false`.
+3. Verify the target's serialized `num_ctx`, requested `tools` capability, and
+   any reported architecture context maximum. A mismatched alias is recreated
+   only when explicitly enabled, then shown and verified again.
+4. If `preload` is enabled, `POST /api/generate` with an empty prompt,
+   `options.num_ctx`, and the configured `keep_alive`.
+5. If `verify_context` is enabled, `GET /api/ps` must report the exact target
+   model and exact configured `context_length`.
+
+Preparation never pulls, deletes, pushes, copies unrelated models, or modifies
+the source model. In interactive mode, creating or recreating the alias needs
+one explicit approval; EOF and non-TTY input deny. Inspection and preload add
+no second prompt. A setup failure ends unresolved with its transcript and does
+not enter the model loop.
+
+The preload `keep_alive` value is only an Ollama inference hint; it does not
+change server-global settings. Flash Attention, KV-cache type, parallelism,
+server context defaults, and loaded-model limits remain operator-controlled.
+An L40S profile should start conservatively, such as at 32K, and may use CPU
+offload; this guide does not claim that Qwen3-Coder-Next fits fully in 48 GB
+VRAM. Site endpoint profiles are intentionally kept out of version control.
 
 ## Authentication and endpoint security
 
@@ -144,6 +248,12 @@ the endpoint receives the system/user conversation and every model-visible
 tool result; this can include intentionally read source/context files, Git
 diffs and messages, and build-log tails. Do not opt into a remote endpoint if
 that data must remain local.
+
+Committing a site-specific endpoint profile makes its destination and data
+routing policy part of the repository. Review that choice like other security
+configuration. A remote plain-HTTP profile explicitly accepts that traffic is
+unencrypted; use it only on a trusted, controlled network or replace it with
+HTTPS.
 
 Loopback requests explicitly bypass ambient `HTTP_PROXY`, `HTTPS_PROXY`, and
 `ALL_PROXY` settings, independent of `NO_PROXY`, so a local credential is not

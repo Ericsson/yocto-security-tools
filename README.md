@@ -26,7 +26,7 @@ Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 - Python 3.9+
 - Git
 - For `cve-corrector` / `cve-agent`: a sourced Yocto build environment (`BBPATH` set)
-- For `cve-agent`: [kiro-cli](https://github.com/kirodotdev/Kiro) (default), [Claude Code](https://code.claude.com) (`--backend claude`), a tool-capable OpenAI-compatible model endpoint (`--backend openai`), or a custom backend plugin
+- For `cve-agent`: [kiro-cli](https://github.com/kirodotdev/Kiro) (default), [Claude Code](https://code.claude.com) (`--backend claude`), a tool-capable OpenAI-compatible model endpoint (`--backend openai` or `openai-<profile>`), or a custom backend plugin
 - Optional, for `cve-agent`: [`patchutils`](https://cyberelk.net/tim/software/patchutils/) (provides `interdiff`) — when installed, cve-agent enriches its review diff, console output, and AI context with a concise upstream-vs-backport adaptation delta. When absent, cve-agent falls back to its existing behavior unchanged.
 
 ## Installation
@@ -132,6 +132,19 @@ export CVE_AGENT_OPENAI_MODEL='replace-with-a-tool-capable-model'
 export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
 cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
 ```
+
+Named profiles keep a validated endpoint/model policy in
+`etc/openai-<profile>.cfg` and still use the canonical native `openai` backend:
+
+```bash
+cve-agent --backend openai-site-model --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
+```
+
+Set `CVE_AGENT_OPENAI_CONFIG_DIR` to an absolute directory to use site-local
+profiles. Profiles use a strict INI schema, may select portable Chat
+Completions sampling fields, and may opt into bounded Ollama alias preparation
+before source or build data is sent to the model endpoint. Remote plain HTTP
+still requires both explicit endpoint opt-ins.
 
 See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
 for the Ollama setup, exact API contract, configuration precedence, key and

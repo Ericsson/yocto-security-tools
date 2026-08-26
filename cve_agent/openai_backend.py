@@ -9,6 +9,7 @@ the typed host runtime from :mod:`openai_host_tools`.
 import contextlib
 import ipaddress
 import logging
+import math
 import os
 import re
 import time
@@ -61,6 +62,9 @@ class OpenAIConfig:
     request_timeout: int
     allow_remote_endpoint: bool
     allow_insecure_remote_http: bool
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    reasoning_effort: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Enforce the same safety contract for direct dataclass construction."""
@@ -98,9 +102,24 @@ class OpenAIConfig:
             if value < 1 or value > upper:
                 raise OpenAIConfigurationError(
                     f"{label} must be between 1 and {upper}")
+        temperature = _validate_optional_float(
+            self.temperature, "temperature", 0.0, 2.0, exclusive_lower=False)
+        top_p = _validate_optional_float(
+            self.top_p, "top_p", 0.0, 1.0, exclusive_lower=True)
+        reasoning_effort = self.reasoning_effort
+        if reasoning_effort is not None:
+            if not isinstance(reasoning_effort, str):
+                raise OpenAIConfigurationError("reasoning effort must be a string")
+            reasoning_effort = reasoning_effort.strip()
+            if reasoning_effort not in {"none", "low", "medium", "high", "max"}:
+                raise OpenAIConfigurationError(
+                    "reasoning effort must be one of: none, low, medium, high, max")
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "base_url", normalized_url)
         object.__setattr__(self, "api_key_env", api_key_env)
+        object.__setattr__(self, "temperature", temperature)
+        object.__setattr__(self, "top_p", top_p)
+        object.__setattr__(self, "reasoning_effort", reasoning_effort)
 
     @property
     def chat_completions_url(self) -> str:
@@ -118,59 +137,93 @@ class OpenAIConfig:
         cls,
         options: Optional[Mapping[str, object]] = None,
         environ: Optional[Mapping[str, str]] = None,
+        profile_openai: Optional[Mapping[str, str]] = None,
+        profile_chat: Optional[Mapping[str, object]] = None,
     ) -> "OpenAIConfig":
-        """Resolve CLI, environment, and default configuration in that order."""
+        """Resolve CLI, profile, environment, and defaults in that order."""
         options = options or {}
         environ = os.environ if environ is None else environ
+        profile_openai = profile_openai or {}
+        profile_chat = profile_chat or {}
 
-        model = _resolve_model(options.get("model"), environ)
+        model = _resolve_model(
+            _prefer_profile(options.get("model"), profile_openai, "model"), environ)
         base_url = _resolve_string(
-            options.get("openai_base_url"),
+            _prefer_profile(options.get("openai_base_url"), profile_openai, "base_url"),
             environ,
             "CVE_AGENT_OPENAI_BASE_URL",
             "OPENAI_BASE_URL",
             DEFAULT_OPENAI_BASE_URL,
         )
         api_key_cli = options.get("openai_api_key_env")
+        api_key_profile = profile_openai.get("api_key_env")
         api_key_from_env = environ.get("CVE_AGENT_OPENAI_API_KEY_ENV")
         api_key_env = _resolve_string(
-            api_key_cli,
+            api_key_cli if api_key_cli is not None else api_key_profile,
             environ,
             "CVE_AGENT_OPENAI_API_KEY_ENV",
             None,
             "OPENAI_API_KEY",
         )
-        api_key_explicit = api_key_cli is not None or api_key_from_env is not None
+        api_key_explicit = (
+            api_key_cli is not None or api_key_profile is not None
+            or api_key_from_env is not None)
         _validate_api_key_env(api_key_env, environ, required=api_key_explicit)
 
         max_steps = _resolve_bounded_int(
-            options.get("openai_max_steps"), environ,
+            _prefer_profile(options.get("openai_max_steps"), profile_openai, "max_steps"),
+            environ,
             "CVE_AGENT_OPENAI_MAX_STEPS", DEFAULT_MAX_STEPS,
             "maximum model turns", MAX_STEPS_LIMIT)
         max_tool_calls = _resolve_bounded_int(
-            options.get("openai_max_tool_calls"), environ,
+            _prefer_profile(
+                options.get("openai_max_tool_calls"), profile_openai, "max_tool_calls"),
+            environ,
             "CVE_AGENT_OPENAI_MAX_TOOL_CALLS", DEFAULT_MAX_TOOL_CALLS,
             "maximum total tool calls", MAX_TOOL_CALLS_LIMIT)
         max_output_tokens = _resolve_bounded_int(
-            options.get("openai_max_output_tokens"), environ,
+            _prefer_profile(
+                options.get("openai_max_output_tokens"), profile_openai,
+                "max_output_tokens"), environ,
             "CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
             "maximum output tokens", MAX_OUTPUT_TOKENS_LIMIT)
         connect_timeout = _resolve_bounded_int(
-            options.get("openai_connect_timeout"), environ,
+            _prefer_profile(
+                options.get("openai_connect_timeout"), profile_openai, "connect_timeout"),
+            environ,
             "CVE_AGENT_OPENAI_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT,
             "connect timeout", MAX_CONNECT_TIMEOUT)
         request_timeout = _resolve_bounded_int(
-            options.get("openai_request_timeout"), environ,
+            _prefer_profile(
+                options.get("openai_request_timeout"), profile_openai, "request_timeout"),
+            environ,
             "CVE_AGENT_OPENAI_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT,
             "request timeout", MAX_REQUEST_TIMEOUT)
         allow_remote = _resolve_bool(
-            options.get("openai_allow_remote_endpoint"), environ,
+            _prefer_profile(
+                options.get("openai_allow_remote_endpoint"), profile_openai,
+                "allow_remote_endpoint"), environ,
             "CVE_AGENT_OPENAI_ALLOW_REMOTE", False)
         allow_insecure_remote = _resolve_bool(
-            options.get("openai_allow_insecure_remote_http"), environ,
+            _prefer_profile(
+                options.get("openai_allow_insecure_remote_http"), profile_openai,
+                "allow_insecure_remote_http"), environ,
             "CVE_AGENT_OPENAI_ALLOW_INSECURE_REMOTE_HTTP", False)
         normalized_url = _validate_base_url(
             base_url, allow_remote, allow_insecure_remote)
+        temperature = _resolve_optional_float(
+            _prefer_profile(
+                options.get("openai_temperature"), profile_chat, "temperature"),
+            environ, "CVE_AGENT_OPENAI_TEMPERATURE", "temperature", 0, 2,
+            exclusive_lower=False)
+        top_p = _resolve_optional_float(
+            _prefer_profile(options.get("openai_top_p"), profile_chat, "top_p"),
+            environ, "CVE_AGENT_OPENAI_TOP_P", "top_p", 0, 1,
+            exclusive_lower=True)
+        reasoning_effort = _resolve_reasoning_effort(
+            _prefer_profile(
+                options.get("openai_reasoning_effort"), profile_chat,
+                "reasoning_effort"), environ)
 
         return cls(
             base_url=normalized_url,
@@ -183,6 +236,9 @@ class OpenAIConfig:
             request_timeout=request_timeout,
             allow_remote_endpoint=allow_remote,
             allow_insecure_remote_http=allow_insecure_remote,
+            temperature=temperature,
+            top_p=top_p,
+            reasoning_effort=reasoning_effort,
         )
 
     from_options = from_sources
@@ -200,6 +256,70 @@ def _resolve_model(value: object, environ: Mapping[str, str]) -> str:
         return validate_openai_model(model)
     except ValueError as exc:
         raise OpenAIConfigurationError(str(exc)) from exc
+
+
+def _prefer_profile(
+    cli_value: object,
+    profile: Mapping[str, object],
+    key: str,
+) -> object:
+    return cli_value if cli_value is not None else profile.get(key)
+
+
+def _resolve_optional_float(
+    value: object,
+    environ: Mapping[str, str],
+    env_name: str,
+    label: str,
+    lower: float,
+    upper: float,
+    *,
+    exclusive_lower: bool,
+) -> Optional[float]:
+    raw = value if value is not None else environ.get(env_name)
+    if raw is None:
+        return None
+    return _validate_optional_float(
+        raw, label, lower, upper, exclusive_lower=exclusive_lower)
+
+
+def _validate_optional_float(
+    value: object,
+    label: str,
+    lower: float,
+    upper: float,
+    *,
+    exclusive_lower: bool,
+) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise OpenAIConfigurationError(f"{label} must be a finite number")
+    try:
+        resolved = float(value)
+    except ValueError as exc:
+        raise OpenAIConfigurationError(f"{label} must be a finite number") from exc
+    below = resolved <= lower if exclusive_lower else resolved < lower
+    if not math.isfinite(resolved) or below or resolved > upper:
+        relation = "greater than 0 and at most 1" if exclusive_lower else "between 0 and 2"
+        raise OpenAIConfigurationError(f"{label} must be {relation}")
+    return resolved
+
+
+def _resolve_reasoning_effort(
+    value: object,
+    environ: Mapping[str, str],
+) -> Optional[str]:
+    raw = value if value is not None else environ.get("CVE_AGENT_OPENAI_REASONING_EFFORT")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise OpenAIConfigurationError("reasoning effort must be a string")
+    normalized = raw.strip()
+    if normalized not in {"none", "low", "medium", "high", "max"}:
+        raise OpenAIConfigurationError(
+            "reasoning effort must be one of: none, low, medium, high, max")
+    return normalized
 
 
 def validate_openai_model(model: str) -> str:
@@ -353,11 +473,17 @@ class OpenAICompatibleBackend(AIBackend):
         client_factory: Optional[Callable[..., Any]] = None,
         runtime_factory: Optional[Callable[..., Any]] = None,
         transcript_factory: Optional[Callable[..., Any]] = None,
+        ollama_factory: Optional[Callable[..., Any]] = None,
+        approval_provider: Optional[Any] = None,
     ) -> None:
         self._config: Optional[OpenAIConfig] = None
+        self._profile: Any = None
+        self._ollama_config: Any = None
         self._client_factory = client_factory
         self._runtime_factory = runtime_factory
         self._transcript_factory = transcript_factory
+        self._ollama_factory = ollama_factory
+        self._approval_provider = approval_provider
 
     @property
     def config(self) -> OpenAIConfig:
@@ -405,7 +531,41 @@ class OpenAICompatibleBackend(AIBackend):
     def configure(self, options: Mapping[str, object],
                   environ: Optional[Mapping[str, str]] = None) -> None:
         """Validate and retain the immutable native-backend configuration."""
-        self._config = OpenAIConfig.from_sources(options, environ)
+        from .openai_ollama import OllamaConfig
+        from .openai_profile import load_openai_profile
+
+        environ = os.environ if environ is None else environ
+        self._config = None
+        self._profile = None
+        self._ollama_config = None
+        profile_name = options.get("backend_profile")
+        if profile_name is not None and not isinstance(profile_name, str):
+            raise OpenAIConfigurationError("OpenAI backend profile must be a string")
+        profile = (
+            load_openai_profile(profile_name, environ)
+            if isinstance(profile_name, str) else None
+        )
+        if profile is not None:
+            profile_url = profile.openai.get("base_url")
+            if profile_url is not None:
+                _validate_base_url(profile_url, True, True)
+            profile_model = profile.openai.get("model")
+            if profile_model is not None:
+                validate_openai_model(profile_model)
+        config = OpenAIConfig.from_sources(
+            options,
+            environ,
+            None if profile is None else profile.openai,
+            None if profile is None else profile.chat,
+        )
+        ollama_config = (
+            OllamaConfig.from_profile(profile.ollama, config)
+            if profile is not None and profile.ollama is not None
+            else None
+        )
+        self._profile = profile
+        self._config = config
+        self._ollama_config = ollama_config
 
     def setup(self, **kwargs) -> None:
         """Validate local configuration without probing the network."""
@@ -422,10 +582,12 @@ class OpenAICompatibleBackend(AIBackend):
         from .openai_client import OpenAIChatCompletionsClient
         from .openai_deadline import SessionDeadline
         from .openai_host_tools import (
+            ApprovalGate,
             OpenAIHostToolRuntime,
             complete_openai_tool_schemas,
         )
         from .openai_loop import AgentLoopLimits, JSONLTranscript, OpenAIAgentLoop
+        from .openai_ollama import OllamaPreparationClient
 
         started = time.monotonic()
         deadline = SessionDeadline.from_timeout(timeout)
@@ -466,6 +628,36 @@ class OpenAICompatibleBackend(AIBackend):
                     "Could not create the mandatory native transcript; check "
                     "the Yocto build workspace permissions."),
             )
+
+        try:
+            if self._profile is not None:
+                transcript.write(
+                    "profile_loaded",
+                    backend="openai",
+                    selector=f"openai-{self._profile.name}",
+                    profile=self._profile.name,
+                    sha256=self._profile.sha256,
+                )
+            if self._ollama_config is not None:
+                approvals = ApprovalGate(
+                    interactive,
+                    deadline,
+                    self._approval_provider,
+                    transcript.runtime_event,
+                )
+                ollama_factory = self._ollama_factory or OllamaPreparationClient
+                preparer = ollama_factory(
+                    self._ollama_config,
+                    session_config,
+                    deadline,
+                    environ=os.environ,
+                    event_sink=transcript.runtime_event,
+                    approvals=approvals,
+                )
+                preparer.prepare()
+        except Exception as exc:
+            return self._preparation_failure(
+                transcript, deadline, started, exc, secret)
 
         try:
             runtime_factory = self._runtime_factory or OpenAIHostToolRuntime
@@ -512,6 +704,46 @@ class OpenAICompatibleBackend(AIBackend):
                 logging.error(
                     "OpenAI session could not remove an untrusted terminal artifact")
         return result
+
+    def _preparation_failure(
+        self,
+        transcript,
+        deadline,
+        started: float,
+        error: Exception,
+        secret: str,
+    ) -> SessionResult:
+        from .openai_redaction import redact_openai_text
+
+        reason = redact_openai_text(str(error), (secret,) if secret else ())
+        reason = " ".join(reason.split())[:512]
+        safe_reason = reason or "native provider preparation failed"
+        try:
+            transcript.write(
+                "session_start",
+                backend="openai",
+                profile=None if self._profile is None else self._profile.name,
+                initialization=True,
+            )
+            transcript.write(
+                "session_error",
+                error_type=type(error).__name__,
+                stage="ollama_preparation",
+                message=safe_reason,
+            )
+            transcript.write(
+                "session_end", resolved=False, reason=safe_reason)
+            transcript.sync()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logging.error("OpenAI preparation transcript finalization failed")
+        with contextlib.suppress(OSError, RuntimeError):
+            transcript.close()
+        return SessionResult(
+            resolved=False,
+            duration=max(0.0, deadline.clock() - started),
+            transcript_path=transcript.path,
+            failure_reason=f"Ollama preparation failed: {safe_reason}",
+        )
 
     @staticmethod
     def _initialization_failure(

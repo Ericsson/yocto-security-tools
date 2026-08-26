@@ -116,6 +116,8 @@ def test_help_is_network_free_and_has_no_secret_argument(monkeypatch, capsys):
     assert "--backend" in help_text
     assert "--openai-base-url" in help_text
     assert "--openai-api-key-env" in help_text
+    assert "openai-<profile>" in help_text
+    assert "CVE_AGENT_OPENAI_CONFIG_DIR" in help_text
     assert "--openai-api-key " not in help_text
 
 

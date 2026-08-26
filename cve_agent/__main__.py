@@ -12,7 +12,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 from shared.paths import data_dir
 
@@ -25,7 +25,12 @@ from . import (
     CveResult,
     ResultStatus,
 )
-from .backend import AIBackend, BackendRuntimeUnavailableError, get_backend
+from .backend import (
+    AIBackend,
+    BackendRuntimeUnavailableError,
+    get_backend,
+    resolve_backend_selector,
+)
 from .corrector import get_workspace_path, load_cve_metadata
 from .git import run_git_stdout
 from .knowledge import KnowledgeBase
@@ -250,14 +255,18 @@ def _parse_args() -> argparse.Namespace:
     # --- AI session ---
     ai_group = parser.add_argument_group('AI session')
     ai_group.add_argument('--backend', default='kiro',
-                        help='AI backend: kiro, claude, or openai (native '
-                             'Chat Completions) '
+                        help='AI backend: kiro, claude, or openai (native Chat '
+                             'Completions); use openai-<profile> for a named '
+                             'profile. Profiles load '
+                             'openai-<profile>.cfg from the repository etc/ '
+                             'directory or absolute CVE_AGENT_OPENAI_CONFIG_DIR '
                              '(default: %(default)s)')
     ai_group.add_argument('--model',
                         help='Model for AI sessions; the claude backend also '
                              'accepts aliases like sonnet/opus. Kiro and Claude '
-                             'default to claude-sonnet-5; OpenAI requires this '
-                             'option or CVE_AGENT_OPENAI_MODEL.')
+                             'default to claude-sonnet-5; plain OpenAI requires '
+                             'this option or CVE_AGENT_OPENAI_MODEL, while a '
+                             'named profile may supply it.')
     ai_group.add_argument('--max-retries', type=int, default=DEFAULT_MAX_RETRIES,
                         help='Max resolution attempts (default: %(default)s)')
     ai_group.add_argument('--session-timeout', type=int,
@@ -302,6 +311,16 @@ def _parse_args() -> argparse.Namespace:
     openai_group.add_argument('--openai-request-timeout', type=int,
                         help='Per-request timeout in seconds '
                              '(CVE_AGENT_OPENAI_REQUEST_TIMEOUT; default: 120)')
+    openai_group.add_argument('--openai-temperature', type=float,
+                        help='Portable Chat Completions temperature (0 through 2; '
+                             'CVE_AGENT_OPENAI_TEMPERATURE)')
+    openai_group.add_argument('--openai-top-p', type=float,
+                        help='Portable Chat Completions top_p (greater than 0 '
+                             'through 1; CVE_AGENT_OPENAI_TOP_P)')
+    openai_group.add_argument('--openai-reasoning-effort',
+                        choices=('none', 'low', 'medium', 'high', 'max'),
+                        help='Portable reasoning effort '
+                             '(CVE_AGENT_OPENAI_REASONING_EFFORT)')
     openai_group.add_argument('--openai-allow-remote', action='store_true',
                         default=None, dest='openai_allow_remote_endpoint',
                         help='Explicitly allow a non-loopback endpoint '
@@ -374,6 +393,8 @@ def _config_from_args(args: argparse.Namespace,
         fix_urls=args.fix_urls,
         recipe=args.recipe,
         backend=args.backend,
+        backend_profile=getattr(args, "backend_profile", None),
+        backend_selector=getattr(args, "backend_selector", args.backend),
         skip_sources=args.skip_sources,
         sign_off=args.sign_off,
         no_knowledge=args.no_knowledge,
@@ -382,9 +403,17 @@ def _config_from_args(args: argparse.Namespace,
 
 def _configure_backend(args: argparse.Namespace) -> AIBackend:
     """Resolve generic model defaults and backend-specific configuration."""
-    backend = get_backend(args.backend)
-    args.model = backend.resolve_model(args.model, os.environ)
-    backend.configure(vars(args), os.environ)
+    selection = resolve_backend_selector(args.backend)
+    args.backend_selector = selection.selector
+    args.backend = selection.backend
+    args.backend_profile = selection.profile
+    backend = get_backend(selection.backend)
+    if selection.backend == "openai":
+        backend.configure(vars(args), os.environ)
+        args.model = cast(Any, backend).config.model
+    else:
+        args.model = backend.resolve_model(args.model, os.environ)
+        backend.configure(vars(args), os.environ)
     return backend
 
 

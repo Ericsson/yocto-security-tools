@@ -501,7 +501,8 @@ def _run_single_resolution_attempt(
     print("Building AI context (upstream diffs, knowledge, conflict details)...")
     context_file = build_context(
         workspace_path, exit_code, config.cve_id, cve_info, knowledge_base,
-        model=config.model, backend=config.backend
+        model=config.model, backend=config.backend,
+        backend_profile=config.backend_profile,
     )
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
 
@@ -654,7 +655,8 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
     print("\n--- Analysis: cherry-pick produced no changes ---")
     context_file = build_context(
         workspace_path, EXIT_SUCCESS, config.cve_id, cve_info, knowledge_base,
-        model=config.model, backend=config.backend
+        model=config.model, backend=config.backend,
+        backend_profile=config.backend_profile,
     )
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     session_result = guarded_session(
@@ -684,7 +686,8 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     """Handle the analysis phase after a clean apply (exit 0)."""
     context_file = build_context(
         workspace_path, EXIT_SUCCESS, config.cve_id, cve_info, knowledge_base,
-        model=config.model, backend=config.backend
+        model=config.model, backend=config.backend,
+        backend_profile=config.backend_profile,
     )
     print("\n--- Mandatory analysis phase ---")
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
