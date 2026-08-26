@@ -342,6 +342,52 @@ class TestGuardedKiroSession:
         assert f"openai transcript: {agent / 'session.jsonl'}" in captured.out
         assert "openai session unresolved: check --openai-base-url" in captured.err
 
+    def test_backend_exception_still_removes_hook_reverts_and_audits(self, tmp_path):
+        ws = tmp_path / "workspace" / "sources" / "recipe"
+        ws.mkdir(parents=True)
+        agent = tmp_path / "agent"
+        agent.mkdir()
+        backend = MagicMock()
+        backend.run_session.side_effect = RuntimeError("backend exploded")
+        with patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
+                patch("cve_agent.session.run_git_stdout", return_value=""), \
+                patch("cve_agent.session.install_scope_hook"), \
+                patch("cve_agent.session.remove_scope_hook") as remove, \
+                patch("cve_agent.session.revert_unauthorized_changes") as revert, \
+                patch("cve_agent.session._write_audit_log") as audit, \
+                patch("cve_agent.session.get_backend", return_value=backend), \
+                patch("cve_agent.session.get_agent_dir", return_value=agent):
+            with pytest.raises(RuntimeError, match="backend exploded"):
+                guarded_session(
+                    agent / "context.md", ws, "unknown", {}, "model", 30,
+                    "CVE-1", backend_name="openai")
+        remove.assert_called_once()
+        revert.assert_called_once()
+        audit.assert_called_once()
+
+    def test_hook_removal_failure_does_not_skip_other_cleanup(self, tmp_path):
+        ws = tmp_path / "workspace" / "sources" / "recipe"
+        ws.mkdir(parents=True)
+        agent = tmp_path / "agent"
+        agent.mkdir()
+        backend = MagicMock()
+        backend.run_session.return_value = SessionResult(resolved=True, duration=1.0)
+        hook_error = OSError("cannot remove hook")
+        with patch("cve_agent.session.get_all_upstream_shas", return_value=[]), \
+                patch("cve_agent.session.run_git_stdout", return_value=""), \
+                patch("cve_agent.session.install_scope_hook"), \
+                patch("cve_agent.session.remove_scope_hook", side_effect=hook_error), \
+                patch("cve_agent.session.revert_unauthorized_changes") as revert, \
+                patch("cve_agent.session._write_audit_log") as audit, \
+                patch("cve_agent.session.get_backend", return_value=backend), \
+                patch("cve_agent.session.get_agent_dir", return_value=agent):
+            with pytest.raises(OSError, match="cannot remove hook"):
+                guarded_session(
+                    agent / "context.md", ws, "unknown", {}, "model", 30,
+                    "CVE-1", backend_name="openai")
+        revert.assert_called_once()
+        audit.assert_called_once()
+
 
 class TestWriteAuditLog:
     @patch("cve_agent.session._get_backport_note", return_value="adapted")
