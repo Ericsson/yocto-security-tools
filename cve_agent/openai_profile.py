@@ -14,8 +14,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, cast
 
 from .backend import BackendConfigurationError, resolve_backend_selector
+from .openai_provider import ProviderCapabilities
 
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_NUM_CTX = 1_048_576
@@ -44,10 +46,25 @@ _OLLAMA_KEYS = frozenset({
     "create_if_missing", "recreate_if_mismatch", "require_tools", "preload",
     "keep_alive", "verify_context",
 })
+_CAPABILITY_KEYS = frozenset({
+    "chat_completions_path", "supports_tools", "supports_parallel_tool_calls",
+    "supports_tool_choice", "tool_choice_values", "output_token_field",
+    "reasoning_request_field", "reasoning_response_field",
+    "requires_reasoning_replay", "supports_response_usage",
+    "supports_request_ids", "max_request_bytes", "max_response_bytes",
+})
+_PROBE_KEYS = frozenset({"enabled"})
+_FALLBACK_KEYS = frozenset({
+    "selector", "allow_timeout", "allow_rate_limit", "preserve_mutations",
+    "min_remaining_seconds",
+})
 _ALLOWED_KEYS = {
     "openai": _OPENAI_KEYS,
     "chat": _CHAT_KEYS,
     "ollama": _OLLAMA_KEYS,
+    "capabilities": _CAPABILITY_KEYS,
+    "probe": _PROBE_KEYS,
+    "fallback": _FALLBACK_KEYS,
 }
 _FORBIDDEN_SECRET_KEYS = frozenset({
     "api_key", "token", "authorization", "headers", "extra_headers",
@@ -116,6 +133,21 @@ class OllamaProfile:
 
 
 @dataclass(frozen=True)
+class ProbeProfile:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class FallbackProfile:
+    selector: str
+    profile: str
+    allow_timeout: bool = False
+    allow_rate_limit: bool = False
+    preserve_mutations: bool = True
+    min_remaining_seconds: int = 30
+
+
+@dataclass(frozen=True)
 class OpenAIProfile:
     """One securely loaded profile with bounded audit metadata."""
 
@@ -125,6 +157,9 @@ class OpenAIProfile:
     openai: Mapping[str, str]
     chat: Mapping[str, object]
     ollama: OllamaProfile | None
+    capabilities: ProviderCapabilities
+    probe: ProbeProfile
+    fallback: FallbackProfile | None
 
 
 def default_openai_config_dir() -> Path:
@@ -203,6 +238,13 @@ def load_openai_profile(
     _validate_openai_values(openai)
     chat = _parse_chat_values(values.get("chat", {}))
     ollama = _parse_ollama_values(values["ollama"]) if "ollama" in values else None
+    capabilities = _parse_capabilities(values.get("capabilities", {}))
+    probe = ProbeProfile(
+        enabled=_parse_bool(values.get("probe", {}).get("enabled", "false"), "enabled"))
+    fallback = (
+        _parse_fallback(values["fallback"], profile_name)
+        if "fallback" in values else None
+    )
     return OpenAIProfile(
         name=profile_name,
         path=path,
@@ -210,6 +252,9 @@ def load_openai_profile(
         openai=MappingProxyType(dict(openai)),
         chat=MappingProxyType(chat),
         ollama=ollama,
+        capabilities=capabilities,
+        probe=probe,
+        fallback=fallback,
     )
 
 
@@ -308,6 +353,56 @@ def _parse_ollama_values(values: Mapping[str, str]) -> OllamaProfile:
         preload=_parse_bool(values.get("preload", "false"), "preload"),
         keep_alive=keep_alive,
         verify_context=_parse_bool(values.get("verify_context", "false"), "verify_context"),
+    )
+
+
+def _parse_capabilities(values: Mapping[str, str]) -> ProviderCapabilities:
+    boolean_names = (
+        "supports_tools", "supports_parallel_tool_calls", "supports_tool_choice",
+        "requires_reasoning_replay", "supports_response_usage", "supports_request_ids",
+    )
+    parsed: dict[str, object] = {}
+    for name in boolean_names:
+        if name in values:
+            parsed[name] = _parse_bool(values[name], name)
+    for name in ("max_request_bytes", "max_response_bytes"):
+        if name in values:
+            parsed[name] = _parse_int(values[name], name, 1024, 1024 * 1024)
+    for name in (
+        "chat_completions_path", "output_token_field", "reasoning_request_field",
+        "reasoning_response_field",
+    ):
+        if name in values:
+            parsed[name] = _bounded_line(values[name], name)
+    if "tool_choice_values" in values:
+        choices = tuple(part.strip() for part in values["tool_choice_values"].split(","))
+        if any(not part for part in choices):
+            raise OpenAIProfileError("tool_choice_values is malformed")
+        parsed["tool_choice_values"] = choices
+    try:
+        return ProviderCapabilities(**cast(Any, parsed))
+    except (TypeError, ValueError) as exc:
+        raise OpenAIProfileError(f"invalid provider capabilities: {exc}") from exc
+
+
+def _parse_fallback(values: Mapping[str, str], primary_profile: str) -> FallbackProfile:
+    selector = _bounded_line(values.get("selector", ""), "fallback selector")
+    selection = resolve_backend_selector(selector)
+    if selection.backend != "openai" or selection.profile is None:
+        raise OpenAIProfileError("fallback selector must name an openai-<profile>")
+    if selection.profile == primary_profile:
+        raise OpenAIProfileError("fallback profile must differ from the primary")
+    return FallbackProfile(
+        selector=selector,
+        profile=selection.profile,
+        allow_timeout=_parse_bool(values.get("allow_timeout", "false"), "allow_timeout"),
+        allow_rate_limit=_parse_bool(
+            values.get("allow_rate_limit", "false"), "allow_rate_limit"),
+        preserve_mutations=_parse_bool(
+            values.get("preserve_mutations", "true"), "preserve_mutations"),
+        min_remaining_seconds=_parse_int(
+            values.get("min_remaining_seconds", "30"),
+            "min_remaining_seconds", 1, 3600),
     )
 
 

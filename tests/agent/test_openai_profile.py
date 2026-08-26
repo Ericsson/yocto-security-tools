@@ -114,6 +114,73 @@ def test_profile_supplies_required_model_and_all_portable_values(tmp_path):
     assert backend.config.reasoning_effort == "none"
 
 
+def test_profile_loads_explicit_capabilities_probe_and_fallback(tmp_path):
+    directory = tmp_path / "profiles"
+    _write_profile(directory, text=BASE_PROFILE + """
+[capabilities]
+chat_completions_path = api/v1/chat/completions
+supports_tools = true
+supports_parallel_tool_calls = false
+supports_tool_choice = false
+output_token_field = max_completion_tokens
+reasoning_request_field = reasoning_effort
+reasoning_response_field = reasoning_content
+requires_reasoning_replay = true
+supports_response_usage = false
+supports_request_ids = true
+max_request_bytes = 32768
+max_response_bytes = 65536
+
+[probe]
+enabled = true
+
+[fallback]
+selector = openai-secondary
+allow_timeout = true
+allow_rate_limit = false
+preserve_mutations = false
+min_remaining_seconds = 12
+""")
+    _write_profile(directory, "secondary")
+
+    profile = load_openai_profile(
+        "test", {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
+
+    assert profile.capabilities.chat_completions_path == "api/v1/chat/completions"
+    assert profile.capabilities.supports_parallel_tool_calls is False
+    assert profile.capabilities.output_token_field == "max_completion_tokens"
+    assert profile.capabilities.requires_reasoning_replay is True
+    assert profile.probe.enabled is True
+    assert profile.fallback is not None
+    assert profile.fallback.profile == "secondary"
+    assert profile.fallback.allow_timeout is True
+    assert profile.fallback.allow_rate_limit is False
+    assert profile.fallback.preserve_mutations is False
+    assert profile.fallback.min_remaining_seconds == 12
+
+
+@pytest.mark.parametrize(("section", "match"), [
+    ("[capabilities]\noutput_token_field = vendor_tokens\n", "output_token_field"),
+    ("[capabilities]\nsupports_tools = false\n", "tool"),
+    ("[capabilities]\nrequires_reasoning_replay = true\n", "reasoning replay"),
+    ("[capabilities]\nmax_response_bytes = 9999999\n", "max_response_bytes"),
+    ("[probe]\nenabled = maybe\n", "strict boolean"),
+    ("[fallback]\nselector = claude\n", "openai-<profile>"),
+    ("[fallback]\nselector = openai-test\n", "differ"),
+    ("[fallback]\nselector = openai-secondary\nallow_timeout = maybe\n",
+     "strict boolean"),
+    ("[fallback]\nselector = openai-secondary\nmin_remaining_seconds = 0\n",
+     "between"),
+])
+def test_provider_sections_reject_unsupported_values(tmp_path, section, match):
+    directory = tmp_path / "profiles"
+    _write_profile(directory, text=BASE_PROFILE + section)
+
+    with pytest.raises(OpenAIProfileError, match=match):
+        load_openai_profile(
+            "test", {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
+
+
 def test_profile_is_read_once_and_setup_remains_network_free(
     monkeypatch, tmp_path,
 ):
