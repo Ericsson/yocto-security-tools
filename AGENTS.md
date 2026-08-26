@@ -10,6 +10,7 @@
 │   ├── exit_codes.py            # Exit codes 0–16 (single source of truth)
 │   ├── paths.py                 # XDG Base Directory paths (data_dir, cache_dir)
 │   ├── json_cache.py            # Gzip-compressed JSON cache (atomic writes)
+│   ├── handoff.py               # Corrector-to-agent repository state contract
 │   └── url_parser.py            # URL → commit hash/PR extraction
 ├── cve_metadata_extractor/      # Tool 1: find fix commits
 │   ├── sources.py               # CveSource base + SOURCE_REGISTRY + plugin loader
@@ -21,6 +22,8 @@
 │   ├── workflow.py              # Main state machine (largest file)
 │   ├── state.py                 # WorkflowState + exception hierarchy
 │   ├── cherry_pick.py           # Cherry-pick strategies (single, series, least-conflict)
+│   ├── transfer.py              # Verified cross-layout patch transfer
+│   ├── handoff.py               # Trusted repository handoff producer
 │   ├── blame.py                 # Vulnerability origin analysis
 │   └── git_ops.py / bitbake_ops.py / recipe_ops.py / patch_ops.py
 ├── cve_agent/                   # Tool 3: AI orchestration
@@ -29,6 +32,13 @@
 │   ├── backend.py               # AIBackend interface + backend registry
 │   ├── kiro_backend.py          # KiroBackend (drives `kiro-cli`, default)
 │   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
+│   ├── openai_backend.py        # Native OpenAI-compatible backend and config
+│   ├── openai_client.py         # Bounded Chat Completions transport
+│   ├── openai_{tools,git_tools,host_tools,loop}.py  # Typed agent runtime
+│   ├── result.py                # Versioned workflow/build/security outcomes
+│   ├── artifacts.py             # Durable per-attempt audit artifacts
+│   ├── semantic_validation.py   # Offline security-equivalence gate
+│   ├── evaluation.py            # Reproducible backend campaign harness
 │   ├── context.py / knowledge.py / review.py
 │   ├── commit_notes.py          # Length budget for the AI's `Conflicts
 │   │                            # Resolved:` notes (commit-msg hook + gate)
@@ -86,6 +96,9 @@ Each tool works independently. Chain via `--cve-info cve-metadata.json`.
 | `CVE_EXTRACTOR_CONFIG` | Override config.json path |
 | `CVE_TOOLS_DATA_DIR` | Override XDG data directory |
 | `CVE_TOOLS_CACHE_DIR` | Override XDG cache directory |
+| `CVE_AGENT_OPENAI_*` | Configure the native OpenAI-compatible backend |
+| `OPENAI_BASE_URL` | Standard fallback API root for the native backend |
+| `OPENAI_API_KEY` | Default optional native-backend API key variable |
 | `GITHUB_TOKEN` | GitHub API (PR metadata) |
 | `OPENEMBEDDED_TOKEN` | OE mailing list API |
 | `BBPATH` | Required for corrector/agent (Yocto build env) |
