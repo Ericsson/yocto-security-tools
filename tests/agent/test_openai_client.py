@@ -18,9 +18,11 @@ from cve_agent.openai_client import (
     AssistantResponse,
     OpenAIAuthenticationError,
     OpenAIChatCompletionsClient,
+    OpenAIClientError,
     OpenAIClientEvent,
     OpenAIClientLimits,
     OpenAIConnectionError,
+    OpenAIConnectTimeoutError,
     OpenAIDeadlineExceededError,
     OpenAILocalRequestError,
     OpenAIMalformedJSONError,
@@ -28,13 +30,17 @@ from cve_agent.openai_client import (
     OpenAINotFoundError,
     OpenAIProtocolError,
     OpenAIRateLimitError,
+    OpenAIReadTimeoutError,
+    OpenAIReasoningProtocolError,
     OpenAIRequestTimeoutError,
     OpenAIResponseSizeError,
     OpenAIRetryableServerError,
     OpenAIRetryPolicy,
+    OpenAIToolProtocolError,
     TokenUsage,
 )
 from cve_agent.openai_deadline import SessionDeadline
+from cve_agent.openai_provider import ProviderCapabilities, ProviderErrorCode
 
 
 class FakeClock:
@@ -129,6 +135,7 @@ def _client(
     environ: dict[str, str] | None = None,
     sleep: Callable[[float], None] | None = None,
     events: list[OpenAIClientEvent] | None = None,
+    capabilities: ProviderCapabilities | None = None,
 ) -> OpenAIChatCompletionsClient:
     clock = clock or FakeClock()
     return OpenAIChatCompletionsClient(
@@ -140,6 +147,7 @@ def _client(
         environ={} if environ is None else environ,
         sleep=(lambda _delay: None) if sleep is None else sleep,
         event_sink=None if events is None else events.append,
+        capabilities=capabilities,
     )
 
 
@@ -298,6 +306,75 @@ def test_tools_add_only_portable_tools_and_auto_choice():
     body = json.loads(transport.calls[0][1]["data"])
     assert body["tools"] == [tool]
     assert body["tool_choice"] == "auto"
+
+
+def test_explicit_capability_dialect_controls_path_tokens_and_tool_choice():
+    transport = FakeTransport(FakeResponse())
+    capabilities = ProviderCapabilities(
+        chat_completions_path="api/v1/chat/completions",
+        supports_tool_choice=False,
+        output_token_field="max_completion_tokens",
+    )
+    tool = {
+        "type": "function",
+        "function": {"name": "read_file", "parameters": {"type": "object"}},
+    }
+
+    _client(transport, capabilities=capabilities).complete(
+        [{"role": "user", "content": "hello"}], [tool])
+
+    url, kwargs = transport.calls[0]
+    body = json.loads(kwargs["data"])
+    assert url.endswith("/api/v1/chat/completions")
+    assert body["max_completion_tokens"] == 8192
+    assert "max_tokens" not in body
+    assert "tool_choice" not in body
+
+
+def test_capabilities_reject_unsupported_tools_parallel_calls_and_reasoning():
+    messages = [{"role": "user", "content": "hello"}]
+    tool = [{"type": "function", "function": {"name": "read_file"}}]
+    no_tools = ProviderCapabilities(
+        supports_tools=False,
+        supports_parallel_tool_calls=False,
+        supports_tool_choice=False,
+    )
+    with pytest.raises(OpenAIToolProtocolError, match="does not support"):
+        _client(FakeTransport(FakeResponse()), capabilities=no_tools).complete(
+            messages, tool)
+
+    serial = ProviderCapabilities(supports_parallel_tool_calls=False)
+    response = FakeResponse(payload=_tool_payload(
+        None, [_tool_call("one"), _tool_call("two")]))
+    with pytest.raises(OpenAIToolProtocolError, match="parallel"):
+        _client(FakeTransport(response), capabilities=serial).complete(messages, [])
+
+    no_reasoning = ProviderCapabilities(reasoning_request_field="none")
+    with pytest.raises(OpenAIReasoningProtocolError, match="unsupported"):
+        _client(
+            FakeTransport(FakeResponse()),
+            config=_config(openai_reasoning_effort="high"),
+            capabilities=no_reasoning,
+        ).complete(messages, [])
+
+
+def test_required_reasoning_field_is_validated_and_replayed():
+    capabilities = ProviderCapabilities(
+        reasoning_response_field="reasoning_content",
+        requires_reasoning_replay=True,
+    )
+    payload = _tool_payload(None, [_tool_call("one")])
+    payload["choices"][0]["message"]["reasoning_content"] = "bounded state"
+    result = _client(
+        FakeTransport(FakeResponse(payload=payload)),
+        capabilities=capabilities,
+    ).complete([{"role": "user", "content": "hello"}], [])
+    assert result.reasoning_replay == ("reasoning_content", "bounded state")
+
+    missing = FakeResponse(payload=_tool_payload(None, [_tool_call("two")]))
+    with pytest.raises(OpenAIReasoningProtocolError, match="omitted"):
+        _client(FakeTransport(missing), capabilities=capabilities).complete(
+            [{"role": "user", "content": "hello"}], [])
 
 
 def test_authorization_header_absent_for_missing_or_empty_key():
@@ -469,6 +546,46 @@ def test_http_status_mapping(status, error_type):
     assert response.closed == 1
 
 
+@pytest.mark.parametrize(("status", "code"), [
+    (401, ProviderErrorCode.AUTH),
+    (404, ProviderErrorCode.MODEL_NOT_FOUND),
+    (400, ProviderErrorCode.REQUEST_REJECTED),
+    (429, ProviderErrorCode.RATE_LIMIT),
+    (503, ProviderErrorCode.SERVER_ERROR),
+])
+def test_http_failure_retains_bounded_evidence_without_credentials(status, code):
+    secret = "sk-evidence-secret"
+    response = FakeResponse(
+        status,
+        body=f'{{"error":"Bearer {secret} rejected"}}'.encode(),
+        headers={
+            "X-Request-ID": "request-safe-1",
+            "Retry-After": "999",
+            "Authorization": f"Bearer {secret}",
+        },
+    )
+    client = _client(
+        FakeTransport(response),
+        config=_config(openai_api_key_env="MODEL_KEY"),
+        environ={"MODEL_KEY": secret},
+        retry=OpenAIRetryPolicy(max_attempts=1, max_delay=2),
+    )
+
+    with pytest.raises(OpenAIClientError) as exc_info:
+        client.complete([{"role": "user", "content": "hello"}], [])
+
+    error = exc_info.value
+    assert error.code is code
+    assert error.evidence.code is code
+    assert error.evidence.status_code == status
+    assert error.evidence.request_id == "request-safe-1"
+    assert error.evidence.retry_after == 2
+    assert len(error.evidence.response_sha256) == 64
+    assert secret not in repr(error.evidence)
+    assert "Authorization" not in repr(error.evidence)
+    assert error.evidence.request_features == ("max_tokens", "non_streaming")
+
+
 def test_connection_failure_and_timeout_are_distinct():
     connection = _client(
         FakeTransport(requests.ConnectionError("secret transport detail")),
@@ -483,6 +600,26 @@ def test_connection_failure_and_timeout_are_distinct():
     with pytest.raises(OpenAIRequestTimeoutError) as timeout_exc:
         timeout.complete([{"role": "user", "content": "hello"}], [])
     assert "secret timeout detail" not in str(timeout_exc.value)
+
+
+@pytest.mark.parametrize(("exception", "error_type", "code"), [
+    (requests.ConnectTimeout("connect secret"), OpenAIConnectTimeoutError,
+     ProviderErrorCode.CONNECT_TIMEOUT),
+    (requests.ReadTimeout("read secret"), OpenAIReadTimeoutError,
+     ProviderErrorCode.READ_TIMEOUT),
+])
+def test_connect_and_read_timeout_have_precise_codes(exception, error_type, code):
+    events: list[OpenAIClientEvent] = []
+    client = _client(
+        FakeTransport(exception), events=events,
+        retry=OpenAIRetryPolicy(max_attempts=3))
+
+    with pytest.raises(error_type) as exc_info:
+        client.complete([{"role": "user", "content": "hello"}], [])
+
+    assert exc_info.value.code is code
+    assert exc_info.value.evidence.code is code
+    assert len([event for event in events if event.kind == "attempt"]) == 1
 
 
 def test_streamed_read_timeout_wrapper_is_not_retried():
@@ -524,14 +661,14 @@ def test_connection_retries_but_500_and_bad_protocol_do_not():
     assert len(malformed.calls) == 1
 
 
-def test_response_stream_connection_failure_retries_after_closing():
+def test_ambiguous_response_stream_failure_is_not_retried():
     broken = FakeResponse(stream_error=OSError("raw stream failed"))
     transport = FakeTransport(broken, FakeResponse())
-    result = _client(transport).complete(
-        [{"role": "user", "content": "hello"}], [])
-    assert result.content == "ok"
+    with pytest.raises(OpenAIConnectionError):
+        _client(transport).complete(
+            [{"role": "user", "content": "hello"}], [])
     assert broken.closed == 1
-    assert len(transport.calls) == 2
+    assert len(transport.calls) == 1
 
 
 def test_retry_after_and_backoff_are_capped_and_audited():
@@ -673,6 +810,24 @@ def test_response_header_count_and_bytes_are_bounded():
             limits=OpenAIClientLimits(max_response_header_bytes=16),
         ).complete([{"role": "user", "content": "hello"}], [])
     assert oversized.closed == 1
+
+
+def test_local_response_limit_failure_retains_precise_code_and_features():
+    events: list[OpenAIClientEvent] = []
+    response = FakeResponse(headers={"Content-Length": "5000", "X-Request-ID": "size-1"})
+    client = _client(
+        FakeTransport(response),
+        limits=OpenAIClientLimits(max_response_bytes=1024),
+        events=events,
+    )
+
+    with pytest.raises(OpenAIResponseSizeError) as exc_info:
+        client.complete([{"role": "user", "content": "hello"}], [])
+
+    assert exc_info.value.code is ProviderErrorCode.RESPONSE_TOO_LARGE
+    assert exc_info.value.evidence.request_id == "size-1"
+    assert exc_info.value.evidence.request_features == ("max_tokens", "non_streaming")
+    assert events[-1].failure.code is ProviderErrorCode.RESPONSE_TOO_LARGE
 
 
 def test_response_tool_call_and_identifier_limits():

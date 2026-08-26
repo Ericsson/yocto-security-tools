@@ -11,18 +11,24 @@ The response limit is therefore enforced on decoded bytes, not merely on a
 possibly compressed ``Content-Length`` value. A declared wire length above
 the same limit is also rejected conservatively before reading.
 """
+import hashlib
 import json
 import math
 import os
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Protocol
 
 import requests
 
 from .openai_backend import OpenAIConfig
 from .openai_deadline import SessionDeadline
+from .openai_provider import (
+    ProviderCapabilities,
+    ProviderErrorCode,
+    ProviderFailureEvidence,
+)
 from .openai_redaction import redact_openai_text
 
 DEFAULT_MAX_MESSAGES = 128
@@ -51,6 +57,14 @@ _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 class OpenAIClientError(RuntimeError):
     """Base class for safe native Chat Completions client failures."""
 
+    code = ProviderErrorCode.REQUEST_REJECTED
+
+    def __init__(
+        self, message: str, evidence: ProviderFailureEvidence | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
 
 class OpenAILocalRequestError(OpenAIClientError, ValueError):
     """Local request data or client limits are invalid."""
@@ -59,45 +73,97 @@ class OpenAILocalRequestError(OpenAIClientError, ValueError):
 class OpenAIConnectionError(OpenAIClientError):
     """The HTTP connection failed before a response was completed."""
 
+    code = ProviderErrorCode.CONNECTION_LOST
+
 
 class OpenAIRequestTimeoutError(OpenAIClientError, TimeoutError):
     """A configured transport timeout expired."""
+
+    code = ProviderErrorCode.READ_TIMEOUT
+
+
+class OpenAIConnectTimeoutError(OpenAIRequestTimeoutError):
+    """The connection phase exceeded its timeout."""
+
+    code = ProviderErrorCode.CONNECT_TIMEOUT
+
+
+class OpenAIReadTimeoutError(OpenAIRequestTimeoutError):
+    """The response-read phase exceeded its timeout."""
+
+    code = ProviderErrorCode.READ_TIMEOUT
 
 
 class OpenAIDeadlineExceededError(OpenAIRequestTimeoutError):
     """The shared session deadline cannot accommodate more HTTP work."""
 
+    code = ProviderErrorCode.DEADLINE_EXHAUSTED
+
 
 class OpenAIAuthenticationError(OpenAIClientError):
     """The endpoint rejected authentication or authorization."""
+
+    code = ProviderErrorCode.AUTH
 
 
 class OpenAINotFoundError(OpenAIClientError):
     """The configured endpoint or model was not found."""
 
+    code = ProviderErrorCode.MODEL_NOT_FOUND
+
 
 class OpenAIRateLimitError(OpenAIClientError):
     """The endpoint remained rate limited after allowed attempts."""
+
+    code = ProviderErrorCode.RATE_LIMIT
 
 
 class OpenAIRetryableServerError(OpenAIClientError):
     """A selected transient server failure exhausted retry attempts."""
 
+    code = ProviderErrorCode.SERVER_ERROR
+
 
 class OpenAINonRetryableHTTPError(OpenAIClientError):
     """An HTTP response is not eligible for retry."""
+
+    code = ProviderErrorCode.REQUEST_REJECTED
 
 
 class OpenAIMalformedJSONError(OpenAIClientError):
     """The bounded response is not valid UTF-8 JSON."""
 
+    code = ProviderErrorCode.MALFORMED_RESPONSE
+
 
 class OpenAIProtocolError(OpenAIClientError):
     """The decoded server response violates the supported schema."""
 
+    code = ProviderErrorCode.MALFORMED_RESPONSE
+
+
+class OpenAIToolProtocolError(OpenAIProtocolError):
+    """The provider's tool-call dialect is unsupported."""
+
+    code = ProviderErrorCode.TOOL_PROTOCOL_UNSUPPORTED
+
+
+class OpenAIReasoningProtocolError(OpenAIProtocolError):
+    """Configured reasoning fields cannot be sent or replayed safely."""
+
+    code = ProviderErrorCode.REASONING_PROTOCOL_UNSUPPORTED
+
+
+class OpenAIResponseTruncatedError(OpenAIProtocolError):
+    """The provider explicitly truncated a response or tool call."""
+
+    code = ProviderErrorCode.RESPONSE_TRUNCATED
+
 
 class OpenAIResponseSizeError(OpenAIClientError):
     """The decoded response exceeds the configured byte bound."""
+
+    code = ProviderErrorCode.RESPONSE_TOO_LARGE
 
 
 @dataclass(frozen=True)
@@ -203,6 +269,7 @@ class AssistantResponse:
     tool_calls: tuple[FunctionToolCall, ...]
     finish_reason: Optional[str]
     usage: Optional[TokenUsage]
+    reasoning_replay: Optional[tuple[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +280,9 @@ class OpenAIClientEvent:
     attempt: int
     status_code: Optional[int] = None
     delay: Optional[float] = None
+    failure: ProviderFailureEvidence | None = None
+    request_id: str | None = None
+    request_features: tuple[str, ...] = ()
 
 
 class HTTPResponse(Protocol):
@@ -253,15 +323,27 @@ class OpenAIChatCompletionsClient:
         environ: Optional[Mapping[str, str]] = None,
         sleep: Callable[[float], None] = time.sleep,
         event_sink: Optional[EventSink] = None,
+        capabilities: ProviderCapabilities | None = None,
     ) -> None:
         self.config = config
         self.deadline = deadline
-        self.limits = limits or OpenAIClientLimits()
+        self.capabilities = capabilities or ProviderCapabilities()
+        configured_limits = limits or OpenAIClientLimits()
+        self.limits = replace(
+            configured_limits,
+            max_request_bytes=min(
+                configured_limits.max_request_bytes,
+                self.capabilities.max_request_bytes),
+            max_response_bytes=min(
+                configured_limits.max_response_bytes,
+                self.capabilities.max_response_bytes),
+        )
         self.retry_policy = retry_policy or OpenAIRetryPolicy()
         self._transport = requests if transport is None else transport
         self._environ = os.environ if environ is None else environ
         self._sleep = sleep
         self._event_sink = event_sink
+        self._last_request_features: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         """Return configuration diagnostics without environment values."""
@@ -270,6 +352,10 @@ class OpenAIChatCompletionsClient:
             f"model={self.config.model!r}, "
             f"api_key_env={self.config.api_key_env!r})"
         )
+
+    @property
+    def _chat_completions_url(self) -> str:
+        return f"{self.config.base_url}/{self.capabilities.chat_completions_path}"
 
     def complete(
         self,
@@ -286,7 +372,9 @@ class OpenAIChatCompletionsClient:
                 min(float(self.config.connect_timeout), remaining),
                 min(float(self.config.request_timeout), remaining),
             )
-            self._emit(OpenAIClientEvent("attempt", attempt))
+            self._emit(OpenAIClientEvent(
+                "attempt", attempt,
+                request_features=self._last_request_features))
             response: Optional[HTTPResponse] = None
             try:
                 proxy_override = (
@@ -303,29 +391,67 @@ class OpenAIChatCompletionsClient:
                 if proxy_override is not None:
                     request_options["proxies"] = proxy_override
                 response = self._transport.post(
-                    self.config.chat_completions_url,
+                    self._chat_completions_url,
                     **request_options,
                 )
                 body = self._read_response(response)
                 status = response.status_code
             except requests.RequestException as exc:
-                if _is_transport_timeout(exc):
+                timeout_kind = _transport_timeout_kind(exc)
+                if timeout_kind is not None:
                     self._emit(OpenAIClientEvent("timeout", attempt))
-                    raise OpenAIRequestTimeoutError(
-                        "Chat Completions request timed out") from None
+                    error_type = (
+                        OpenAIConnectTimeoutError
+                        if timeout_kind == "connect" else OpenAIReadTimeoutError)
+                    timeout_error = error_type("Chat Completions request timed out")
+                    timeout_error.evidence = ProviderFailureEvidence(
+                        timeout_error.code,
+                        request_features=self._last_request_features)
+                    self._emit(OpenAIClientEvent(
+                        "failure", attempt, failure=timeout_error.evidence))
+                    raise timeout_error from None
                 self._emit(OpenAIClientEvent("connection_error", attempt))
-                if attempt >= self.retry_policy.max_attempts:
-                    raise OpenAIConnectionError(
-                        "Chat Completions connection failed") from None
+                if response is not None or attempt >= self.retry_policy.max_attempts:
+                    connection_error = OpenAIConnectionError(
+                        "Chat Completions connection failed")
+                    connection_error.evidence = ProviderFailureEvidence(
+                        connection_error.code,
+                        request_features=self._last_request_features)
+                    self._emit(OpenAIClientEvent(
+                        "failure", attempt, failure=connection_error.evidence))
+                    raise connection_error from None
                 self._retry_sleep(attempt, None)
                 continue
-            except OpenAIConnectionError:
+            except OpenAIConnectionError as caught:
                 self._emit(OpenAIClientEvent("connection_error", attempt))
-                if attempt >= self.retry_policy.max_attempts:
-                    raise OpenAIConnectionError(
-                        "Chat Completions connection failed") from None
+                if response is not None or attempt >= self.retry_policy.max_attempts:
+                    caught.evidence = ProviderFailureEvidence(
+                        caught.code, request_features=self._last_request_features)
+                    self._emit(OpenAIClientEvent(
+                        "failure", attempt, failure=caught.evidence))
+                    raise caught
                 self._retry_sleep(attempt, None)
                 continue
+            except OpenAIClientError as caught:
+                status_code = (
+                    response.status_code
+                    if response is not None
+                    and isinstance(response.status_code, int)
+                    and not isinstance(response.status_code, bool)
+                    else None
+                )
+                response_headers = response.headers if response is not None else {}
+                caught.evidence = ProviderFailureEvidence(
+                    caught.code,
+                    status_code=status_code,
+                    request_id=self._safe_request_id(response_headers),
+                    retry_after=self._retry_after(response_headers),
+                    request_features=self._last_request_features,
+                )
+                self._emit(OpenAIClientEvent(
+                    "failure", attempt, status_code=status_code,
+                    failure=caught.evidence))
+                raise
             finally:
                 if response is not None:
                     try:
@@ -336,16 +462,30 @@ class OpenAIChatCompletionsClient:
 
             if isinstance(status, bool) or not isinstance(status, int):
                 raise OpenAIProtocolError("HTTP response status is not an integer")
-            self._emit(OpenAIClientEvent("response", attempt, status_code=status))
+            self._emit(OpenAIClientEvent(
+                "response", attempt, status_code=status,
+                request_id=self._safe_request_id(response.headers),
+                request_features=self._last_request_features))
             if status == 200:
-                return self._parse_response(body)
+                try:
+                    return self._parse_response(body)
+                except OpenAIClientError as error:
+                    error.evidence = self._response_evidence(
+                        error.code, status, response.headers, body, secret)
+                    self._emit(OpenAIClientEvent(
+                        "failure", attempt, status_code=status,
+                        failure=error.evidence))
+                    raise
 
-            error = self._http_error(status, body, secret)
+            http_error = self._http_error(status, response.headers, body, secret)
             if status in _RETRYABLE_STATUSES and attempt < self.retry_policy.max_attempts:
                 retry_after = self._retry_after(response.headers)
                 self._retry_sleep(attempt, retry_after, status)
                 continue
-            raise error
+            self._emit(OpenAIClientEvent(
+                "failure", attempt, status_code=status,
+                failure=http_error.evidence))
+            raise http_error
 
         raise OpenAIConnectionError("Chat Completions attempts exhausted")
 
@@ -376,7 +516,11 @@ class OpenAIChatCompletionsClient:
         if self.config.top_p is not None:
             portable_fields["top_p"] = self.config.top_p
         if self.config.reasoning_effort is not None:
-            portable_fields["reasoning_effort"] = self.config.reasoning_effort
+            if self.capabilities.reasoning_request_field == "none":
+                raise OpenAIReasoningProtocolError(
+                    "configured reasoning effort is unsupported by provider profile")
+            portable_fields[
+                self.capabilities.reasoning_request_field] = self.config.reasoning_effort
         if portable_fields:
             estimated += len(json.dumps(
                 portable_fields, separators=(",", ":"),
@@ -402,12 +546,16 @@ class OpenAIChatCompletionsClient:
             "model": self.config.model,
             "messages": normalized_messages,
             "stream": False,
-            "max_tokens": self.config.max_output_tokens,
+            self.capabilities.output_token_field: self.config.max_output_tokens,
         }
         body.update(portable_fields)
         if normalized_tools:
+            if not self.capabilities.supports_tools:
+                raise OpenAIToolProtocolError(
+                    "provider profile does not support function tools")
             body["tools"] = normalized_tools
-            body["tool_choice"] = "auto"
+            if self.capabilities.supports_tool_choice:
+                body["tool_choice"] = "auto"
         try:
             encoded_request = json.dumps(
                 body, ensure_ascii=False, separators=(",", ":"),
@@ -418,6 +566,18 @@ class OpenAIChatCompletionsClient:
         if len(encoded_request) > self.limits.max_request_bytes:
             raise OpenAILocalRequestError(
                 "serialized request exceeds the configured byte limit")
+        features = [
+            self.capabilities.output_token_field,
+            "non_streaming",
+        ]
+        if normalized_tools:
+            features.append("tools")
+        if "tool_choice" in body:
+            features.append("tool_choice:auto")
+        if self.config.reasoning_effort is not None:
+            features.append(
+                f"reasoning:{self.capabilities.reasoning_request_field}")
+        self._last_request_features = tuple(features)
         return encoded_request
 
     def _bounded_input_object(
@@ -554,36 +714,60 @@ class OpenAIChatCompletionsClient:
             if not isinstance(finish_reason, str):
                 raise OpenAIProtocolError("finish_reason must be a string or null")
             self._bounded_identifier(finish_reason, "finish_reason", allow_empty=True)
-        usage = self._parse_usage(decoded.get("usage"))
+        reasoning_replay: tuple[str, str] | None = None
+        reasoning_field = self.capabilities.reasoning_response_field
+        if reasoning_field != "none":
+            reasoning_value = message.get(reasoning_field)
+            if reasoning_value is not None:
+                if not isinstance(reasoning_value, str):
+                    raise OpenAIReasoningProtocolError(
+                        "reasoning response field must be a string")
+                if len(reasoning_value.encode("utf-8")) > self.limits.max_content_bytes:
+                    raise OpenAIReasoningProtocolError(
+                        "reasoning response exceeds the byte limit")
+                if self.capabilities.requires_reasoning_replay:
+                    reasoning_replay = (reasoning_field, reasoning_value)
+            elif self.capabilities.requires_reasoning_replay and tool_calls:
+                raise OpenAIReasoningProtocolError(
+                    "tool response omitted required reasoning replay field")
+        usage = (
+            self._parse_usage(decoded.get("usage"))
+            if self.capabilities.supports_response_usage else None)
         return AssistantResponse(
             content=content,
             tool_calls=tuple(tool_calls),
             finish_reason=finish_reason,
             usage=usage,
+            reasoning_replay=reasoning_replay,
         )
 
     def _parse_tool_calls(self, value: object) -> list[FunctionToolCall]:
         if not isinstance(value, list):
-            raise OpenAIProtocolError("tool_calls must be a list")
+            raise OpenAIToolProtocolError("tool_calls must be a list")
         limit = self.limits.max_tool_calls
         if len(value) > limit:
-            raise OpenAIProtocolError("tool-call count exceeds the configured limit")
+            raise OpenAIToolProtocolError(
+                "tool-call count exceeds the configured limit")
+        if len(value) > 1 and not self.capabilities.supports_parallel_tool_calls:
+            raise OpenAIToolProtocolError(
+                "provider returned parallel tool calls contrary to its profile")
         calls: list[FunctionToolCall] = []
         identifiers: set[str] = set()
         for item in value:
             if not isinstance(item, dict):
-                raise OpenAIProtocolError("each tool call must be an object")
-            identifier = self._bounded_identifier(
+                raise OpenAIToolProtocolError("each tool call must be an object")
+            identifier = self._tool_identifier(
                 item.get("id"), "tool-call ID")
             if identifier in identifiers:
-                raise OpenAIProtocolError("duplicate tool-call ID")
+                raise OpenAIToolProtocolError("duplicate tool-call ID")
             identifiers.add(identifier)
             if item.get("type") != "function":
-                raise OpenAIProtocolError("tool-call type must be function")
+                raise OpenAIToolProtocolError("tool-call type must be function")
             function = item.get("function")
             if not isinstance(function, dict):
-                raise OpenAIProtocolError("tool-call function must be an object")
-            name = self._bounded_identifier(
+                raise OpenAIToolProtocolError(
+                    "tool-call function must be an object")
+            name = self._tool_identifier(
                 function.get("name"), "function name")
             arguments_value = function.get("arguments")
             was_object = False
@@ -595,20 +779,21 @@ class OpenAIChatCompletionsClient:
                 # identical while recording that accommodation explicitly.
                 self._validate_json_tree(
                     arguments_value, self.limits.max_json_depth,
-                    self.limits.max_json_nodes, OpenAIProtocolError)
+                    self.limits.max_json_nodes, OpenAIToolProtocolError)
                 try:
                     arguments = json.dumps(
                         arguments_value, ensure_ascii=False,
                         separators=(",", ":"), allow_nan=False)
                 except (TypeError, ValueError, UnicodeError, RecursionError):
-                    raise OpenAIProtocolError(
+                    raise OpenAIToolProtocolError(
                         "object-valued function arguments are not valid JSON") from None
                 was_object = True
             else:
-                raise OpenAIProtocolError(
+                raise OpenAIToolProtocolError(
                     "function arguments must be a JSON string or object")
             if len(arguments.encode("utf-8")) > self.limits.max_argument_bytes:
-                raise OpenAIProtocolError("function arguments exceed the byte limit")
+                raise OpenAIToolProtocolError(
+                    "function arguments exceed the byte limit")
             calls.append(FunctionToolCall(
                 id=identifier,
                 name=name,
@@ -616,6 +801,12 @@ class OpenAIChatCompletionsClient:
                 arguments_were_object=was_object,
             ))
         return calls
+
+    def _tool_identifier(self, value: object, label: str) -> str:
+        try:
+            return self._bounded_identifier(value, label)
+        except OpenAIProtocolError as exc:
+            raise OpenAIToolProtocolError(str(exc)) from None
 
     def _parse_usage(self, value: object) -> Optional[TokenUsage]:
         if value is None:
@@ -651,24 +842,59 @@ class OpenAIChatCompletionsClient:
         return value
 
     def _http_error(
-        self, status: int, body: bytes, secret: Optional[str],
+        self, status: int, headers: Mapping[str, str], body: bytes,
+        secret: Optional[str],
     ) -> OpenAIClientError:
         snippet = self._safe_snippet(body, secret)
         suffix = f": {snippet}" if snippet else ""
+        error: OpenAIClientError
         if status in {401, 403}:
-            return OpenAIAuthenticationError(
+            error = OpenAIAuthenticationError(
                 f"Chat Completions authentication failed ({status}){suffix}")
-        if status == 404:
-            return OpenAINotFoundError(
+        elif status == 404:
+            error = OpenAINotFoundError(
                 f"Chat Completions endpoint or model not found (404){suffix}")
-        if status == 429:
-            return OpenAIRateLimitError(
+        elif status == 429:
+            error = OpenAIRateLimitError(
                 f"Chat Completions rate limit persisted (429){suffix}")
-        if status in {502, 503, 504}:
-            return OpenAIRetryableServerError(
+        elif status in {502, 503, 504}:
+            error = OpenAIRetryableServerError(
                 f"Chat Completions transient server failure ({status}){suffix}")
-        return OpenAINonRetryableHTTPError(
-            f"Chat Completions HTTP failure ({status}){suffix}")
+        else:
+            error = OpenAINonRetryableHTTPError(
+                f"Chat Completions HTTP failure ({status}){suffix}")
+        error.evidence = self._response_evidence(
+            error.code, status, headers, body, secret)
+        return error
+
+    def _response_evidence(
+        self,
+        code: ProviderErrorCode,
+        status: int,
+        headers: Mapping[str, str],
+        body: bytes,
+        secret: str | None,
+    ) -> ProviderFailureEvidence:
+        request_id = self._safe_request_id(headers)
+        return ProviderFailureEvidence(
+            code=code,
+            status_code=status,
+            request_id=request_id,
+            retry_after=self._retry_after(headers),
+            response_sha256=hashlib.sha256(body).hexdigest(),
+            response_excerpt=self._safe_snippet(body, secret),
+            request_features=self._last_request_features,
+        )
+
+    def _safe_request_id(self, headers: Mapping[str, str]) -> str | None:
+        if not self.capabilities.supports_request_ids:
+            return None
+        for name in ("x-request-id", "request-id", "traceparent"):
+            candidate = self._header(headers, name)
+            if (candidate is not None and candidate.isprintable()
+                    and len(candidate.encode("utf-8")) <= 256):
+                return candidate
+        return None
 
     def _safe_snippet(self, body: bytes, secret: Optional[str]) -> str:
         # The complete body is already capped by max_response_bytes. Redact
@@ -799,8 +1025,8 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-standard JSON constant: {value}")
 
 
-def _is_transport_timeout(error: requests.RequestException) -> bool:
-    """Recognize direct and streamed requests timeout wrappers safely."""
+def _transport_timeout_kind(error: requests.RequestException) -> str | None:
+    """Recognize connect/read timeout wrappers without exposing their text."""
     pending: list[BaseException] = [error]
     seen: set[int] = set()
     while pending:
@@ -808,14 +1034,20 @@ def _is_transport_timeout(error: requests.RequestException) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, (requests.Timeout, TimeoutError)):
-            return True
-        if type(current).__name__ in {"ReadTimeoutError", "ConnectTimeoutError"}:
-            return True
+        if isinstance(current, requests.ConnectTimeout):
+            return "connect"
+        if isinstance(current, (requests.ReadTimeout, TimeoutError)):
+            return "read"
+        if isinstance(current, requests.Timeout):
+            return "read"
+        if type(current).__name__ == "ConnectTimeoutError":
+            return "connect"
+        if type(current).__name__ == "ReadTimeoutError":
+            return "read"
         for nested in (current.__cause__, current.__context__):
             if isinstance(nested, BaseException):
                 pending.append(nested)
         pending.extend(
             item for item in current.args if isinstance(item, BaseException)
         )
-    return False
+    return None
