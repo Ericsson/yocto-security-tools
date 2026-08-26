@@ -3,6 +3,7 @@
 """Pluggable AI backend interface for CVE agent sessions."""
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,36 @@ class BackendConfigurationError(ValueError):
 
 class BackendRuntimeUnavailableError(RuntimeError):
     """A configured backend has no runnable session implementation."""
+
+
+_OPENAI_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.ASCII)
+
+
+@dataclass(frozen=True)
+class BackendSelection:
+    """One user-facing selector resolved to a canonical backend and profile."""
+
+    selector: str
+    backend: str
+    profile: Optional[str] = None
+
+
+def resolve_backend_selector(selector: str) -> BackendSelection:
+    """Resolve the reserved ``openai-<profile>`` selector namespace once."""
+    if not isinstance(selector, str) or not selector:
+        raise BackendConfigurationError("backend selector must be a non-empty string")
+    if selector == "openai":
+        return BackendSelection(selector, "openai")
+    if selector.startswith("openai-"):
+        profile = selector[len("openai-"):]
+        if (not _OPENAI_PROFILE_RE.fullmatch(profile)
+                or ".." in profile):
+            raise BackendConfigurationError(
+                "OpenAI profile names must be 1-64 lowercase ASCII characters "
+                "from a-z, 0-9, '.', '_', and '-', must start with a letter or "
+                "digit, and must not contain '..'")
+        return BackendSelection(selector, "openai", profile)
+    return BackendSelection(selector, selector)
 
 
 @dataclass
