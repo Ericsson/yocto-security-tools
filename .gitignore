@@ -37,6 +37,10 @@ data/
 cve-metadata.json
 *.ndjson
 
+# Site-specific OpenAI endpoint profiles
+etc/openai-*.cfg
+etc/openai-*-profile-configs.tar.gz
+
 # Cache files
 *.json.gz
 
