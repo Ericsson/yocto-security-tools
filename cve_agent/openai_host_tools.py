@@ -798,6 +798,47 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             self.artifacts.clear_conclusion()
             self._conclusion_written = False
 
+    def validate_fallback_state(self) -> dict[str, object]:
+        """Validate and summarize the unchanged authority boundary for fallback."""
+        self.deadline.require("provider fallback state validation")
+        current_head = self._require_current_trusted_head()
+        current_tree = self._commit_tree(current_head)
+        if current_tree != self.trusted_git_state.trusted_tree:
+            raise ToolPolicyError("trusted tree changed outside typed Git operations")
+        operations = self._operation_state()
+        if any(operations[name] for name in ("merge", "rebase", "revert")):
+            raise ToolPolicyError("unsupported Git operation prevents provider fallback")
+        status_result = self._executor.run(
+            "status",
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+        )
+        self._require_complete(status_result, "provider fallback status")
+        status = self._parse_status(status_result.stdout)
+        dirty_paths: set[str] = set()
+        for name in ("staged", "unstaged", "untracked", "deleted", "conflicted"):
+            values = status.get(name)
+            if not isinstance(values, list):
+                raise ToolOperationalError("provider fallback status is malformed")
+            dirty_paths.update(value for value in values if isinstance(value, str))
+        rejected = sorted(dirty_paths - set(self.policy.allowed_files))
+        if rejected:
+            raise ToolPolicyError(
+                "out-of-scope dirty paths prevent provider fallback")
+        conflicts = status["conflicted"]
+        if not isinstance(conflicts, list):
+            raise ToolOperationalError("provider fallback conflicts are malformed")
+        return {
+            "trusted_head": current_head,
+            "trusted_tree": current_tree,
+            "allowed_path_digest": self.trusted_git_state.allowed_path_digest,
+            "handoff_digest": self.trusted_git_state.handoff_digest,
+            "mutation_generation": self.mutation_generation,
+            "validated_generation": self.validated_generation,
+            "dirty_allowed_path_count": len(dirty_paths),
+            "unresolved_conflict_count": len(conflicts),
+            "cherry_pick_active": operations["cherry_pick"],
+        }
+
     def _verify_finish(self, status_value: str) -> None:
         self.deadline.require("finish verification")
         operations = self._operation_state()

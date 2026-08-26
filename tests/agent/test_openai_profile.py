@@ -181,6 +181,20 @@ def test_provider_sections_reject_unsupported_values(tmp_path, section, match):
             "test", {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
 
 
+def test_backend_rejects_nested_fallback_profiles(tmp_path):
+    directory = tmp_path / "profiles"
+    fallback = "\n[fallback]\nselector = openai-secondary\n"
+    _write_profile(directory, "test", BASE_PROFILE + fallback)
+    _write_profile(
+        directory, "secondary", BASE_PROFILE.replace("profile-model", "secondary-model")
+        + "\n[fallback]\nselector = openai-third\n")
+    _write_profile(directory, "third")
+
+    with pytest.raises(OpenAIConfigurationError, match="nested"):
+        OpenAICompatibleBackend().configure(
+            _options(), {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
+
+
 def test_profile_is_read_once_and_setup_remains_network_free(
     monkeypatch, tmp_path,
 ):

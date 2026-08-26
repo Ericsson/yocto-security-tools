@@ -166,6 +166,12 @@ Completions sampling fields, and may opt into bounded Ollama alias preparation
 before source or build data is sent to the model endpoint. Remote plain HTTP
 still requires both explicit endpoint opt-ins.
 
+Profiles may also declare a strict versioned `[capabilities]` dialect and an
+opt-in source-free `[probe]`. A primary profile can name one different native
+profile in `[fallback]`; only model/provider-addressable failures are eligible,
+while both attempts retain the same deadline, counters, trusted Git state, and
+allowed-file scope. Timeout and rate-limit fallback are separately opt-in.
+
 See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
 for the Ollama setup, exact API contract, configuration precedence, key and
 remote-endpoint gates, interactive approvals, transcript location, limitations,

@@ -499,6 +499,8 @@ class OpenAICompatibleBackend(AIBackend):
         self._config: Optional[OpenAIConfig] = None
         self._profile: Any = None
         self._ollama_config: Any = None
+        self._capabilities: Any = None
+        self._fallback: Any = None
         self._client_factory = client_factory
         self._runtime_factory = runtime_factory
         self._transcript_factory = transcript_factory
@@ -561,11 +563,14 @@ class OpenAICompatibleBackend(AIBackend):
         """Validate and retain the immutable native-backend configuration."""
         from .openai_ollama import OllamaConfig
         from .openai_profile import load_openai_profile
+        from .openai_provider import ProviderCapabilities
 
         environ = os.environ if environ is None else environ
         self._config = None
         self._profile = None
         self._ollama_config = None
+        self._capabilities = None
+        self._fallback = None
         profile_name = options.get("backend_profile")
         if profile_name is not None and not isinstance(profile_name, str):
             raise OpenAIConfigurationError("OpenAI backend profile must be a string")
@@ -591,9 +596,48 @@ class OpenAICompatibleBackend(AIBackend):
             if profile is not None and profile.ollama is not None
             else None
         )
+        capabilities = (
+            profile.capabilities if profile is not None else ProviderCapabilities())
+        if not capabilities.supports_tools:
+            raise OpenAIConfigurationError(
+                "native agent profiles must declare supports_tools=true")
+        if (config.reasoning_effort is not None
+                and capabilities.reasoning_request_field == "none"):
+            raise OpenAIConfigurationError(
+                "reasoning_effort conflicts with provider capabilities")
         self._profile = profile
         self._config = config
         self._ollama_config = ollama_config
+        self._capabilities = capabilities
+        if profile is not None and profile.fallback is not None:
+            if config.max_steps < 4 or config.max_tool_calls < 6:
+                raise OpenAIConfigurationError(
+                    "provider fallback requires at least 4 model turns and 6 tool calls")
+            fallback_profile = load_openai_profile(profile.fallback.profile, environ)
+            if fallback_profile.fallback is not None:
+                raise OpenAIConfigurationError("nested provider fallback is not supported")
+            fallback_config = OpenAIConfig.from_sources(
+                {}, environ, fallback_profile.openai, fallback_profile.chat)
+            fallback_capabilities = fallback_profile.capabilities
+            if not fallback_capabilities.supports_tools:
+                raise OpenAIConfigurationError(
+                    "fallback profile must declare supports_tools=true")
+            if (fallback_config.reasoning_effort is not None
+                    and fallback_capabilities.reasoning_request_field == "none"):
+                raise OpenAIConfigurationError(
+                    "fallback reasoning_effort conflicts with capabilities")
+            fallback_ollama = (
+                OllamaConfig.from_profile(
+                    fallback_profile.ollama, fallback_config)
+                if fallback_profile.ollama is not None else None
+            )
+            self._fallback = {
+                "policy": profile.fallback,
+                "profile": fallback_profile,
+                "config": fallback_config,
+                "capabilities": fallback_capabilities,
+                "ollama": fallback_ollama,
+            }
 
     def setup(self, **kwargs) -> None:
         """Validate local configuration without probing the network."""
@@ -607,14 +651,19 @@ class OpenAICompatibleBackend(AIBackend):
         if self._config is None:
             raise OpenAIConfigurationError("backend 'openai' is not configured")
         from . import get_agent_dir
-        from .openai_client import OpenAIChatCompletionsClient
+        from .openai_client import OpenAIChatCompletionsClient, OpenAIClientError
         from .openai_deadline import SessionDeadline
         from .openai_host_tools import (
             ApprovalGate,
             OpenAIHostToolRuntime,
             complete_openai_tool_schemas,
         )
-        from .openai_loop import AgentLoopLimits, JSONLTranscript, OpenAIAgentLoop
+        from .openai_loop import (
+            AgentLoopLimits,
+            AgentLoopSharedState,
+            JSONLTranscript,
+            OpenAIAgentLoop,
+        )
         from .openai_ollama import OllamaPreparationClient
 
         started = time.monotonic()
@@ -660,6 +709,8 @@ class OpenAICompatibleBackend(AIBackend):
                     "Could not create the mandatory native transcript; check "
                     "the Yocto build workspace permissions."),
             )
+        if hasattr(transcript, "set_provider_attempt"):
+            transcript.set_provider_attempt("primary", 0)
 
         try:
             if self._profile is not None:
@@ -669,6 +720,7 @@ class OpenAICompatibleBackend(AIBackend):
                     selector=f"openai-{self._profile.name}",
                     profile=self._profile.name,
                     sha256=self._profile.sha256,
+                    capability_digest=self._capabilities.digest,
                 )
             if self._ollama_config is not None:
                 approvals = ApprovalGate(
@@ -705,32 +757,86 @@ class OpenAICompatibleBackend(AIBackend):
                 event_sink=transcript.runtime_event,
                 protected_secrets=(secret,) if secret else (),
             )
-            client_factory = self._client_factory or OpenAIChatCompletionsClient
-            client = client_factory(
-                session_config,
-                deadline,
-                event_sink=transcript.client_event,
-            )
+            if self._client_factory is None:
+                client = OpenAIChatCompletionsClient(
+                    session_config,
+                    deadline,
+                    event_sink=transcript.client_event,
+                    capabilities=self._capabilities,
+                )
+            else:
+                client = self._client_factory(
+                    session_config,
+                    deadline,
+                    event_sink=transcript.client_event,
+                )
+            if self._profile is not None and self._profile.probe.enabled:
+                from .openai_probe import ProviderConformanceProbe, ProviderProbeError
+                transcript.write(
+                    "provider_probe_started",
+                    profile=self._profile.name,
+                    profile_sha256=self._profile.sha256,
+                    capability_digest=self._capabilities.digest,
+                )
+                try:
+                    probe_result = ProviderConformanceProbe(
+                        client, self._capabilities).run()
+                except (ProviderProbeError, OpenAIClientError) as error:
+                    return self._probe_failure(
+                        transcript, deadline, started, error, artifact_run)
+                transcript.write(
+                    "provider_probe_completed", **probe_result.to_dict())
+                if artifact_run is not None:
+                    artifact_run.atomic_json("provider-conformance.json", {
+                        **probe_result.to_dict(),
+                        "profile": self._profile.name,
+                        "profile_sha256": self._profile.sha256,
+                        "model": session_model,
+                        "capability_digest": self._capabilities.digest,
+                    })
             system_message = self.assembled_instructions()
+            shared_state = AgentLoopSharedState()
+            primary_turn_limit = self._config.max_steps
+            primary_tool_limit = self._config.max_tool_calls
+            if self._fallback is not None:
+                turn_reserve = max(2, min(10, self._config.max_steps // 3))
+                tool_reserve = max(3, min(20, self._config.max_tool_calls // 4))
+                primary_turn_limit -= turn_reserve
+                primary_tool_limit -= tool_reserve
             loop = OpenAIAgentLoop(
                 client,
                 runtime,
                 transcript,
                 deadline,
                 AgentLoopLimits(
-                    max_model_turns=self._config.max_steps,
-                    max_total_tool_calls=self._config.max_tool_calls,
+                    max_model_turns=primary_turn_limit,
+                    max_total_tool_calls=primary_tool_limit,
                     max_consecutive_nonprogress=(
                         self._config.max_consecutive_no_progress),
                 ),
                 complete_openai_tool_schemas(),
                 system_message,
                 prompt,
+                shared_state,
             )
         except Exception as exc:
             return self._initialization_failure(
                 transcript, deadline, started, type(exc).__name__)
         result = loop.run(session_model, interactive)
+        self._record_provider_attempt(
+            artifact_run, "primary", result, session_model)
+        if self._should_fallback(result, runtime, deadline):
+            result = self._run_fallback(
+                prompt,
+                runtime,
+                deadline,
+                shared_state,
+                agent_dir,
+                interactive,
+                artifact_run,
+                transcript_factory,
+                complete_openai_tool_schemas(),
+            )
         if not result.resolved:
             try:
                 runtime.discard_terminal_artifacts()
@@ -738,6 +844,368 @@ class OpenAICompatibleBackend(AIBackend):
                 logging.error(
                     "OpenAI session could not remove an untrusted terminal artifact")
         return result
+
+    def _should_fallback(self, result, runtime, deadline) -> bool:
+        from .result import FailureClass
+
+        if self._fallback is None or result.resolved or result.outcome is None:
+            return False
+        policy = self._fallback["policy"]
+        if deadline.remaining() < policy.min_remaining_seconds:
+            return False
+        failure = result.outcome.failure_class
+        code = result.outcome.failure_code
+        eligible = failure in {
+            FailureClass.MODEL_NO_PROGRESS,
+            FailureClass.MODEL_BUDGET,
+            FailureClass.BUILD,
+        }
+        if failure is FailureClass.PROVIDER_PROTOCOL:
+            eligible = code in {
+                "PROVIDER_MODEL_NOT_FOUND",
+                "PROVIDER_REQUEST_REJECTED",
+                "PROVIDER_TOOL_PROTOCOL_UNSUPPORTED",
+                "PROVIDER_REASONING_PROTOCOL_UNSUPPORTED",
+                "PROVIDER_RESPONSE_TRUNCATED",
+                "PROVIDER_MALFORMED_RESPONSE",
+                "PROVIDER_SERVER_ERROR",
+                "PROVIDER_CONNECTION_LOST",
+            }
+        if failure is FailureClass.PROVIDER_TIMEOUT:
+            eligible = policy.allow_timeout
+        if code == "PROVIDER_RATE_LIMIT":
+            eligible = policy.allow_rate_limit
+        if not eligible:
+            return False
+        if not policy.preserve_mutations and runtime.mutation_generation > 0:
+            return False
+        try:
+            state = runtime.validate_fallback_state()
+        except Exception as error:
+            self._record_fallback_rejection(
+                "fallback_state_validation_failed", error, deadline)
+            return False
+        from .artifacts import current_run_artifacts
+        artifacts = current_run_artifacts()
+        if artifacts is not None:
+            artifacts.atomic_json("fallback-state.json", {
+                "schema_version": 1,
+                "status": "validated",
+                **state,
+            })
+            artifacts.event(
+                "provider_fallback_eligible",
+                failure_class=None if failure is None else failure.value,
+                failure_code=code,
+                remaining_seconds=deadline.remaining(),
+            )
+        return True
+
+    @staticmethod
+    def _record_fallback_rejection(
+        reason_code: str, error: Exception, deadline,
+    ) -> None:
+        """Retain a bounded reason when trusted state prevents a cascade."""
+        from .artifacts import current_run_artifacts
+
+        artifacts = current_run_artifacts()
+        if artifacts is None:
+            return
+        artifacts.event(
+            "provider_fallback_rejected",
+            reason_code=reason_code,
+            error_type=type(error).__name__,
+            remaining_seconds=deadline.remaining(),
+        )
+
+    def _run_fallback(
+        self,
+        prompt,
+        runtime,
+        deadline,
+        shared_state,
+        agent_dir,
+        interactive,
+        artifact_run,
+        transcript_factory,
+        tool_schemas,
+    ) -> SessionResult:
+        from .openai_client import OpenAIChatCompletionsClient, OpenAIClientError
+        from .openai_host_tools import ApprovalGate
+        from .openai_loop import AgentLoopLimits, OpenAIAgentLoop
+        from .openai_ollama import OllamaPreparationClient
+        from .openai_probe import ProviderConformanceProbe, ProviderProbeError
+
+        fallback = self._fallback
+        assert fallback is not None
+        profile = fallback["profile"]
+        config = fallback["config"]
+        capabilities = fallback["capabilities"]
+        policy = fallback["policy"]
+        fallback_started = deadline.clock()
+        secret = os.environ.get(config.api_key_env, "").strip()
+        if artifact_run is not None:
+            artifact_run.add_secret(secret)
+        try:
+            transcript = transcript_factory(
+                agent_dir, config.model, deadline, (secret,) if secret else ())
+        except Exception:
+            from .result import (
+                BuildStatus,
+                FailureClass,
+                ResultOutcome,
+                SecurityStatus,
+                WorkflowStatus,
+            )
+            return SessionResult(
+                resolved=False,
+                duration=max(0.0, deadline.clock() - fallback_started),
+                failure_reason="Fallback transcript initialization failed safely.",
+                outcome=ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.HOST_INITIALIZATION,
+                    "fallback_transcript_initialization_failed",
+                ),
+            )
+        try:
+            if hasattr(transcript, "set_provider_attempt"):
+                transcript.set_provider_attempt(
+                    "fallback", shared_state.provider_retries)
+            transcript.write(
+                "profile_loaded",
+                backend="openai",
+                selector=policy.selector,
+                profile=profile.name,
+                sha256=profile.sha256,
+                capability_digest=capabilities.digest,
+            )
+            if fallback["ollama"] is not None:
+                approvals = ApprovalGate(
+                    interactive, deadline, self._approval_provider,
+                    transcript.runtime_event)
+                ollama_factory = self._ollama_factory or OllamaPreparationClient
+                ollama_factory(
+                    fallback["ollama"], config, deadline, environ=os.environ,
+                    event_sink=transcript.runtime_event,
+                    approvals=approvals).prepare()
+            if self._client_factory is None:
+                client = OpenAIChatCompletionsClient(
+                    config, deadline, event_sink=transcript.client_event,
+                    capabilities=capabilities)
+            else:
+                client = self._client_factory(
+                    config, deadline, event_sink=transcript.client_event)
+            if profile.probe.enabled:
+                probe_result = ProviderConformanceProbe(client, capabilities).run()
+                transcript.write(
+                    "provider_probe_completed", **probe_result.to_dict())
+            try:
+                state = runtime.validate_fallback_state()
+            except Exception as error:
+                return self._fallback_state_failure(
+                    transcript, deadline, fallback_started, error, artifact_run)
+            prior_summary = (
+                "\n\n[HOST PROVIDER FALLBACK]\n"
+                "The primary provider attempt ended in a model-addressable failure. "
+                "Keep the same trusted baseline and allowed scope. Hidden reasoning "
+                "is not transferred. Re-inspect only evidence needed for the next "
+                "action.\n"
+                f"Mutation generation: {state['mutation_generation']}\n"
+                f"Validated generation: {state['validated_generation']}\n"
+                f"Unresolved conflicts: {state['unresolved_conflict_count']}\n"
+                f"Allowed-scope digest: {state['allowed_path_digest']}\n"
+                "[/HOST PROVIDER FALLBACK]"
+            )
+            turn_limit = min(
+                self.config.max_steps,
+                shared_state.model_turns + config.max_steps)
+            tool_limit = min(
+                self.config.max_tool_calls,
+                shared_state.tool_calls + config.max_tool_calls)
+            loop = OpenAIAgentLoop(
+                client,
+                runtime,
+                transcript,
+                deadline,
+                AgentLoopLimits(
+                    turn_limit,
+                    tool_limit,
+                    max_consecutive_nonprogress=(
+                        config.max_consecutive_no_progress),
+                ),
+                tool_schemas,
+                self.assembled_instructions(),
+                prompt + prior_summary,
+                shared_state,
+            )
+        except (ProviderProbeError, OpenAIClientError) as error:
+            return self._probe_failure(
+                transcript, deadline, fallback_started, error, artifact_run,
+                profile=profile, capabilities=capabilities, model=config.model)
+        except Exception:
+            return self._initialization_failure(
+                transcript, deadline, fallback_started, "FallbackInitializationError")
+        result = loop.run(config.model, interactive)
+        self._record_provider_attempt(
+            artifact_run, "fallback", result, config.model)
+        return result
+
+    @staticmethod
+    def _fallback_state_failure(
+        transcript, deadline, started: float, error: Exception, artifact_run,
+    ) -> SessionResult:
+        """Stop a fallback whose shared scope or trusted baseline no longer validates."""
+        from .result import (
+            BuildStatus,
+            FailureClass,
+            ResultOutcome,
+            SecurityStatus,
+            WorkflowStatus,
+        )
+
+        reason_code = "fallback_state_validation_failed"
+        with contextlib.suppress(OSError, RuntimeError, TypeError, ValueError):
+            transcript.write(
+                "provider_fallback_rejected",
+                reason_code=reason_code,
+                error_type=type(error).__name__,
+            )
+            transcript.write(
+                "session_end", resolved=False,
+                reason="trusted provider fallback state validation failed")
+            transcript.sync()
+        payload = {
+            "schema_version": 1,
+            "status": "failed",
+            "provider_attempt": "fallback",
+            "failure_code": reason_code,
+            "error_type": type(error).__name__,
+        }
+        if artifact_run is not None:
+            artifact_run.atomic_json("provider-fallback.json", payload)
+            artifact_run.atomic_json("provider-summary.json", payload)
+            artifact_run.event(
+                "provider_fallback_rejected",
+                reason_code=reason_code,
+                error_type=type(error).__name__,
+                remaining_seconds=deadline.remaining(),
+            )
+        with contextlib.suppress(OSError, RuntimeError):
+            transcript.close()
+        return SessionResult(
+            resolved=False,
+            duration=max(0.0, deadline.clock() - started),
+            transcript_path=transcript.path,
+            failure_reason=(
+                "Provider fallback stopped because the trusted repository state "
+                "changed; inspect the retained fallback evidence."),
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.POLICY_REJECTION,
+                reason_code,
+            ),
+        )
+
+    @staticmethod
+    def _record_provider_attempt(artifact_run, attempt, result, model) -> None:
+        if artifact_run is None:
+            return
+        outcome = result.outcome.to_dict() if result.outcome is not None else None
+        payload = {
+            "schema_version": 1,
+            "status": "passed" if result.resolved else "failed",
+            "provider_attempt": attempt,
+            "model": model,
+            "outcome": outcome,
+        }
+        attempt_name = f"provider-{attempt}.json"
+        if not (artifact_run.path / attempt_name).exists():
+            artifact_run.atomic_json(attempt_name, payload)
+            artifact_run.atomic_json("provider-summary.json", payload)
+        artifact_run.event(
+            "provider_attempt_completed",
+            provider_attempt=attempt,
+            resolved=result.resolved,
+            failure_code=(
+                result.outcome.failure_code if result.outcome is not None else None),
+            model=model,
+        )
+
+    def _probe_failure(
+        self, transcript, deadline, started: float, error: Exception, artifact_run,
+        *, profile=None, capabilities=None, model: str | None = None,
+    ) -> SessionResult:
+        from .openai_client import OpenAIClientError
+        from .result import (
+            BuildStatus,
+            FailureClass,
+            ResultOutcome,
+            SecurityStatus,
+            WorkflowStatus,
+        )
+
+        evidence = (
+            error.evidence.to_dict()
+            if isinstance(error, OpenAIClientError) and error.evidence is not None
+            else None
+        )
+        code_value = getattr(error, "code", None)
+        raw_code = getattr(code_value, "value", None)
+        code = (
+            raw_code if isinstance(raw_code, str)
+            else "PROVIDER_MALFORMED_RESPONSE")
+        selected_profile = self._profile if profile is None else profile
+        selected_capabilities = (
+            self._capabilities if capabilities is None else capabilities)
+        payload = {
+            "schema_version": 1,
+            "status": "failed",
+            "profile": None if selected_profile is None else selected_profile.name,
+            "profile_sha256": (
+                None if selected_profile is None else selected_profile.sha256),
+            "model": self.config.model if model is None else model,
+            "capability_digest": selected_capabilities.digest,
+            "failure_code": code,
+            "evidence": evidence,
+        }
+        with contextlib.suppress(OSError, RuntimeError, TypeError, ValueError):
+            transcript.write(
+                "provider_probe_failed", failure_code=code, evidence=evidence)
+            transcript.write(
+                "session_end", resolved=False, reason="provider conformance failed")
+            transcript.sync()
+        if artifact_run is not None:
+            artifact_run.atomic_json("provider-conformance.json", payload)
+            provider_payload = {
+                "schema_version": 1,
+                "status": "failed",
+                "failure_code": code,
+                "evidence": evidence,
+            }
+            provider_attempt = "primary" if profile is None else "fallback"
+            artifact_run.atomic_json(
+                f"provider-{provider_attempt}.json", provider_payload)
+            artifact_run.atomic_json("provider-summary.json", provider_payload)
+        with contextlib.suppress(OSError, RuntimeError):
+            transcript.close()
+        return SessionResult(
+            resolved=False,
+            duration=max(0.0, deadline.clock() - started),
+            transcript_path=transcript.path,
+            failure_reason=(
+                "Provider conformance probe failed before repository context was sent."),
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.PROVIDER_PROTOCOL,
+                code,
+            ),
+        )
 
     def _preparation_failure(
         self,
