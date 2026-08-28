@@ -9,6 +9,18 @@ import re
 import shutil
 import sys
 
+# Run as a script from tests/integration/ by test_common.sh, so the repo root
+# is not on sys.path — add it to reuse cve_agent's interdiff wrapper instead of
+# reimplementing patch comparison here.
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+
+from cve_agent.interdiff import generate_interdiff  # noqa: E402
+
+# Unified-diff hunk header: '@@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@'.
+# A missing length field means 1 (unified-diff convention).
+_HUNK_HEADER_RE = re.compile(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@')
+
 
 def _fix_src_uri(content):
     """Fix SRC_URI formatting after patch line removal."""
@@ -352,7 +364,7 @@ def _extract_diff_lines(patch_file):
             continue
         if re.match(
             r'^(From |Subject:|Date:|Signed-off-by:|CVE:|Upstream-Status:'
-            r'|index |new file|deleted file|-- $|\d+\.\d+\.\d+)', line):
+            r'|index |new file|deleted file|-- ?$|\d+\.\d+\.\d+)', line):
             continue
         if in_diff and (line.startswith('+') or line.startswith('-')):
             lines.append(line.rstrip())
@@ -368,7 +380,7 @@ def _extract_files_touched(patch_file):
                 if line.startswith('diff --git'):
                     parts = line.split()
                     if len(parts) >= 4:
-                        files.add(parts[3].lstrip('b/'))
+                        files.add(_strip_diff_prefix(parts[3]))
     except Exception:
         pass
     return files
@@ -386,13 +398,13 @@ def _extract_diff_content_by_file(patch_file):
     for line in content.split('\n'):
         if line.startswith('diff --git'):
             parts = line.split()
-            current_file = parts[3].lstrip('b/') if len(parts) >= 4 else None
+            current_file = _strip_diff_prefix(parts[3]) if len(parts) >= 4 else None
             if current_file:
                 result.setdefault(current_file, [])
             continue
         if re.match(
             r'^(From |Subject:|Date:|Signed-off-by:|CVE:|Upstream-Status:'
-            r'|index |new file|deleted file|-- $|\d+\.\d+\.\d+)', line):
+            r'|index |new file|deleted file|-- ?$|\d+\.\d+\.\d+)', line):
             continue
         if current_file is not None:
             result.setdefault(current_file, []).append(line)
@@ -407,8 +419,312 @@ def compare_patches(old_patch, new_patch):
     print(f"DIFF_CHANGES:{changes}")
 
 
+# --- interdiff-based comparison ---------------------------------------------
+
+# Separates the judgeable part of a differences_diff.patch (the delta on files
+# touched by BOTH patch sets) from the one-sided blocks, which say nothing
+# about how the shared code was adapted. tests/benchmark/bench_lib.py's
+# scope_diff_to_common_files() truncates at this marker.
+ONE_SIDED_MARKER = '=== files touched by only one side (not comparable) ==='
+
+_DIFF_META_PREFIXES = (
+    'diff --git ', 'diff -u ', '--- ', '+++ ', 'index ', 'new file mode',
+    'deleted file mode', 'old mode ', 'new mode ', 'similarity index ',
+    'rename from ', 'rename to ', 'copy from ', 'copy to ',
+    'GIT binary patch', 'Binary files ',
+)
+
+
+def _strip_diff_prefix(path):
+    """Strip a unified-diff ``a/``/``b/`` path prefix.
+
+    ``str.lstrip('b/')`` cannot be used here: it strips a *character set*, so
+    ``b/bin/x.c`` would become ``in/x.c``.
+    """
+    for prefix in ('a/', 'b/'):
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return path
+
+
+def _diff_header_path(header_line):
+    """Extract the file path from a ``--- ``/``+++ `` unified-diff header."""
+    path = header_line.split(' ', 1)[1] if ' ' in header_line else ''
+    path = path.split('\t')[0].strip()
+    return _strip_diff_prefix(path)
+
+
+def _extract_diff_body(patch_file):
+    """Extract just the unified-diff body of a patch file.
+
+    Drops everything ``interdiff`` has no use for and that differs between an
+    upstream patch and its backport for uninteresting reasons: the mail
+    headers, commit message, diffstat, and the trailing ``--``/version
+    signature of a ``git format-patch`` mail. Hunk bodies are delimited using
+    the line counts declared in each ``@@`` header, so a removed source line
+    that happens to look like patch metadata is preserved.
+
+    Args:
+        patch_file: Path to a patch file.
+
+    Returns:
+        The concatenated diff body, or ``''`` when the file has none.
+    """
+    try:
+        with open(patch_file, errors='replace') as f:
+            content = f.read()
+    except Exception:
+        return ''
+
+    body = []
+    in_diff = False
+    in_hunk = False
+    old_left = new_left = 0
+    for line in content.split('\n'):
+        if in_hunk:
+            if line.startswith('diff --git '):
+                in_hunk = False  # hunk counts lied; resync on the next file
+            else:
+                body.append(line)
+                if line.startswith('\\'):
+                    continue
+                if line.startswith('+'):
+                    new_left -= 1
+                elif line.startswith('-'):
+                    old_left -= 1
+                else:  # context line, possibly whitespace-damaged
+                    old_left -= 1
+                    new_left -= 1
+                if old_left <= 0 and new_left <= 0:
+                    in_hunk = False
+                continue
+        if line.startswith(_DIFF_META_PREFIXES):
+            in_diff = True
+            body.append(line)
+            continue
+        if in_diff:
+            match = _HUNK_HEADER_RE.match(line)
+            if match:
+                old_left = int(match.group(1)) if match.group(1) is not None else 1
+                new_left = int(match.group(2)) if match.group(2) is not None else 1
+                in_hunk = old_left > 0 or new_left > 0
+                body.append(line)
+                continue
+            # Between file blocks: the signature, the next mail's headers, ...
+            in_diff = False
+    return '\n'.join(body)
+
+
+def _split_interdiff_blocks(delta_text):
+    """Split ``interdiff`` output into per-file blocks.
+
+    Args:
+        delta_text: Raw ``interdiff`` stdout.
+
+    Returns:
+        List of ``(filename, block_text)`` pairs in output order. The
+        rationale lines ``interdiff`` prints ahead of a block (``reverted:``,
+        ``only in patch2:``, ``unchanged:``, ``diff -u ...``) are kept with
+        the block they introduce.
+    """
+    lines = delta_text.split('\n')
+    blocks = []
+    pending = []
+    current = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if (line.startswith('--- ') and i + 1 < len(lines)
+                and lines[i + 1].startswith('+++ ')):
+            if current:
+                blocks.append(current)
+            fname = (_diff_header_path(lines[i + 1]) or _diff_header_path(line))
+            if fname == 'dev/null':
+                fname = _diff_header_path(line)
+            current = (fname, pending + [line, lines[i + 1]])
+            pending = []
+            i += 2
+            continue
+        if current is not None and (line.startswith(('@@', ' ', '+', '-', '\\'))
+                                    or line == ''):
+            current[1].append(line)
+        else:
+            pending.append(line)
+        i += 1
+    if current:
+        blocks.append(current)
+    return [(fname, '\n'.join(block).rstrip('\n') + '\n') for fname, block in blocks]
+
+
+def _count_delta_lines(delta_text):
+    """Count added/removed lines in a unified diff, ignoring file headers."""
+    n = 0
+    for line in delta_text.splitlines():
+        if line.startswith(('+++ ', '--- ')):
+            continue
+        if line.startswith(('+', '-')):
+            n += 1
+    return n
+
+
+def _interdiff_delta(old_patches, new_patches):
+    """Compute the adaptation delta between two patch sets via ``interdiff``.
+
+    Both sides are reduced to their diff bodies and concatenated, so a patch
+    series is compared as a single combined change. Note that when two patches
+    on the same side touch the same file, that file appears twice in the
+    combined input — the same flattening the line-set comparison does.
+
+    Args:
+        old_patches: Reference (original) patch file paths.
+        new_patches: Generated patch file paths.
+
+    Returns:
+        The ``interdiff`` output (``''`` when the two sides are equivalent),
+        or ``None`` when no delta could be computed — the ``interdiff`` binary
+        is missing (``patchutils`` not installed) or it failed to parse the
+        input — so callers fall back to the line-set comparison.
+    """
+    old_body = '\n'.join(_extract_diff_body(p) for p in sorted(old_patches))
+    new_body = '\n'.join(_extract_diff_body(p) for p in sorted(new_patches))
+    if not old_body.strip() or not new_body.strip():
+        return None
+    return generate_interdiff(old_body, new_body, allow_empty=True)
+
+
 def compare_patches_detailed(old_patches, new_patches, diff_file):
-    """Compare original vs generated patches, write differences to diff_file."""
+    """Compare original vs generated patches, write differences to diff_file.
+
+    Uses ``interdiff`` (patchutils) to compute the real adaptation delta
+    between the two patch sets: the diff of what each set does to the source
+    tree. That ignores everything a line-set comparison trips over — commit
+    metadata, hunk offsets, reordered hunks, and the ``git format-patch``
+    signature — and reports only genuine code differences. When ``interdiff``
+    is unavailable or cannot parse the input, falls back to the historical
+    line-set comparison.
+
+    Writes two files (``<...>_differences.txt`` and ``<...>_differences_diff.patch``)
+    and prints the ``DIFF_CHANGES``/``DIFF_PATCHES``/``DIFF_FILES`` lines the
+    shell harness greps for.
+
+    Args:
+        old_patches: Reference (original) patch file paths.
+        new_patches: Generated patch file paths.
+        diff_file: Path of the differences report to write.
+
+    Returns:
+        The number of differing lines.
+    """
+    old_files = set()
+    for p in old_patches:
+        old_files |= _extract_files_touched(p)
+    new_files = set()
+    for p in new_patches:
+        new_files |= _extract_files_touched(p)
+    missing_in_generated = sorted(old_files - new_files)
+    extra_in_generated = sorted(new_files - old_files)
+
+    delta = _interdiff_delta(old_patches, new_patches)
+    if delta is None:
+        changes = _write_lineset_report(
+            old_patches, new_patches, diff_file,
+            old_files, new_files, missing_in_generated, extra_in_generated)
+    else:
+        changes = _write_interdiff_report(
+            old_patches, new_patches, diff_file, delta,
+            old_files, new_files, missing_in_generated, extra_in_generated)
+
+    print(f"DIFF_CHANGES:{changes}")
+    print(f"DIFF_PATCHES:{len(old_patches)}>{len(new_patches)}")
+    files_status = f"{len(old_files)}>{len(new_files)}"
+    if missing_in_generated:
+        files_status += f" -{len(missing_in_generated)}"
+    if extra_in_generated:
+        files_status += f" +{len(extra_in_generated)}"
+    print(f"DIFF_FILES:{files_status}")
+    return changes
+
+
+def _write_report_header(f, old_patches, new_patches, method,
+                         old_files, new_files,
+                         missing_in_generated, extra_in_generated, changes):
+    """Write the machine-parsed header of a differences report.
+
+    The exact wording of these lines is a contract with
+    ``tests/benchmark/bench_lib.py`` (``classify_diff_bucket``,
+    ``_common_file_count``) and ``generate_differences_report.py``; do not
+    reword them without updating both.
+    """
+    f.write(f"Original patches ({len(old_patches)}): "
+            f"{', '.join(os.path.basename(p) for p in sorted(old_patches))}\n")
+    f.write(f"Generated patches ({len(new_patches)}): "
+            f"{', '.join(os.path.basename(p) for p in sorted(new_patches))}\n")
+    if len(old_patches) != len(new_patches):
+        f.write(f"WARNING: patch count differs "
+                f"({len(old_patches)} original vs {len(new_patches)} generated)\n")
+    f.write(f"Comparison: {method}\n")
+    f.write(f"\nFiles touched - original: {len(old_files)}, "
+            f"generated: {len(new_files)}\n")
+    if missing_in_generated:
+        f.write(f"  Missing in generated: "
+                f"{', '.join(missing_in_generated)}\n")
+    if extra_in_generated:
+        f.write(f"  Extra in generated:   "
+                f"{', '.join(extra_in_generated)}\n")
+    f.write(f"\nDifferences: {changes} lines\n\n")
+
+
+def _write_interdiff_report(old_patches, new_patches, diff_file, delta,
+                            old_files, new_files,
+                            missing_in_generated, extra_in_generated):
+    """Write the differences report and diff patch from an interdiff delta."""
+    common_files = old_files & new_files
+    common_blocks = []
+    one_sided_blocks = []
+    for fname, block in _split_interdiff_blocks(delta):
+        # A file absent from one side cannot show how the shared code was
+        # adapted, so keep it out of the judgeable part of the delta. Files
+        # neither side declared via 'diff --git' (e.g. a patch using bare
+        # '---'/'+++' headers) are treated as common rather than dropped.
+        if fname in common_files or not (old_files or new_files):
+            common_blocks.append(block)
+        else:
+            one_sided_blocks.append(block)
+
+    changes = _count_delta_lines(delta)
+    with open(diff_file, 'w') as f:
+        _write_report_header(f, old_patches, new_patches,
+                             'interdiff (patchutils)',
+                             old_files, new_files,
+                             missing_in_generated, extra_in_generated, changes)
+        if not delta.strip() and not missing_in_generated and not extra_in_generated:
+            f.write("Patches are equivalent.\n")
+        else:
+            f.write("--- Adaptation delta (interdiff: original -> generated) ---\n")
+            f.write(delta if delta.endswith('\n') else delta + '\n')
+
+    diff_patch_file = diff_file.rsplit('.', 1)[0] + '_diff.patch'
+    with open(diff_patch_file, 'w') as f:
+        for block in common_blocks:
+            f.write(block)
+            f.write('\n')
+        if one_sided_blocks:
+            f.write(f"{ONE_SIDED_MARKER}\n")
+            for block in one_sided_blocks:
+                f.write(block)
+                f.write('\n')
+    return changes
+
+
+def _write_lineset_report(old_patches, new_patches, diff_file,
+                          old_files, new_files,
+                          missing_in_generated, extra_in_generated):
+    """Compare patch sets as sets of +/- lines (no ``interdiff`` available).
+
+    Kept as a fallback for hosts without ``patchutils``. It is deliberately
+    crude: identical changes reported at different hunk offsets compare equal,
+    but any whitespace or context difference shows up as a divergence.
+    """
     old_lines = []
     for p in sorted(old_patches):
         old_lines.extend(_extract_diff_lines(p))
@@ -422,32 +738,11 @@ def compare_patches_detailed(old_patches, new_patches, diff_file):
     only_in_generated = sorted(new_set - old_set)
     changes = len(only_in_original) + len(only_in_generated)
 
-    old_files = set()
-    for p in old_patches:
-        old_files |= _extract_files_touched(p)
-    new_files = set()
-    for p in new_patches:
-        new_files |= _extract_files_touched(p)
-    missing_in_generated = sorted(old_files - new_files)
-    extra_in_generated = sorted(new_files - old_files)
-
     with open(diff_file, 'w') as f:
-        f.write(f"Original patches ({len(old_patches)}): "
-                f"{', '.join(os.path.basename(p) for p in sorted(old_patches))}\n")
-        f.write(f"Generated patches ({len(new_patches)}): "
-                f"{', '.join(os.path.basename(p) for p in sorted(new_patches))}\n")
-        if len(old_patches) != len(new_patches):
-            f.write(f"WARNING: patch count differs "
-                    f"({len(old_patches)} original vs {len(new_patches)} generated)\n")
-        f.write(f"\nFiles touched - original: {len(old_files)}, "
-                f"generated: {len(new_files)}\n")
-        if missing_in_generated:
-            f.write(f"  Missing in generated: "
-                    f"{', '.join(missing_in_generated)}\n")
-        if extra_in_generated:
-            f.write(f"  Extra in generated:   "
-                    f"{', '.join(extra_in_generated)}\n")
-        f.write(f"\nDifferences: {changes} lines\n\n")
+        _write_report_header(f, old_patches, new_patches,
+                             'line-set fallback (interdiff unavailable)',
+                             old_files, new_files,
+                             missing_in_generated, extra_in_generated, changes)
         if only_in_original:
             f.write("--- Only in original ---\n")
             for line in only_in_original:
@@ -503,15 +798,6 @@ def compare_patches_detailed(old_patches, new_patches, diff_file):
             for line in new_by_file[fname]:
                 f.write(f"+{line}\n")
             f.write('\n')
-
-    print(f"DIFF_CHANGES:{changes}")
-    print(f"DIFF_PATCHES:{len(old_patches)}>{len(new_patches)}")
-    files_status = f"{len(old_files)}>{len(new_files)}"
-    if missing_in_generated:
-        files_status += f" -{len(missing_in_generated)}"
-    if extra_in_generated:
-        files_status += f" +{len(extra_in_generated)}"
-    print(f"DIFF_FILES:{files_status}")
     return changes
 
 

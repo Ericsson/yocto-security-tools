@@ -526,24 +526,36 @@ _JUDGMENT_RE = re.compile(r'\b(MEANINGFUL|STYLISTIC)\b', re.IGNORECASE)
 # A missing length field means 1 (git/difflib convention).
 _HUNK_RE = re.compile(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@')
 
+# Separator that tests/integration/test_utils.py writes into a
+# <cve>_differences_diff.patch between the delta on files touched by both
+# patch sets and the one-sided blocks. Must stay byte-identical to that
+# module's ONE_SIDED_MARKER (asserted by
+# tests/integration/test_patch_compare.py);
+# it cannot be imported from there because tests/integration is not a package.
+ONE_SIDED_MARKER = '=== files touched by only one side (not comparable) ==='
+
 
 def scope_diff_to_common_files(diff_patch_text: str) -> str:
     """Keep only the per-file diff blocks for files present on BOTH sides.
 
-    ``compare_patches_detailed`` writes ``<cve>_differences_diff.patch`` as a
-    series of per-file blocks. A file touched by BOTH patch sets renders as a
-    normal two-sided unified diff; a file on only one side renders either as an
-    all-removed / all-added block (a hunk whose new-span or old-span is 0, e.g.
-    ``@@ -1,23 +0,0 @@``) or as a manual ``/dev/null`` block with no hunk
-    header at all. For a ``partial`` fileset overlap only the two-sided
-    (common-file) blocks are a meaningful backport-vs-reference comparison, so
-    this returns just those — dropping the one-sided missing/extra noise.
+    ``compare_patches_detailed`` (see ``tests/integration/test_utils.py``)
+    writes ``<cve>_differences_diff.patch`` with the files touched by both
+    patch sets first, then — when some file is one-sided — the
+    :data:`ONE_SIDED_MARKER` line followed by the one-sided blocks. For a
+    ``partial`` fileset overlap only the common-file blocks are a meaningful
+    backport-vs-reference comparison, so this returns just the text ahead of
+    that marker.
 
-    A block is treated as common when it has at least one hunk and its summed
-    old-span AND new-span are both greater than zero. Because unified diffs
-    include surrounding context lines (which count toward both spans), a span
-    is 0 only when that side's file is entirely absent — exactly the
-    missing/extra case.
+    Reports written before the marker existed (the pre-interdiff line-set
+    format, still produced as a fallback on hosts without ``patchutils``)
+    have no marker: those are scoped with the legacy heuristic, where a file
+    on only one side renders either as an all-removed / all-added block (a
+    hunk whose new-span or old-span is 0, e.g. ``@@ -1,23 +0,0 @@``) or as a
+    manual ``/dev/null`` block with no hunk header at all. A block counts as
+    common when it has at least one hunk and its summed old-span AND new-span
+    are both greater than zero; because unified diffs include context lines
+    (which count toward both spans), a span is 0 only when that side's file
+    is entirely absent.
 
     Args:
         diff_patch_text: Full text of a ``<cve>_differences_diff.patch`` file.
@@ -553,6 +565,9 @@ def scope_diff_to_common_files(diff_patch_text: str) -> str:
         newline), or ``''`` when there are none (e.g. the shared files are
         byte-identical and were therefore omitted from the diff patch).
     """
+    if ONE_SIDED_MARKER in diff_patch_text:
+        common = diff_patch_text.split(ONE_SIDED_MARKER, 1)[0].rstrip('\n')
+        return common + '\n' if common.strip() else ''
     lines = diff_patch_text.splitlines()
     # A file block starts at a '--- ' header immediately followed by a '+++ '
     # header. Requiring the pair (rather than any '--- ' line) avoids splitting
