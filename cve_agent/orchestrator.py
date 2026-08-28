@@ -27,6 +27,12 @@ from . import (
     ResultStatus,
     get_agent_dir,
 )
+from .commit_notes import (
+    Violation,
+    check_note_budget,
+    format_violations,
+    has_hard_violation,
+)
 from .context import build_context
 from .corrector import get_workspace_path, load_cve_metadata, run_corrector
 from .git import compute_allowed_files, get_changed_files, get_upstream_sha, run_git_stdout
@@ -39,12 +45,22 @@ from .session import guarded_session
 # a misbehaving session from suggesting an endless stream of commits.
 _MAX_CHAIN_EXTENSIONS = 3
 
+# Safety cap on how many times a single CVE run may be bounced back to the AI
+# purely to shorten over-budget ``Conflicts Resolved:`` notes. Past this, the
+# resolution is accepted with a warning: discarding a technically correct
+# backport over commit-message prose would be the worse outcome.
+_MAX_NOTE_REJECTS = 2
+
 
 @dataclasses.dataclass
 class _AttemptOutcome:
     """Result of a single resolution attempt."""
     result: Optional[CveResult] = None
     next_step: Optional[int] = None
+    # Set when the attempt was bounced solely because the AI's commit notes
+    # exceeded the length budget, so the loop can cap those retries separately
+    # from genuine resolution failures.
+    note_rejected: bool = False
 
 
 @dataclasses.dataclass
@@ -292,6 +308,96 @@ def _handle_escalation(config: AgentConfig, cve_info: dict,
     )
 
 
+def validate_commit_notes(workspace_path: Path) -> list[Violation]:
+    """Check HEAD's ``Conflicts Resolved:`` notes against the length budget.
+
+    Backstop for the workspace ``commit-msg`` hook
+    (:func:`cve_agent.git.install_notes_hook`): the hook catches the AI's own
+    commits, this catches anything that reached HEAD another way (a manual
+    edit, or a commit created before the hook was installed).
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+
+    Returns:
+        Budget violations for HEAD's commit message, empty when it fits.
+    """
+    commit_msg = run_git_stdout(['log', '-1', '--format=%B'], workspace_path)
+    return check_note_budget(commit_msg)
+
+
+def _append_note_report_to_audit_log(workspace_path: Path, cve_id: str,
+                                     report: str) -> None:
+    """Record a note-budget report in the session's audit log.
+
+    Best-effort: the audit log is operator-facing telemetry, so a failure to
+    write it must never affect the resolution outcome.
+    """
+    try:
+        recipe = workspace_path.name
+        log_path = (get_agent_dir(workspace_path)
+                    / f'{recipe}-{cve_id}-ai-changes.log')
+        with log_path.open('a', encoding='utf-8') as handle:
+            handle.write(f"\n=== Commit note budget ===\n{report}\n")
+    except OSError:
+        pass
+
+
+def _enforce_note_budget(config: AgentConfig, workspace_path: Path,
+                         note_rejects: int) -> Optional[_AttemptOutcome]:
+    """Bounce the attempt back to the AI if HEAD's notes are over budget.
+
+    Soft violations are reported and allowed through. A hard violation sends
+    the overage to the next session as feedback — unless
+    :data:`_MAX_NOTE_REJECTS` bounces have already been spent, in which case it
+    is reported and accepted.
+
+    Args:
+        config: Agent configuration.
+        workspace_path: Path to the devtool workspace.
+        note_rejects: Bounces already spent in this CVE run.
+
+    Returns:
+        A retry outcome when the attempt should be bounced, else ``None`` to
+        continue to approval.
+    """
+    violations = validate_commit_notes(workspace_path)
+    if not violations:
+        return None
+
+    report = format_violations(violations)
+    print(f"\n{report}")
+    _append_note_report_to_audit_log(workspace_path, config.cve_id, report)
+
+    if not has_hard_violation(violations):
+        return None
+
+    if note_rejects >= _MAX_NOTE_REJECTS:
+        print(f"\n\u26a0 Commit notes still over budget after "
+              f"{_MAX_NOTE_REJECTS} rejection(s) — accepting the resolution "
+              f"and continuing to review")
+        return None
+
+    agent_dir = get_agent_dir(workspace_path)
+    directive = (
+        f"{report}\n\nRewrite ONLY the `Conflicts Resolved:` notes in the "
+        f"commit message with `git commit --amend -F <file>` (never "
+        f"`--amend --no-edit`, which resubmits the same rejected message). Do "
+        f"not change any code and do not redo the resolution — it is already "
+        f"correct."
+    )
+    feedback_file = agent_dir / 'human_feedback.txt'
+    # Never drop feedback a human left for this attempt — append to it.
+    existing = (feedback_file.read_text(encoding='utf-8').strip()
+                if feedback_file.exists() else '')
+    feedback_file.write_text(
+        f"{existing}\n\n{directive}" if existing else directive,
+        encoding='utf-8')
+    print("\nSending the overage back to the AI to shorten the notes "
+          f"(bounce {note_rejects + 1}/{_MAX_NOTE_REJECTS})")
+    return _AttemptOutcome(note_rejected=True)
+
+
 def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
     """Check if the upstream commit produced no actual changes in the workspace."""
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
@@ -320,6 +426,7 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
     current_step = exit_code
     attempt = 0
     total_attempts = 0
+    note_rejects = 0
     max_total = config.max_total_attempts if config.max_total_attempts > 0 else None
 
     while attempt < config.max_retries:
@@ -334,8 +441,16 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
 
         outcome = _run_single_resolution_attempt(
             config, workspace_path, current_step, cve_info,
-            knowledge_base, attempt, start_time
+            knowledge_base, attempt, start_time, note_rejects
         )
+        if outcome.note_rejected:
+            # A bounce over commit-message prose must not spend a resolution
+            # attempt: the backport itself is already correct, and escalating
+            # it for being wordy is exactly what _MAX_NOTE_REJECTS exists to
+            # prevent. `note_rejects` caps these, and `total_attempts` still
+            # counts them against any --max-total-attempts ceiling.
+            note_rejects += 1
+            attempt -= 1
         if outcome.result is not None:
             return outcome.result
 
@@ -344,6 +459,10 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
                   f"resetting attempt counter")
             current_step = outcome.next_step
             attempt = 0
+            # A new phase writes new notes, so it gets its own bounce budget —
+            # otherwise notes added during a build/ptest amend would never be
+            # checked once the conflict phase spent the allowance.
+            note_rejects = 0
 
     return _make_result(
         config.cve_id, ResultStatus.ESCALATED,
@@ -355,7 +474,8 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
 def _run_single_resolution_attempt(
         config: AgentConfig, workspace_path: Path, exit_code: int,
         cve_info: dict, knowledge_base: Optional[KnowledgeBase],
-        attempt: int, start_time: float) -> _AttemptOutcome:
+        attempt: int, start_time: float,
+        note_rejects: int = 0) -> _AttemptOutcome:
     """Execute one resolution attempt: context -> session -> approval -> continue."""
     # Discard any conclusion.json from a previous attempt so the reads below
     # reflect only this session's verdict — a stale needs_human/not_applicable
@@ -444,6 +564,13 @@ def _run_single_resolution_attempt(
         return _AttemptOutcome()
 
     # The AI made a real change (HEAD moved, or this is a conflict resolution).
+    # Before anything else, hold it to the commit-note budget: the workspace
+    # commit-msg hook already rejects over-long notes as the AI writes them,
+    # but a manual edit or a pre-hook commit can still reach HEAD.
+    note_outcome = _enforce_note_budget(config, workspace_path, note_rejects)
+    if note_outcome is not None:
+        return note_outcome
+
     # Show the human the review *before* finalizing: request_approval runs
     # against the still-present workspace, and only on approval does
     # _finalize_resolution run --continue (build + ptest + devtool finish).
