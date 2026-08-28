@@ -483,3 +483,14 @@ def test_module_is_runnable_as_a_script(tmp_path):
     )
     assert result.returncode == EXIT_NOTES_REJECTED
     assert 'REJECTED src/foo.c' in result.stderr
+
+
+# --- documentation drift guard ---
+
+def test_instructions_state_the_enforced_limits():
+    """AGENT_INSTRUCTIONS.md must quote the numbers the checker enforces."""
+    text = (REPO_ROOT / 'cve_agent' / 'AGENT_INSTRUCTIONS.md').read_text(
+        encoding='utf-8')
+    assert f"{MAX_BULLETS_PER_FILE} bullet" in text
+    assert f"~{MAX_WORDS_SOFT} words" in text
+    assert f"{MAX_WORDS_REJECT} words" in text

@@ -33,6 +33,11 @@ the original message — see Commit Message Format), then:
 ```bash
 git cherry-pick --no-edit --continue
 ```
+Keep each file's stanza inside the enforced budget — at most 3 bullets and ~40
+words, one short clause per adaptation, in the style of the `Commit Note` column
+below. A `commit-msg` hook rejects the commit past 3 bullets or 48 words; if that
+happens, shorten `.git/MERGE_MSG` and re-run `--continue` (never `--abort` or
+`--skip`).
 
 ### Common Conflict Patterns
 
