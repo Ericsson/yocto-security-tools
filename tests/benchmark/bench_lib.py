@@ -177,6 +177,79 @@ def count_tool_calls(transcript: str) -> int:
     return len(_TOOL_CALL_RE.findall(clean))
 
 
+# --- Roster case selection (--list-cases / --run-case) -----------------------
+
+# Canonical tier ordering used to enumerate roster "cases". Mirrors
+# run_benchmark.sh's own easy->medium->hard processing loop; within a tier
+# CVEs are sorted alphabetically (matching the shell's `cves_for_tier`
+# `sorted(...)`), so a given case number is stable across runs regardless of
+# JSON key order.
+TIER_ORDER = ('easy', 'medium', 'hard')
+
+
+def ordered_roster_cases(roster: dict) -> list[dict]:
+    """Enumerate roster entries in canonical run order with 1-based indices.
+
+    Ordering matches run_benchmark.sh: tiers ``easy`` -> ``medium`` -> ``hard``,
+    alphabetical by CVE id within each tier. Any tier not in
+    :data:`TIER_ORDER` is appended after the known tiers (also alphabetical),
+    so an unexpected tier value still yields a stable, complete listing rather
+    than silently dropping a CVE. The ``_comment`` meta key is ignored.
+
+    Args:
+        roster: Parsed ``benchmark-roster.json`` mapping ``cve_id`` -> info
+            dict (each info has at least ``tier`` and ``recipe``).
+
+    Returns:
+        A list of ``{'case': int, 'cve_id': str, 'tier': str, 'recipe': str}``
+        dicts, ordered as above and numbered from 1.
+    """
+    entries = {k: v for k, v in roster.items() if k != '_comment'}
+    present_tiers = {info.get('tier') for info in entries.values()}
+    extra_tiers = sorted(t for t in present_tiers
+                         if t not in TIER_ORDER and t is not None)
+
+    ordered: list[tuple[str, dict]] = []
+    for tier in (*TIER_ORDER, *extra_tiers):
+        for cve in sorted(c for c, info in entries.items()
+                          if info.get('tier') == tier):
+            ordered.append((cve, entries[cve]))
+
+    return [
+        {'case': i, 'cve_id': cve,
+         'tier': info.get('tier', ''), 'recipe': info.get('recipe', '')}
+        for i, (cve, info) in enumerate(ordered, 1)
+    ]
+
+
+def select_cases(ordered_cases: list[dict], indices: list[int]) -> list[dict]:
+    """Pick cases by 1-based index, in canonical order, de-duplicated.
+
+    Args:
+        ordered_cases: Output of :func:`ordered_roster_cases`.
+        indices: 1-based case numbers requested (any order, may repeat).
+
+    Returns:
+        The selected case dicts, in ascending case order, duplicates removed.
+
+    Raises:
+        ValueError: If ``indices`` is empty, or if any index is outside
+            ``[1, len(ordered_cases)]``. The message lists the offending
+            value(s) and the valid range.
+    """
+    n = len(ordered_cases)
+    if not indices:
+        raise ValueError(f"No case numbers given (valid range is 1..{n}).")
+    bad = sorted({i for i in indices if i < 1 or i > n})
+    if bad:
+        raise ValueError(
+            f"Case index out of range: {', '.join(map(str, bad))}. "
+            f"Valid range is 1..{n} (see --list-cases)."
+        )
+    by_case = {c['case']: c for c in ordered_cases}
+    return [by_case[i] for i in sorted(set(indices))]
+
+
 # --- Model roster ------------------------------------------------------------
 
 # Relative cost multipliers, as given by the user. These are NOT credit
