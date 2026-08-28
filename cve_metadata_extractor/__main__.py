@@ -22,6 +22,7 @@ from . import debian as _debian  # noqa: F401
 from . import load_pr_cache, process_cve
 from . import osv as _osv  # noqa: F401
 from . import ubuntu as _ubuntu  # noqa: F401
+from . import uct as _uct  # noqa: F401
 from .config import load_config
 from .sources import SOURCE_REGISTRY
 from .utils import PR_CACHE, deduplicate_metadata
@@ -111,7 +112,15 @@ def parse_arguments(cfg):
     source_group.add_argument('--no-osv', action='store_true',
                        help='Disable OSV')
     source_group.add_argument('--no-ubuntu', action='store_true',
-                       help='Disable Ubuntu tracker')
+                       help='Deprecated, no-op: Ubuntu API source is now '
+                            'disabled by default. Use --ubuntu-api to '
+                            're-enable it.')
+    source_group.add_argument('--ubuntu-api', action='store_true',
+                       help='Enable the deprecated Ubuntu Security API '
+                            'source (rate-limited; superseded by the '
+                            'Ubuntu CVE Tracker source, enabled by default)')
+    source_group.add_argument('--no-uct', action='store_true',
+                       help='Disable Ubuntu CVE Tracker source')
 
     # --- Source directories (advanced) ---
     dirs_group = parser.add_argument_group('data source directories (advanced)')
@@ -127,13 +136,17 @@ def parse_arguments(cfg):
     dirs_group.add_argument('--nvd-dir',
                        default=cfg.get('nvd_dir'),
                        help='NVD data clone (default: %(default)s)')
+    dirs_group.add_argument('--uct-dir',
+                       default=cfg.get('uct_dir'),
+                       help='Ubuntu CVE Tracker clone (default: %(default)s)')
 
     # Register CLI args from plugins (extra/ directory)
     # Built-in source args are already added above; only add new ones from plugins
     _builtin_flags = {
         '--debian-tracker-dir', '--no-debian', '--download-patches',
         '--debian-release', '--cvelistv5-dir', '--no-cvelistv5',
-        '--nvd-dir', '--no-nvd', '--no-osv', '--no-ubuntu',
+        '--nvd-dir', '--no-nvd', '--no-osv', '--no-ubuntu', '--ubuntu-api',
+        '--no-uct', '--uct-dir',
     }
     plugin_group = None
     for source in SOURCE_REGISTRY:
@@ -381,6 +394,12 @@ def main():
 
     logging.basicConfig(format='[%(filename)s:%(lineno)d] %(message)s',
                        level=logging.INFO)
+
+    if args.no_ubuntu:
+        logging.warning(
+            '--no-ubuntu is deprecated and no longer needed: the Ubuntu '
+            'Security API source is disabled by default. Use --ubuntu-api '
+            'to re-enable it.')
 
     # Check if at least one input source is provided (built-in or plugin)
     has_builtin_input = any([args.cve_id, args.yocto_summary])

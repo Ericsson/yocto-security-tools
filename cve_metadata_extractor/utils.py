@@ -113,6 +113,15 @@ def extract_github_pr_commits(pr_url):
     return result
 
 
+def resolve_url_refs(url, series):
+    '''Dispatch PR/issue URLs into series; return the commit hash, if any.'''
+    if '/pull/' in url:
+        process_pr_url(url, series)
+    elif _GITLAB_ISSUE_RE.match(url):
+        process_gitlab_issue_url(url, series)
+    return extract_commit_hash(url)
+
+
 def tag_results(hashes, patches, refs, source):
     '''Add source attribution to hashes, patches, and references.'''
     return (

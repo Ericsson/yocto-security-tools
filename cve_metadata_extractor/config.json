@@ -9,5 +9,7 @@
   "oe_branches": ["scarthgap"],
   "osv_api": "https://api.osv.dev",
   "ubuntu_api": "https://ubuntu.com",
+  "uct_url": "https://git.launchpad.net/ubuntu-cve-tracker",
+  "uct_branch": "master",
   "snapshot_api": "https://snapshot.debian.org"
 }

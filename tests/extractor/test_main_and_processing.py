@@ -57,6 +57,72 @@ class TestParseArguments:
         assert args.no_debian is True
         assert args.no_osv is True
 
+    def test_no_ubuntu_flag_parses_without_error(self):
+        '''Deprecated --no-ubuntu still parses; it does not enable ubuntu.'''
+        from cve_metadata_extractor.__main__ import parse_arguments
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        with patch('sys.argv', ['prog', '--cve-id', 'CVE-1', '--no-ubuntu']):
+            with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
+                args = parse_arguments(cfg)
+        assert args.no_ubuntu is True
+        assert args.ubuntu_api is False
+
+    def test_ubuntu_api_flag(self):
+        from cve_metadata_extractor.__main__ import parse_arguments
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        with patch('sys.argv', ['prog', '--cve-id', 'CVE-1', '--ubuntu-api']):
+            with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
+                args = parse_arguments(cfg)
+        assert args.ubuntu_api is True
+
+    def test_no_uct_flag(self):
+        from cve_metadata_extractor.__main__ import parse_arguments
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        with patch('sys.argv', ['prog', '--cve-id', 'CVE-1', '--no-uct']):
+            with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', []):
+                args = parse_arguments(cfg)
+        assert args.no_uct is True
+
+
+class TestUbuntuUctActivation:
+    '''Test that uct is active by default and ubuntu (HTTP) is opt-in.'''
+
+    def _active_names(self, extra_argv=None):
+        from cve_metadata_extractor.__main__ import parse_arguments
+        from cve_metadata_extractor.ubuntu import UbuntuSource
+        from cve_metadata_extractor.uct import UctSource
+        cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],
+               'repo_dir': '/tmp/r'}
+        argv = ['prog', '--cve-id', 'CVE-1'] + (extra_argv or [])
+        sources = [UbuntuSource(), UctSource()]
+        with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', sources):
+            with patch('sys.argv', argv):
+                args = parse_arguments(cfg)
+        return {s.name for s in sources if s.is_enabled(args)}, args
+
+    def test_default_has_uct_not_ubuntu(self):
+        active, _ = self._active_names()
+        assert 'uct' in active
+        assert 'ubuntu' not in active
+
+    def test_ubuntu_api_enables_both(self):
+        active, _ = self._active_names(['--ubuntu-api'])
+        assert 'uct' in active
+        assert 'ubuntu' in active
+
+    def test_no_uct_disables_uct(self):
+        active, _ = self._active_names(['--no-uct'])
+        assert 'uct' not in active
+        assert 'ubuntu' not in active
+
+    def test_no_ubuntu_alone_does_not_enable_ubuntu(self):
+        active, _ = self._active_names(['--no-ubuntu'])
+        assert 'ubuntu' not in active
+        assert 'uct' in active
+
     def test_check_oe_flag(self):
         from cve_metadata_extractor.__main__ import parse_arguments
         cfg = {'cache_dir': '/tmp/c', 'oe_branches': ['scarthgap'],

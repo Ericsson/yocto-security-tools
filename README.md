@@ -17,7 +17,7 @@ Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
 
 | Tool | Purpose |
 |------|---------|
-| **cve-metadata-extractor** | Find fix commits for CVEs from multiple public sources (Debian, OSV, CVEList V5, Ubuntu, NVD) |
+| **cve-metadata-extractor** | Find fix commits for CVEs from multiple public sources (Debian, OSV, CVEList V5, Ubuntu CVE Tracker, NVD) |
 | **cve-corrector** | Automate backporting CVE fixes to Yocto recipes using devtool |
 | **cve-agent** | Orchestrate CVE backporting with AI-assisted conflict resolution |
 
@@ -152,7 +152,23 @@ Override with the `CVE_EXTRACTOR_CONFIG` environment variable.
 | `cvelistv5_url` | GitHub | Git URL to clone CVEList V5 from |
 | `debian_tracker_url` | salsa.debian.org | Git URL for Debian tracker |
 | `nvd_url` | GitHub | Git URL for NVD data |
+| `uct_url` | git.launchpad.net | Git URL to clone the Ubuntu CVE Tracker from |
+| `uct_branch` | `master` | Branch to track for the Ubuntu CVE Tracker clone |
 | `oe_branches` | `["scarthgap"]` | OE branches to check for fix status |
+
+### Ubuntu Sources
+
+By default, Ubuntu CVE data comes from a local clone of the
+[Ubuntu CVE Tracker](https://git.launchpad.net/ubuntu-cve-tracker) (`--uct-dir`,
+default under the shared data directory). The clone is shallow but still
+sizeable (tens of thousands of CVE records) — expect the first run to take a
+while to fetch. Disable with `--no-uct`.
+
+The legacy Ubuntu Security API source (one HTTP request per CVE to
+`ubuntu.com`) is **deprecated and disabled by default**, since it gets
+rate-limited on batch runs. It is slated for removal; use `--ubuntu-api` to
+re-enable it for comparison. `--no-ubuntu` is accepted but is now a no-op
+(it warns and does nothing, since the API source is already off by default).
 
 ## Environment Variables
 
