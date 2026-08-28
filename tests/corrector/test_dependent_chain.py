@@ -100,6 +100,7 @@ class TestHandleNoCleanApply:
         monkeypatch.setattr(workflow_mod, 'find_least_conflict_commit',
                             lambda *a, **kw: (calls.append(a), (CHAIN[0], 1))[1])
         monkeypatch.setattr(workflow_mod, 'run_cmd', lambda *a, **kw: 0)
+        monkeypatch.setattr(workflow_mod, 'has_conflict_state', lambda *a: True)
         monkeypatch.setattr(workflow_mod, 'save_workflow_state', lambda s: None)
         monkeypatch.setattr(workflow_mod, 'print_conflict_instructions',
                             lambda *a, **kw: None)

@@ -73,23 +73,23 @@ class TestRequestApproval:
 
 class TestBuildChangeSummary:
     @patch("cve_agent.review.run_git_stdout", return_value="")
-    @patch("cve_agent.review.get_changed_files")
-    def test_no_deviations(self, mock_files, mock_git):
-        mock_files.side_effect = [{"a.c"}, {"a.c"}]
+    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c"})
+    def test_no_deviations(self, mock_upstream, mock_files, mock_git):
         result = build_change_summary(Path("/ws"), "abc123")
         assert "no deviations" in result
 
     @patch("cve_agent.review.run_git_stdout", return_value="some diff")
-    @patch("cve_agent.review.get_changed_files")
-    def test_adapted_files(self, mock_files, mock_git):
-        mock_files.side_effect = [{"a.c", "b.c"}, {"a.c"}]
+    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c", "b.c"})
+    def test_adapted_files(self, mock_upstream, mock_files, mock_git):
         result = build_change_summary(Path("/ws"), "abc123")
         assert "adapted from upstream" in result
 
     @patch("cve_agent.review.run_git_stdout", return_value="")
-    @patch("cve_agent.review.get_changed_files")
-    def test_omitted_files(self, mock_files, mock_git):
-        mock_files.side_effect = [{"a.c", "b.c"}, {"a.c"}]
+    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c", "b.c"})
+    def test_omitted_files(self, mock_upstream, mock_files, mock_git):
         result = build_change_summary(Path("/ws"), "abc123")
         assert "omitted from backport" in result
 
@@ -122,7 +122,7 @@ class TestAmendCommit:
 
 class TestSaveReviewDiff:
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
-    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c"})
     def test_saves_diff_file(self, mock_files, mock_git, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
@@ -134,7 +134,7 @@ class TestSaveReviewDiff:
         assert "BACKPORTED DIFF" in content
 
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
-    @patch("cve_agent.review.get_changed_files", return_value=set())
+    @patch("cve_agent.review.upstream_changed_files", return_value=set())
     def test_saves_diff_no_upstream_files(self, mock_files, mock_git, tmp_path):
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
@@ -144,7 +144,7 @@ class TestSaveReviewDiff:
 
     @patch("cve_agent.review.generate_interdiff_artifacts", return_value=None)
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
-    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c"})
     def test_no_interdiff_section_when_unavailable(self, mock_files, mock_git,
                                                     mock_interdiff, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -156,7 +156,7 @@ class TestSaveReviewDiff:
 
     @patch("cve_agent.review.generate_interdiff_artifacts")
     @patch("cve_agent.review.run_git_stdout", return_value="diff content")
-    @patch("cve_agent.review.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.review.upstream_changed_files", return_value={"a.c"})
     def test_interdiff_section_appended_when_available(self, mock_files, mock_git,
                                                         mock_interdiff, tmp_path):
         agent_dir = tmp_path / "agent"
@@ -189,7 +189,7 @@ class TestSaveReviewDiff:
 class TestDisplayChanges:
     @patch("cve_agent.review.get_agent_dir")
     @patch("cve_agent.review.run_git_display")
-    @patch("cve_agent.review.get_changed_files")
+    @patch("cve_agent.review.upstream_changed_files")
     def test_display_with_upstream_files(self, mock_files, mock_display, mock_dir, tmp_path):
         mock_files.return_value = {"a.c"}
         mock_dir.return_value = tmp_path
@@ -197,7 +197,7 @@ class TestDisplayChanges:
 
     @patch("cve_agent.review.get_agent_dir")
     @patch("cve_agent.review.run_git_display")
-    @patch("cve_agent.review.get_changed_files")
+    @patch("cve_agent.review.upstream_changed_files")
     def test_display_no_upstream_files(self, mock_files, mock_display, mock_dir, tmp_path):
         mock_files.return_value = set()
         mock_dir.return_value = tmp_path
@@ -205,7 +205,7 @@ class TestDisplayChanges:
 
     @patch("cve_agent.review.get_agent_dir")
     @patch("cve_agent.review.run_git_display")
-    @patch("cve_agent.review.get_changed_files")
+    @patch("cve_agent.review.upstream_changed_files")
     def test_display_with_ai_log(self, mock_files, mock_display, mock_dir, tmp_path):
         mock_files.return_value = set()
         mock_dir.return_value = tmp_path
@@ -217,7 +217,7 @@ class TestDisplayChanges:
     @patch("cve_agent.review.run_git_stdout", return_value="upstream diff text")
     @patch("cve_agent.review.get_agent_dir")
     @patch("cve_agent.review.run_git_display")
-    @patch("cve_agent.review.get_changed_files")
+    @patch("cve_agent.review.upstream_changed_files")
     def test_display_prints_interdiff_when_available(
             self, mock_files, mock_display, mock_dir, mock_git, mock_interdiff, tmp_path, capsys):
         mock_files.return_value = {"a.c"}
@@ -231,7 +231,7 @@ class TestDisplayChanges:
     @patch("cve_agent.review.run_git_stdout", return_value="upstream diff text")
     @patch("cve_agent.review.get_agent_dir")
     @patch("cve_agent.review.run_git_display")
-    @patch("cve_agent.review.get_changed_files")
+    @patch("cve_agent.review.upstream_changed_files")
     def test_display_notes_when_interdiff_unavailable(
             self, mock_files, mock_display, mock_dir, mock_git, mock_interdiff, tmp_path, capsys):
         mock_files.return_value = {"a.c"}

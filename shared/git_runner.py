@@ -61,6 +61,47 @@ def run_git_stdout(args: list[str], cwd: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def is_merge_commit(cwd: Path, commit: str) -> bool:
+    """Check whether *commit* is a merge (has more than one parent).
+
+    Args:
+        cwd: Repository working directory.
+        commit: Commit-ish to inspect.
+
+    Returns:
+        True if the commit resolves and has 2+ parents, False otherwise
+        (including when the object is missing).
+    """
+    # "<commit> <parent1> [<parent2> ...]" — 3+ fields means a merge.
+    out = run_git_stdout(['rev-list', '--parents', '-n', '1', commit], cwd)
+    return len(out.split()) > 2
+
+
+def merge_diff_flags(cwd: Path, commit: str) -> list[str]:
+    """Return the ``git show``/``diff-tree`` flags needed to see *commit*'s diff.
+
+    ``git show`` deliberately prints **no diff** for a merge commit: the default
+    combined-diff format suppresses hunks that came verbatim from a parent, so a
+    clean GitHub "Merge pull request" commit shows an empty diff and an empty
+    ``--name-only`` file list. Many upstream CVE fixes are referenced by exactly
+    such merge SHAs, and treating their file list as empty silently drops the
+    whole fix from any scope computed from it.
+
+    ``-m --first-parent`` asks git for the diff against the first parent (the
+    branch being merged into), which is the change the merge actually
+    introduced. Both flags are harmless on non-merge commits, but they are only
+    added when needed so ordinary commits keep their exact previous output.
+
+    Args:
+        cwd: Repository working directory.
+        commit: Commit-ish that will be passed to ``git show``/``diff-tree``.
+
+    Returns:
+        ``['-m', '--first-parent']`` for a merge commit, else an empty list.
+    """
+    return ['-m', '--first-parent'] if is_merge_commit(cwd, commit) else []
+
+
 def force_checkout_branch(cwd: Path, branch: str) -> bool:
     """Check out a branch, escalating cleanup until the switch succeeds.
 

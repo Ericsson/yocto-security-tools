@@ -16,6 +16,7 @@ from cve_agent.context import (
 class TestContextAllowedFilesHeader:
     """Context always includes allowed file list regardless of exit code."""
 
+    @patch('cve_agent.context.compute_allowed_files', return_value={'file.c'})
     @patch('cve_agent.context.get_all_upstream_shas', return_value=['abc'])
     @patch('cve_agent.context.get_upstream_sha', return_value='abc')
     @patch('cve_agent.context.run_git_stdout', return_value='file.c')

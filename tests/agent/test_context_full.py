@@ -23,10 +23,12 @@ from cve_agent.context import (
 
 
 class TestBuildHeader:
+    @patch("cve_agent.context.compute_allowed_files", return_value={"file.c"})
     @patch("cve_agent.context.get_all_upstream_shas", return_value=["abc123"])
     @patch("cve_agent.context.get_upstream_sha", return_value="abc123")
     @patch("cve_agent.context.run_git_stdout", return_value="file.c")
-    def test_conflict_phase(self, mock_git, mock_sha, mock_all, tmp_path):
+    def test_conflict_phase(self, mock_git, mock_sha, mock_all, mock_allowed,
+                            tmp_path):
         result = _build_header("CVE-1", "busybox", EXIT_CONFLICT, tmp_path, {})
         assert "CONFLICT RESOLUTION" in result
         assert "busybox" in result

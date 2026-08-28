@@ -24,7 +24,14 @@ from . import (
     get_agent_dir,
     get_build_dir,
 )
-from .git import get_all_upstream_shas, get_upstream_sha, run_capture, run_git_stdout
+from .git import (
+    compute_allowed_files,
+    get_all_upstream_shas,
+    get_upstream_sha,
+    merge_diff_flags,
+    run_capture,
+    run_git_stdout,
+)
 from .interdiff import generate_interdiff
 
 # Per-phase workflow fragments embedded into context.md by exit code. The
@@ -120,27 +127,11 @@ def _build_header(cve_id: str, recipe: str, exit_code: int,
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     all_shas = get_all_upstream_shas(cve_info, workspace_path)
 
-    # Pre-compute the allowed file list from ALL upstream SHAs
-    allowed_files: set[str] = set()
-    for sha in all_shas:
-        files = run_git_stdout(
-            ['show', '--name-only', '--format=', sha], cwd=workspace_path
-        )
-        allowed_files.update(f for f in files.splitlines() if f)
-
-    # Fallback: if SHAs don't exist in repo, derive allowed files from
-    # the workspace diff (what the corrector actually changed/conflicted)
-    if not allowed_files:
-        diff_files = run_git_stdout(
-            ['diff', '--name-only', 'original-version..HEAD'],
-            cwd=workspace_path
-        )
-        allowed_files.update(f for f in diff_files.splitlines() if f)
-        # Also include files with unresolved conflicts
-        conflict_files = run_git_stdout(
-            ['diff', '--name-only', '--diff-filter=U'], cwd=workspace_path
-        )
-        allowed_files.update(f for f in conflict_files.splitlines() if f)
+    # The allowed file list is computed by the same helper the session's scope
+    # guard uses, so context.md can never advertise a different scope than the
+    # pre-commit hook enforces. It is merge-commit aware: `git show` prints no
+    # diff (and no file list) for a merge, which used to yield an empty list.
+    allowed_files = compute_allowed_files(cve_info, workspace_path)
 
     allowed_list = '\n'.join(sorted(allowed_files))
 
@@ -244,8 +235,12 @@ def _gather_conflict_context(workspace_path: Path, cve_info: dict) -> str:
     status = run_git_stdout(['status'], cwd=workspace_path)
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     upstream_stat = ""
+    show_cmd = f"git show {upstream_sha}"
     if upstream_sha:
-        upstream_stat = run_git_stdout(['show', '--stat', upstream_sha], cwd=workspace_path)
+        flags = merge_diff_flags(workspace_path, upstream_sha)
+        upstream_stat = run_git_stdout(
+            ['show', *flags, '--stat', upstream_sha], cwd=workspace_path)
+        show_cmd = ' '.join(['git', 'show', *flags, upstream_sha])
 
     conflicted_files = _get_conflicted_files(workspace_path)
     file_history = ""
@@ -258,7 +253,7 @@ def _gather_conflict_context(workspace_path: Path, cve_info: dict) -> str:
         f"### Git Status\n```\n{status}\n```\n\n"
         f"Run `git diff` to see the current conflicts.\n\n"
         f"### Upstream Commit (stat)\n```\n{upstream_stat}\n```\n"
-        f"Run `git show {upstream_sha}` to see the full upstream diff.\n\n"
+        f"Run `{show_cmd}` to see the full upstream diff.\n\n"
         f"### File History\n{file_history}"
     )
 
@@ -401,10 +396,13 @@ def _gather_analysis_context(workspace_path: Path, cve_info: dict) -> str:
     upstream_sha = get_upstream_sha(cve_info, workspace_path)
     upstream_info = ""
     if upstream_sha:
-        upstream_stat = run_git_stdout(['show', '--stat', upstream_sha], cwd=workspace_path)
+        flags = merge_diff_flags(workspace_path, upstream_sha)
+        upstream_stat = run_git_stdout(
+            ['show', *flags, '--stat', upstream_sha], cwd=workspace_path)
         upstream_info = (
             f"\n### Upstream Commit (stat)\n```\n{upstream_stat}\n```\n"
-            f"Run `git show {upstream_sha}` to see the full upstream diff."
+            f"Run `{' '.join(['git', 'show', *flags, upstream_sha])}` to see "
+            f"the full upstream diff."
         )
 
     return (

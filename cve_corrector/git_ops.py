@@ -169,6 +169,72 @@ def is_bad_object(workspace_path: Path, commit_hash: str) -> bool:
     return result.returncode != 0
 
 
+def is_merge_commit(workspace_path: Path, commit_hash: str) -> bool:
+    """Check whether a commit has more than one parent.
+
+    Args:
+        workspace_path: Path to the git repository.
+        commit_hash: Commit to inspect.
+
+    Returns:
+        True if the commit is a merge, False otherwise (including on error).
+    """
+    result = run_cmd_capture(
+        ['git', 'rev-list', '--parents', '-n', '1', commit_hash],
+        cwd=workspace_path)
+    if result.returncode != 0:
+        return False
+    # "<commit> <parent1> [<parent2> ...]" — 3+ fields means a merge.
+    return len(result.stdout.split()) > 2
+
+
+def cherry_pick_command(workspace_path: Path, commit_hash: str) -> list[str]:
+    """Build the ``git cherry-pick`` command for a commit.
+
+    A merge commit can never be cherry-picked without ``-m``: git refuses with
+    "is a merge but no -m option was given" and exits *without* starting the
+    pick, so no conflict state is created. Callers that measure or expect
+    conflict state must therefore pass ``-m 1`` (diff against the first parent,
+    i.e. the change the merge introduced) for merges — otherwise a merge SHA
+    looks like a commit that applies with zero conflicts while in fact nothing
+    was attempted at all.
+
+    Args:
+        workspace_path: Path to the git repository.
+        commit_hash: Commit to cherry-pick.
+
+    Returns:
+        Full argv for the cherry-pick, with ``-m 1`` added for merge commits.
+    """
+    if is_merge_commit(workspace_path, commit_hash):
+        return ['git', 'cherry-pick', '-m', '1', commit_hash]
+    return ['git', 'cherry-pick', commit_hash]
+
+
+def has_conflict_state(workspace_path: Path) -> bool:
+    """Check whether the repo is mid-cherry-pick or holds unmerged entries.
+
+    Used to verify that a failed cherry-pick actually left something for a
+    human (or the AI agent) to resolve. A cherry-pick that is rejected before
+    it starts — a merge commit without ``-m``, a dirty tree, an unknown object
+    — leaves neither ``CHERRY_PICK_HEAD`` nor unmerged index entries, and
+    reporting that as a conflict sends the caller to resolve a conflict that
+    does not exist.
+
+    Args:
+        workspace_path: Path to the git repository.
+
+    Returns:
+        True if CHERRY_PICK_HEAD/MERGE_HEAD exists or the index has unmerged
+        entries.
+    """
+    git_dir = workspace_path / '.git'
+    if (git_dir / 'CHERRY_PICK_HEAD').exists() or (git_dir / 'MERGE_HEAD').exists():
+        return True
+    result = run_cmd_capture(['git', 'ls-files', '-u'], cwd=workspace_path)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def try_cherry_pick(workspace_path: Path, commit_hash: str,
                     subproject: Optional[str] = None) -> bool:
     """Try to cherry-pick a commit, return True on success.

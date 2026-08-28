@@ -25,6 +25,7 @@ from cve_corrector.state import (
     BuildError,
     ConflictError,
     MetadataError,
+    PatchError,
     PtestError,
     WorkflowState,
 )
@@ -275,17 +276,39 @@ class TestApplySingleCommits:
 class TestFindLeastConflictCommit:
     @patch("cve_corrector.cherry_pick.run_cmd")
     @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.has_conflict_state", return_value=True)
+    @patch("cve_corrector.cherry_pick.cherry_pick_command",
+           side_effect=lambda ws, h: ["git", "cherry-pick", h])
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
-    def test_finds_best(self, mock_bad, mock_capture, mock_cmd):
+    def test_finds_best(self, mock_bad, mock_pick, mock_state, mock_capture, mock_cmd):
         mock_capture.side_effect = [
+            MagicMock(returncode=1, stderr=""),  # cherry-pick first (conflicts)
             MagicMock(stdout="a.c\nb.c\n"),  # 2 conflicts for first
             MagicMock(stdout="a.c\nb.c\n"),  # diff-tree for first (source files)
+            MagicMock(returncode=1, stderr=""),  # cherry-pick second (conflicts)
             MagicMock(stdout="a.c\n"),  # 1 conflict for second
             MagicMock(stdout="a.c\n"),  # diff-tree for second (source files)
         ]
         best, count = find_least_conflict_commit(Path("/ws"), ["h1", "h2"])
         assert best == "h2"
         assert count == 1
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.has_conflict_state", return_value=False)
+    @patch("cve_corrector.cherry_pick.cherry_pick_command",
+           side_effect=lambda ws, h: ["git", "cherry-pick", h])
+    @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
+    def test_skips_pick_that_never_started(self, mock_bad, mock_pick, mock_state,
+                                          mock_capture, mock_cmd):
+        """A rejected cherry-pick must not be scored as "0 conflicts"."""
+        mock_capture.side_effect = [
+            MagicMock(returncode=128, stderr="is a merge but no -m option"),
+            MagicMock(stdout=""),  # no unmerged files
+        ]
+        best, count = find_least_conflict_commit(Path("/ws"), ["h1"])
+        assert best is None
+        assert count == float("inf")
 
 
 class TestCherryPickToDevtool:
@@ -435,12 +458,28 @@ class TestHandleFailedSeries:
 
 
 class TestHandleNoCleanApply:
+    @patch("cve_corrector.workflow.has_conflict_state", return_value=True)
+    @patch("cve_corrector.workflow.cherry_pick_command",
+           side_effect=lambda ws, h: ["git", "cherry-pick", h])
     @patch("cve_corrector.workflow.find_least_conflict_commit", return_value=("abc", 2))
     @patch("cve_corrector.workflow.run_cmd")
-    def test_with_hashes(self, mock_cmd, mock_find, tmp_path):
+    def test_with_hashes(self, mock_cmd, mock_find, mock_pick, mock_state, tmp_path):
         make_state = MagicMock(return_value=_state(tmp_path))
         with patch("cve_corrector.workflow.save_workflow_state"):
             with pytest.raises(ConflictError):
+                _handle_no_clean_apply(Path("/ws"), ["abc"], [], make_state, "r")
+
+    @patch("cve_corrector.workflow.has_conflict_state", return_value=False)
+    @patch("cve_corrector.workflow.cherry_pick_command",
+           side_effect=lambda ws, h: ["git", "cherry-pick", h])
+    @patch("cve_corrector.workflow.find_least_conflict_commit", return_value=("abc", 0))
+    @patch("cve_corrector.workflow.run_cmd")
+    def test_no_conflict_state_is_patch_error(self, mock_cmd, mock_find,
+                                             mock_pick, mock_state, tmp_path):
+        """A pick that leaves nothing to resolve must not be called a conflict."""
+        make_state = MagicMock(return_value=_state(tmp_path))
+        with patch("cve_corrector.workflow.save_workflow_state"):
+            with pytest.raises(PatchError):
                 _handle_no_clean_apply(Path("/ws"), ["abc"], [], make_state, "r")
 
     def test_no_hashes_no_series(self, tmp_path):

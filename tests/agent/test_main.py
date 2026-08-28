@@ -220,6 +220,18 @@ class TestFinalizeResolution:
 
 
 class TestRunSingleResolutionAttempt:
+    @pytest.fixture(autouse=True)
+    def _file_scope(self):
+        """Give every attempt a non-empty file scope.
+
+        A session can only run when the upstream commit yields files the agent
+        may touch; the empty-scope path is covered by
+        TestEmptyFileScopeEscalates below.
+        """
+        with patch("cve_agent.orchestrator.compute_allowed_files",
+                   return_value={"a.c"}):
+            yield
+
     @patch("cve_agent.orchestrator._read_conclusion", return_value=None)
     @patch("cve_agent.orchestrator._finalize_resolution")
     @patch("cve_agent.orchestrator.request_approval", return_value=("approved", ""))

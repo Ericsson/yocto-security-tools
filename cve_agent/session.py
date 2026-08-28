@@ -11,18 +11,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from shared.git_runner import copy_missing_files_from_devtool, force_checkout_branch
+from shared.git_runner import (
+    copy_missing_files_from_devtool,
+    force_checkout_branch,
+    merge_diff_flags,
+)
 
 from . import get_agent_dir
 from .backend import SessionResult, get_backend
 from .git import (
+    compute_allowed_files,
+    expand_path_variants,
     get_all_upstream_shas,
-    get_changed_files,
     install_scope_hook,
     remove_scope_hook,
     revert_unauthorized_changes,
     run_capture,
     run_git_stdout,
+    upstream_changed_files,
 )
 
 
@@ -45,36 +51,10 @@ def check_resolution_state(workspace_path: Path) -> bool:
     return True
 
 
-_COMMON_PREFIXES = ('src/', 'lib/', 'source/')
-
-
-def _expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
-    """Expand allowed paths to include variants with/without common prefixes.
-
-    If upstream uses src/foo.c but workspace has foo.c (or vice versa),
-    include both so the scope guard doesn't reject the agent's work.
-    Also handles monorepo subprojects/ prefixes (e.g. gstreamer).
-    """
-    expanded = set(allowed)
-    for filepath in list(allowed):
-        # Handle subprojects/<name>/ prefix (monorepo pattern)
-        parts = filepath.split('/')
-        if len(parts) > 2 and parts[0] == 'subprojects':
-            # Strip subprojects/<name>/ prefix
-            stripped = '/'.join(parts[2:])
-            if (workspace_path / stripped).exists():
-                expanded.add(stripped)
-
-        for prefix in _COMMON_PREFIXES:
-            if filepath.startswith(prefix):
-                stripped = filepath[len(prefix):]
-                if (workspace_path / stripped).exists():
-                    expanded.add(stripped)
-            else:
-                prefixed = prefix + filepath
-                if (workspace_path / prefixed).exists():
-                    expanded.add(prefixed)
-    return expanded
+# Path-variant expansion now lives in ``cve_agent.git`` so ``context.py`` and
+# the scope guard share one implementation. Kept as a module-level alias for
+# existing callers/tests that reference it here.
+_expand_path_variants = expand_path_variants
 
 
 def _ensure_cve_branch(workspace_path: Path, cve_id: str) -> None:
@@ -150,32 +130,18 @@ def guarded_session(context_file: Path, workspace_path: Path,
     _ensure_cve_branch(workspace_path, cve_id)
 
     all_shas = get_all_upstream_shas(cve_info, workspace_path)
-    allowed: set[str] = set()
+    # The allowed set is computed by the same helper that fills context.md's
+    # Allowed Files section, so the guard and the AI's instructions agree.
+    allowed = compute_allowed_files(cve_info, workspace_path)
     # Snapshot upstream diffs per file before the session (single pass per SHA)
     upstream_diffs: dict[str, str] = {}
     for sha in all_shas:
-        files = get_changed_files(['show', '--name-only', '--format=', sha], workspace_path)
-        allowed |= files
-        for f in files:
-            raw = run_git_stdout(['show', sha, '--', f], cwd=workspace_path)
+        flags = merge_diff_flags(workspace_path, sha)
+        for f in upstream_changed_files(workspace_path, sha):
+            raw = run_git_stdout(['show', *flags, sha, '--', f], cwd=workspace_path)
             upstream_diffs[f] = _extract_diff_hunks(raw)
 
-    # Fallback: if SHAs don't exist in repo, derive from workspace diff
-    if not allowed:
-        diff_output = run_git_stdout(
-            ['diff', '--name-only', 'original-version..HEAD'], cwd=workspace_path
-        )
-        allowed.update(f for f in diff_output.splitlines() if f)
-        conflict_output = run_git_stdout(
-            ['diff', '--name-only', '--diff-filter=U'], cwd=workspace_path
-        )
-        allowed.update(f for f in conflict_output.splitlines() if f)
-
     recipe = workspace_path.name
-
-    # Path-normalize: add variants without/with common prefixes (src/, lib/)
-    # to handle cases where upstream SHA paths differ from workspace layout
-    allowed = _expand_path_variants(allowed, workspace_path)
 
     # The allowed set is the hard scope boundary for the whole session. It
     # intentionally permits the agent to bring in an in-scope prerequisite
