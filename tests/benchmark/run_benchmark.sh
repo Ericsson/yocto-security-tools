@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 # CVE Agent Model Benchmark: runs cve-agent across a tiered set of CVEs and
 # a selection of models, then (optionally) an AI judge pass on the diffs
-# that came out moderately/majorly different from the reference patch.
+# that came out moderately/majorly different from the reference patch, or
+# that partially overlap it (judged on the shared files only).
 #
 # Depends on tests/integration/test_common.sh for the OE tree lifecycle
 # (reset_oe_tree, setup_cve_branch, run_cve_corrector, compare_patches_detailed)
@@ -27,27 +28,74 @@ MODELS_SELECTOR="default"
 RESUME_DIR=""
 RUN_TIMEOUT="${RUN_TIMEOUT:-3600}"  # per cve-agent invocation, seconds
 JUDGE_MODEL="claude-opus-4.8"
+LIST_CASES=false
+declare -a RUN_CASES=()   # 1-based case numbers from --run-case; empty = all
+SELECTED_CVES=""          # newline-separated CVE ids to run; empty = all
 
 # shellcheck source=../integration/test_common.sh
 source "${REPO_ROOT}/tests/integration/test_common.sh"
 
 die() { log "FATAL: $*"; exit 1; }
 
+# ── Interrupt handling ───────────────────────────────────────────────────────
+# The agent is launched under `setsid` (see run_agent_phase), which detaches it
+# into its own session/process group so a per-run `timeout` can reap the whole
+# process tree. That same detachment means a Ctrl+C at the terminal never
+# reaches the agent — the SIGINT goes only to this script's process group. So
+# we trap it here, forward a kill to the agent's process group by hand, and
+# stop. AGENT_PGID holds the process-group id of the currently running agent
+# (empty when none is running); the agent is run in the background and `wait`ed
+# on so this trap can fire promptly instead of being deferred until the
+# foreground child exits.
+AGENT_PGID=""
+INTERRUPTED=false
+
+on_interrupt() {
+    # Guard against a second signal re-entering the handler mid-cleanup.
+    [[ "$INTERRUPTED" == true ]] && return
+    INTERRUPTED=true
+    echo    # break the line after a terminal "^C"
+    log "Interrupted — stopping the benchmark..."
+    if [[ -n "$AGENT_PGID" ]]; then
+        log "  Terminating agent process group ${AGENT_PGID}..."
+        kill -TERM "-${AGENT_PGID}" 2>/dev/null || true
+        # Give the tree a few seconds to exit cleanly, then force-kill.
+        local i
+        for i in 1 2 3 4 5; do
+            kill -0 "-${AGENT_PGID}" 2>/dev/null || break
+            sleep 1
+        done
+        kill -KILL "-${AGENT_PGID}" 2>/dev/null || true
+    fi
+    # Best-effort: leave the OE tree checked out clean for the next run.
+    reset_oe_tree 2>/dev/null || true
+    log "Benchmark aborted by user (partial results are in ${RESULTS_DIR:-<unset>})."
+    exit 130
+}
+trap on_interrupt INT TERM
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 usage() {
     cat <<'EOF'
 Usage: run_benchmark.sh [options]
 
-The benchmark always runs the fixed 7-CVE roster in benchmark-roster.json
-(1 easy, 1 medium, 5 hard) -- committed, not regenerated, so every run tests
+The benchmark always runs the fixed 8-CVE roster in benchmark-roster.json
+(1 easy, 1 medium, 6 hard) -- committed, not regenerated, so every run tests
 the exact same CVEs. See tests/benchmark/README.md to change the roster.
 
-  --retier            Re-probe the 7 roster CVEs with cve-corrector only (no
+  --retier            Re-probe the 8 roster CVEs with cve-corrector only (no
                        AI cost) and refresh their recorded exit_code/
                        diff_lines/conflict_markers/tier in benchmark-roster.json.
                        Does NOT add, remove, or reorder roster CVEs.
   --models <sel>      "default" (default), "full", or a comma-separated list
                        of model names
+  --list-cases        List the roster CVEs as numbered cases (in run order)
+                       and exit, without running anything.
+  --run-case N [N...] Run only the given case number(s) from --list-cases
+                       (1-based, space-separated, e.g. --run-case 1 2 3).
+                       Scopes the agent run, the cost estimate, and --retier;
+                       the judge phase follows whatever was run.
   --dry-run           Print the planned run without invoking cve-agent or
                        the judge, and without prompting for confirmation
   --skip-judge        Do not run the judge phase at all
@@ -60,13 +108,24 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --retier) RETIER=true ;;
-        --full) die "--full was removed: the benchmark now always runs the fixed 7-CVE roster (see --help)" ;;
+        --full) die "--full was removed: the benchmark now always runs the fixed 8-CVE roster (see --help)" ;;
         --dry-run) DRY_RUN=true ;;
         --skip-judge) SKIP_JUDGE=true ;;
         --models)
             shift
             [[ $# -gt 0 ]] || die "--models requires an argument"
             MODELS_SELECTOR="$1"
+            ;;
+        --list-cases) LIST_CASES=true ;;
+        --run-case)
+            shift
+            [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]] || \
+                die "--run-case requires one or more case numbers (see --list-cases)"
+            while [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; do
+                RUN_CASES+=("$1")
+                shift
+            done
+            continue  # already advanced past the consumed numbers; skip trailing shift
             ;;
         --resume)
             shift
@@ -83,6 +142,66 @@ done
 [[ -f "$CVE_METADATA" ]] || die "CVE metadata fixture not found: $CVE_METADATA"
 [[ -f "$ROSTER_FILE" ]] || die "Fixed roster not found: $ROSTER_FILE"
 
+# ── Case listing / selection (--list-cases / --run-case) ─────────────────────
+# Case numbers are the roster CVEs enumerated in run order (easy->medium->hard,
+# alphabetical within a tier) -- see bench_lib.ordered_roster_cases(). Both
+# reads are pure roster lookups, no build env needed.
+if [[ "$LIST_CASES" == true ]]; then
+    python3 - "$ROSTER_FILE" <<'PY'
+import json, sys
+from tests.benchmark.bench_lib import ordered_roster_cases
+with open(sys.argv[1]) as f:
+    roster = json.load(f)
+cases = ordered_roster_cases(roster)
+print(f"{'#':>3}  {'tier':<7} {'recipe':<28} cve")
+print("-" * 56)
+for c in cases:
+    print(f"{c['case']:>3}  {c['tier']:<7} {c['recipe']:<28} {c['cve_id']}")
+PY
+    exit 0
+fi
+
+# Resolve --run-case numbers to the concrete CVE ids to run (empty = all).
+if [[ ${#RUN_CASES[@]} -gt 0 ]]; then
+    SELECTED_CVES=$(python3 - "$ROSTER_FILE" "${RUN_CASES[@]}" <<'PY'
+import json, sys
+from tests.benchmark.bench_lib import ordered_roster_cases, select_cases
+with open(sys.argv[1]) as f:
+    roster = json.load(f)
+try:
+    sel = select_cases(ordered_roster_cases(roster),
+                       [int(x) for x in sys.argv[2:]])
+except ValueError as exc:
+    sys.stderr.write(f"{exc}\n")
+    sys.exit(2)
+print("\n".join(c["cve_id"] for c in sel))
+PY
+    ) || die "Invalid --run-case selection (see --list-cases)."
+    log "Selected cases ${RUN_CASES[*]} -> $(echo "$SELECTED_CVES" | tr '\n' ' ')"
+fi
+
+# True when a CVE should be processed: always true when nothing was selected
+# (whole roster), otherwise only for the CVEs --run-case resolved to.
+is_selected_cve() {
+    [[ -z "$SELECTED_CVES" ]] && return 0
+    grep -qxF "$1" <<< "$SELECTED_CVES"
+}
+
+# Copy the patch files the run generated in the meta layer (new or modified vs
+# the reset baseline) into the results dir as generated_<cve>_<file>.patch, so
+# they survive reset_oe_tree and can be evaluated later. No-op when the run
+# produced no patches (e.g. a conflict that never reached devtool finish).
+save_generated_patches() {
+    local cve_id="$1" model="$2" dest count=0 f
+    while IFS= read -r f; do
+        [[ "$f" == *.patch ]] || continue
+        dest="${RESULTS_DIR}/generated_${cve_id}_${model}_$(basename "$f")"
+        cp "${OE_DIR}/${f}" "$dest" 2>/dev/null && count=$((count + 1))
+    done < <(cd "$OE_DIR" && git ls-files --others --modified --exclude-standard -- meta 2>/dev/null)
+    [[ $count -gt 0 ]] && log "  saved $count generated patch(es) to $RESULTS_DIR"
+    return 0
+}
+
 # ── Results directory ───────────────────────────────────────────────────────
 # Resolved to an absolute path up front: test_common.sh's helpers (setup_cve_branch,
 # reset_oe_tree, ...) `cd "$OE_DIR"`, so a relative --resume path would silently
@@ -98,11 +217,20 @@ LOG_DIR="$RESULTS_DIR"  # test_common.sh's remove_cve_patch()/compare_patches_de
 AGENT_CSV="${RESULTS_DIR}/agent_results.csv"
 JUDGE_CSV="${RESULTS_DIR}/judge_results.csv"
 [[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
-[[ -f "$JUDGE_CSV" ]] || echo "cve_id,model,judgment,judge_credits" > "$JUDGE_CSV"
+JUDGE_HEADER="cve_id,model,judgment,judge_credits,scope"
+if [[ ! -f "$JUDGE_CSV" ]]; then
+    echo "$JUDGE_HEADER" > "$JUDGE_CSV"
+elif [[ "$(head -n1 "$JUDGE_CSV")" != "$JUDGE_HEADER" && "$(wc -l < "$JUDGE_CSV")" -le 1 ]]; then
+    # --resume of a results dir created before the 'scope' column was added:
+    # the judge CSV holds only an outdated header (no data rows yet), so upgrade
+    # it in place. This avoids appending 5-field rows under a 4-field header.
+    # A file that already has data rows is left untouched to preserve results.
+    echo "$JUDGE_HEADER" > "$JUDGE_CSV"
+fi
 
 
 # ── Fixed roster: re-verify (optional) then read ────────────────────────────
-# The 7 CVEs in benchmark-roster.json are the entire candidate pool -- always
+# The 8 CVEs in benchmark-roster.json are the entire candidate pool -- always
 # the same CVEs, every run. --retier re-probes them with cve-corrector only
 # (no AI cost) to refresh their recorded stats; it never changes which CVEs
 # are in the roster.
@@ -120,9 +248,13 @@ print('\n'.join(data.keys()))
 ")
 
     local i=0 count
-    count=$(echo "$cve_ids" | wc -l)
+    count=$(echo "$cve_ids" | while IFS= read -r c; do
+        [[ -z "$c" ]] && continue
+        is_selected_cve "$c" && echo "$c"
+    done | wc -l)
     while IFS= read -r cve_id; do
         [[ -z "$cve_id" ]] && continue
+        is_selected_cve "$cve_id" || continue
         i=$((i + 1))
         local recipe series_len
         read -r recipe series_len <<< "$(python3 -c "
@@ -204,8 +336,10 @@ for cve in sorted(cve for cve, info in data.items() if info['tier'] == '${tier}'
 
 TOTAL_PLANNED=0
 for tier in easy medium hard; do
-    n=$(cves_for_tier "$tier" | wc -l)
-    TOTAL_PLANNED=$((TOTAL_PLANNED + n))
+    while IFS= read -r cve_id; do
+        [[ -z "$cve_id" ]] && continue
+        is_selected_cve "$cve_id" && TOTAL_PLANNED=$((TOTAL_PLANNED + 1))
+    done < <(cves_for_tier "$tier")
 done
 
 # ── Cost visibility + single confirmation (covers phase 1 AND phase 2) ─────
@@ -240,6 +374,15 @@ row_exists() {
 
 run_agent_phase() {
     source_build_env
+
+    # Preflight: the benchmark always drives `--backend kiro`, so kiro-cli must
+    # be invokable. If it isn't, every run would fail identically for an
+    # environment reason (not a model-quality one), so fail fast here rather
+    # than churning through the whole roster recording the same failure.
+    if [[ "$DRY_RUN" != true ]] && ! command -v kiro-cli >/dev/null 2>&1; then
+        die "kiro-cli not found on PATH — the AI agent cannot be triggered. Install/activate kiro-cli (https://kiro.dev/docs/install) before benchmarking."
+    fi
+
     local models_list
     models_list=$(python3 -c "
 from tests.benchmark.bench_lib import resolve_models
@@ -250,6 +393,7 @@ for m in resolve_models('${MODELS_SELECTOR}'):
     for tier in easy medium hard; do
         while IFS= read -r cve_id; do
             [[ -z "$cve_id" ]] && continue
+            is_selected_cve "$cve_id" || continue
             while IFS= read -r model; do
                 [[ -z "$model" ]] && continue
 
@@ -265,6 +409,7 @@ for m in resolve_models('${MODELS_SELECTOR}'):
 
                 log "=== $cve_id (tier=$tier) x $model ==="
                 local run_log="${RESULTS_DIR}/${cve_id}_${model}.log"
+                log "  live log: tail -f $run_log"
                 setup_cve_branch "$cve_id" "$run_log" "bench"
 
                 local exit_status="SETUP_FAILED" credits="" duration_s=0 commands=0
@@ -280,6 +425,14 @@ for m in resolve_models('${MODELS_SELECTOR}'):
                     # test_cve_corrector.sh's `echo "y" | python3 -m cve_agent`
                     # pattern — </dev/null would hit EOF on that input() call
                     # and crash the process before any AI session starts.
+                    #
+                    # Launched in the background (not foreground) so the
+                    # SIGINT/SIGTERM trap can fire promptly: `wait` is
+                    # interruptible by a trapped signal, whereas a foreground
+                    # child would defer the trap until it exits. `setsid` puts
+                    # the agent in its own process group; $! is that group's
+                    # leader, so on_interrupt can `kill -- -$AGENT_PGID` the
+                    # whole tree.
                     echo "y" | setsid timeout "$RUN_TIMEOUT" python3 -m cve_agent \
                         --cve-info "$CVE_METADATA" \
                         --cve-id "$cve_id" \
@@ -290,8 +443,27 @@ for m in resolve_models('${MODELS_SELECTOR}'):
                         --meta-layer "${OE_DIR}/meta" \
                         --mirror-dir "$MIRROR_DIR" \
                         --clean \
-                        >> "$run_log" 2>&1 || agent_exit=$?
+                        >> "$run_log" 2>&1 &
+                    AGENT_PGID=$!
+                    wait "$AGENT_PGID" || agent_exit=$?
+                    AGENT_PGID=""
                     duration_s=$(( $(date +%s) - start_s ))
+
+                    # An agent that never ran because the environment can't
+                    # trigger it (missing/unusable kiro-cli, un-installable
+                    # agent configs) would fail identically for every model and
+                    # CVE — that's not a model-quality signal, so stop the whole
+                    # benchmark instead of recording a wall of identical rows.
+                    if python3 -c "
+import sys
+from tests.benchmark.bench_lib import is_agent_env_failure
+with open('${run_log}', encoding='utf-8', errors='replace') as f:
+    sys.exit(0 if is_agent_env_failure(f.read()) else 1)
+"; then
+                        reset_oe_tree >> "$run_log" 2>&1 || true
+                        die "Agent could not be triggered due to an environment problem (see ${run_log}). Fix the environment (e.g. install/activate kiro-cli) and re-run; use --resume ${RESULTS_DIR} to keep completed rows."
+                    fi
+
 
                     if [[ $agent_exit -eq 0 ]]; then
                         exit_status="0"
@@ -338,11 +510,40 @@ except OSError:
     text = None
 print(classify_diff_bucket(text))
 ")
+                        # For a partial overlap, report diff_lines scoped to the
+                        # shared files (what the judge sees), not the whole-patch
+                        # divergence, which is dominated by the missing/extra files.
+                        if [[ "$diff_bucket" == "partial" ]]; then
+                            diff_lines=$(python3 -c "
+from tests.benchmark.bench_lib import scope_diff_to_common_files, count_diff_changed_lines
+diff_patch = '${RESULTS_DIR}/${cve_id}_differences_diff.patch'
+try:
+    with open(diff_patch, encoding='utf-8', errors='replace') as f:
+        text = f.read()
+except OSError:
+    text = ''
+print(count_diff_changed_lines(scope_diff_to_common_files(text)))
+")
+                        fi
+                        # compare_patches_detailed writes the differences report
+                        # keyed by CVE only; rename it per-model so each model's
+                        # comparison survives the next model's run (which would
+                        # otherwise overwrite it) and the judge phase reads the
+                        # right model's diff.
+                        for _sfx in differences.txt differences_diff.patch; do
+                            if [[ -f "${RESULTS_DIR}/${cve_id}_${_sfx}" ]]; then
+                                mv -f "${RESULTS_DIR}/${cve_id}_${_sfx}" "${RESULTS_DIR}/${cve_id}_${model}_${_sfx}"
+                            fi
+                        done
                     fi
                 fi
 
                 echo "${cve_id},${tier},${model},${exit_status},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
                 log "  -> exit=${exit_status} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
+
+                # Save the agent's generated patch(es) for later evaluation
+                # before the reset wipes them from the tree.
+                save_generated_patches "$cve_id" "$model"
 
                 # Always reset, regardless of outcome, to recover for the next run.
                 reset_oe_tree >> "$run_log" 2>&1
@@ -368,29 +569,49 @@ with open('${AGENT_CSV}', newline='') as f:
 with open('${JUDGE_CSV}', newline='') as f:
     judge_rows = list(csv.DictReader(f))
 for row in filter_for_judging(agent_rows, judge_rows):
-    print(f\"{row['cve_id']},{row['model']}\")
+    print(f\"{row['cve_id']},{row['model']},{row['diff_bucket']}\")
 ")
 
     if [[ -z "$to_judge" ]]; then
         log "Nothing to judge."
     else
-        while IFS=, read -r cve_id model; do
+        while IFS=, read -r cve_id model bucket; do
             [[ -z "$cve_id" ]] && continue
-            diff_patch="${RESULTS_DIR}/${cve_id}_differences_diff.patch"
+            diff_patch="${RESULTS_DIR}/${cve_id}_${model}_differences_diff.patch"
             if [[ ! -f "$diff_patch" ]]; then
                 log "  SKIP $cve_id/$model: no diff patch at $diff_patch"
                 continue
             fi
-            log "  Judging $cve_id / $model ..."
+            log "  Judging $cve_id / $model (bucket=$bucket) ..."
+            # For a 'partial' fileset overlap, judge ONLY the files common to
+            # both patch sets (scope_diff_to_common_files strips the one-sided
+            # missing/extra blocks). If nothing common actually differs, the
+            # scoped diff is empty: the only divergence is which files were
+            # touched, which the wording judge can't assess. Record that as a
+            # distinct 'structural-only' verdict (no judge call) rather than
+            # leaving the row unjudged — so the report doesn't conflate it with
+            # a genuinely pending row, and a resume won't re-scope it.
             result=$(python3 -c "
-from tests.benchmark.bench_lib import judge_diff
+from tests.benchmark.bench_lib import judge_diff, scope_diff_to_common_files
 with open('${diff_patch}', encoding='utf-8', errors='replace') as f:
     diff_text = f.read()
-judgment, credits = judge_diff(diff_text, model='${JUDGE_MODEL}')
-print(f'{judgment},{\"\" if credits is None else credits}')
+if '${bucket}' == 'partial':
+    diff_text = scope_diff_to_common_files(diff_text)
+if not diff_text.strip():
+    print('structural-only,')
+else:
+    judgment, credits = judge_diff(diff_text, model='${JUDGE_MODEL}')
+    print(f'{judgment},{\"\" if credits is None else credits}')
 ")
-            echo "${cve_id},${model},${result}" >> "$JUDGE_CSV"
-            log "    -> ${result}"
+            # Record whether the verdict covers the whole patch or only the
+            # shared files of a partial overlap, so judge_results.csv is
+            # self-describing without cross-referencing agent_results.csv.
+            # (No 'local' here: the judge phase runs at top level, not in a
+            # function.)
+            scope="full"
+            [[ "$bucket" == "partial" ]] && scope="partial"
+            echo "${cve_id},${model},${result},${scope}" >> "$JUDGE_CSV"
+            log "    -> ${result} (scope=${scope})"
         done <<< "$to_judge"
     fi
 fi
