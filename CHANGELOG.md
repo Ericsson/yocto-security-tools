@@ -21,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **cve-corrector**: submodules whose `.gitmodules` URL is *relative*
+  (glib's `url = ../../GNOME/gvdb.git`) are now resolved against the
+  project's real upstream URL. Git resolves relative submodule URLs against
+  the superproject's remote, which in a cve-corrector workspace is a local
+  bare mirror (`--mirror-dir`) or the workspace path itself — yielding a
+  nonexistent sibling directory, e.g. `<workspace>/GNOME/gvdb.git`.
+  Submodule init then failed and, for glib, so did the *pre-patch* build,
+  because `meson.build` bootstraps the submodule itself ("git submodule
+  failed to init"); the run ended as exit 10 (pre-existing build failure)
+  and every glib CVE was reported as skipped. When `--mirror-dir` holds a
+  mirror of the submodule too, that local mirror is used instead of the
+  network URL (with `protocol.file.allow=always`, which git blocks for
+  submodules by default).
 - **cve-corrector**: CVE fixes referenced by a *merge* commit (a GitHub
   "Merge pull request …" SHA, e.g. setuptools' CVE-2024-6345 fix
   `88807c70`) are now cherry-picked with `-m 1`. `git cherry-pick <merge>`

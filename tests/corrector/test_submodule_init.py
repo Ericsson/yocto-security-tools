@@ -71,10 +71,14 @@ class TestInitSubmodules:
 
         _init_submodules(workspace)
 
-        mock_run_cmd.assert_called_once_with(
+        # 'submodule init' seeds the local config, then update populates the
+        # working tree. An absolute URL needs no override, so no git config
+        # call sits between them.
+        assert [c[0][0] for c in mock_run_cmd.call_args_list] == [
+            ['git', 'submodule', 'init'],
             ['git', 'submodule', 'update', '--init', '--recursive'],
-            cwd=workspace,
-        )
+        ]
+        assert mock_run_cmd.call_args_list[-1][1] == {'cwd': workspace}
 
     @patch("cve_corrector.workspace.run_cmd", return_value=1)
     def test_failure_is_non_fatal(
@@ -91,7 +95,8 @@ class TestInitSubmodules:
 
         # Should not raise even when command fails
         _init_submodules(workspace)
-        mock_run_cmd.assert_called_once()
+        assert ['git', 'submodule', 'update', '--init', '--recursive'] in [
+            c[0][0] for c in mock_run_cmd.call_args_list]
 
 
 class TestInitSubmodulesIntegration:

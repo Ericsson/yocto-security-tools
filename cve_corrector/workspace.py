@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Devtool workspace setup and CVE branch preparation."""
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -283,7 +284,125 @@ def _fetch_remote(workspace_path: Path, remote_name: str, url: str) -> bool:
     return False
 
 
-def _init_submodules(workspace_path: Path) -> None:
+def resolve_relative_submodule_url(base_url: str, relative_url: str) -> Optional[str]:
+    """Resolve a relative ``.gitmodules`` URL against a base repository URL.
+
+    Projects hosted on GitLab/GitHub commonly reference their submodules
+    relative to the superproject, e.g. glib's ``.gitmodules`` says
+    ``url = ../../GNOME/gvdb.git``. Git resolves that against the URL of the
+    superproject's remote, which normally is
+    ``https://gitlab.gnome.org/GNOME/glib.git`` and therefore yields
+    ``https://gitlab.gnome.org/GNOME/gvdb.git``.
+
+    In a cve-corrector workspace the ``upstream`` remote often points at a
+    *local bare mirror* instead (``/home/user/git/glib``), so git resolves the
+    same relative URL to a nonexistent local path
+    (``/home/user/GNOME/gvdb.git``) and submodule init fails. This helper
+    re-resolves against the project's real upstream URL so the submodule can
+    still be fetched.
+
+    Mirrors git's own algorithm: each ``..`` drops the last path component of
+    the base (the ``.git`` suffix is *not* stripped first), ``.`` is skipped,
+    and remaining components are appended.
+
+    Args:
+        base_url: Superproject URL (``https://``, ``git://``, ``ssh://``,
+            scp-like ``git@host:path``, or a local path).
+        relative_url: URL from ``.gitmodules``, starting with ``./`` or ``../``.
+
+    Returns:
+        The absolute URL, or None if *relative_url* is not relative, no base
+        was given, or the relative path escapes past the base's root.
+    """
+    if not base_url or not relative_url.startswith(('./', '../')):
+        return None
+
+    base = base_url.rstrip('/')
+    scheme_match = re.match(r'^([a-zA-Z][a-zA-Z0-9+.\-]*://[^/]+)(/.*)?$', base)
+    if scheme_match:
+        root, path = scheme_match.group(1), scheme_match.group(2) or ''
+        separator = '/'
+    else:
+        scp_match = re.match(r'^([^/@]+@[^/:]+:)(.*)$', base)
+        if scp_match:
+            root, path = scp_match.group(1), scp_match.group(2)
+            separator = ''
+        else:
+            # Local path (absolute or relative).
+            root = '/' if base.startswith('/') else ''
+            path = base
+            separator = ''
+
+    parts = [p for p in path.split('/') if p]
+    for component in relative_url.split('/'):
+        if component in ('', '.'):
+            continue
+        if component == '..':
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(component)
+    if not parts:
+        return None
+    return f"{root}{separator}{'/'.join(parts)}"
+
+
+def _is_remote_url(url: str) -> bool:
+    """Check whether a git URL is fetched over a network transport."""
+    return bool(re.match(r'^[a-zA-Z][a-zA-Z0-9+.\-]*://', url)) or bool(
+        re.match(r'^[^/@]+@[^/:]+:', url))
+
+
+def _submodule_base_url(workspace_path: Path,
+                        hash_details: Optional[list[dict]]) -> Optional[str]:
+    """Determine the URL that relative submodule URLs should resolve against.
+
+    Prefers the workspace's ``upstream`` remote when it is a real remote URL.
+    When it is a local mirror path (``--mirror-dir``), relative submodule URLs
+    would resolve to nonexistent sibling directories, so fall back to the
+    project's canonical URL deduced from the CVE's fix-commit URLs.
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+        hash_details: CVE metadata fix-commit entries, used for deduction.
+
+    Returns:
+        A base URL, or None when none could be determined.
+    """
+    remote_url = run_cmd_capture(
+        ['git', 'remote', 'get-url', 'upstream'], cwd=workspace_path).stdout.strip()
+    if remote_url and _is_remote_url(remote_url):
+        return remote_url
+    urls = [d['url'] for d in (hash_details or []) if d.get('url')]
+    return deduce_repo_from_patches(urls)
+
+
+def _gitmodules_entries(workspace_path: Path) -> list[tuple[str, str]]:
+    """List ``(name, url)`` pairs declared in the workspace's .gitmodules.
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+
+    Returns:
+        One entry per configured submodule; empty when .gitmodules is absent
+        or unparseable.
+    """
+    result = run_cmd_capture(
+        ['git', 'config', '-f', '.gitmodules', '--get-regexp', r'^submodule\..*\.url$'],
+        cwd=workspace_path)
+    entries = []
+    for line in result.stdout.splitlines():
+        key, _, url = line.partition(' ')
+        name = key.removeprefix('submodule.').removesuffix('.url')
+        if name and url:
+            entries.append((name, url.strip()))
+    return entries
+
+
+def _init_submodules(workspace_path: Path,
+                     hash_details: Optional[list[dict]] = None,
+                     mirror_dir: Optional[Path] = None) -> None:
     """Initialize git submodules if the repo defines any.
 
     When a recipe is built from a tarball, devtool extracts the archive into
@@ -291,17 +410,75 @@ def _init_submodules(workspace_path: Path) -> None:
     upstream tag (which has a .gitmodules file), submodule directories remain
     empty.  Later, copy_missing_files_from_devtool() copies those files as
     untracked content, leaving the working tree dirty and causing cherry-pick
-    to fail.
+    to fail.  Builds fail too when the build system bootstraps the submodule
+    itself (glib's ``meson.build`` runs ``git submodule update --init`` and
+    aborts with "git submodule failed to init").
 
     Running ``git submodule update --init --recursive`` populates submodule
     directories as tracked content, preventing the dirty-tree problem.
+
+    Before that, submodule URLs are rewritten where the workspace's defaults
+    cannot work:
+
+    * A **relative** URL (``../../GNOME/gvdb.git``) resolves against the
+      ``upstream`` remote, which is a local bare mirror whenever
+      ``--mirror-dir``/``--mirror-path`` is used — yielding a nonexistent
+      sibling path. It is re-resolved against the project's real upstream URL
+      (see :func:`resolve_relative_submodule_url`).
+    * When ``mirror_dir`` holds a mirror of the submodule itself, that local
+      mirror is used instead of the network URL, matching how the
+      superproject is fetched. Local transports need
+      ``protocol.file.allow=always``, which git blocks by default for
+      submodules (CVE-2022-39253).
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+        hash_details: CVE fix-commit metadata, used to deduce the project's
+            canonical URL when ``upstream`` points at a local mirror.
+        mirror_dir: Directory of local bare mirrors, if one was configured.
     """
     gitmodules = workspace_path / '.gitmodules'
     if not gitmodules.exists():
         return
     logger.info("Initializing submodules")
+
+    # 'submodule init' copies .gitmodules URLs into the local config; the
+    # overrides below then replace only the ones that cannot work as-is.
+    # 'submodule init' never overwrites an existing submodule.<name>.url.
+    run_cmd(['git', 'submodule', 'init'], cwd=workspace_path)
+
+    base_url: Optional[str] = None
+    uses_local_transport = False
+    for name, url in _gitmodules_entries(workspace_path):
+        override: Optional[str] = None
+        sub_name = url.rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')
+        if mirror_dir:
+            sub_mirror = find_mirror_repo(mirror_dir, sub_name)
+            if sub_mirror:
+                override = str(sub_mirror.absolute())
+                logger.info("Submodule %s: using local mirror %s", name, override)
+        if override is None and url.startswith(('./', '../')):
+            if base_url is None:
+                base_url = _submodule_base_url(workspace_path, hash_details) or ''
+            override = resolve_relative_submodule_url(base_url, url)
+            if override:
+                logger.info("Submodule %s: resolved %s -> %s", name, url, override)
+            else:
+                logger.warning(
+                    "Submodule %s: cannot resolve relative URL %s (no upstream "
+                    "URL to resolve against) — init will likely fail", name, url)
+        if override:
+            run_cmd(['git', 'config', f'submodule.{name}.url', override],
+                    cwd=workspace_path)
+            if not _is_remote_url(override):
+                uses_local_transport = True
+
+    # Local paths are a blocked transport for submodules unless allowed
+    # explicitly (CVE-2022-39253), and the mirrors here are trusted local
+    # clones the caller pointed us at.
+    allow_file = ['-c', 'protocol.file.allow=always'] if uses_local_transport else []
     ret = run_cmd(
-        ['git', 'submodule', 'update', '--init', '--recursive'],
+        ['git', *allow_file, 'submodule', 'update', '--init', '--recursive'],
         cwd=workspace_path,
     )
     if ret != 0:
@@ -309,8 +486,21 @@ def _init_submodules(workspace_path: Path) -> None:
 
 
 def prepare_cve_branch(workspace_path: Path, version: Optional[str],
-                       cve_id: str, subproject: Optional[str] = None) -> tuple[bool, list[str]]:
+                       cve_id: str, subproject: Optional[str] = None,
+                       hash_details: Optional[list[dict]] = None,
+                       mirror_dir: Optional[Path] = None) -> tuple[bool, list[str]]:
     """Checkout recipe version and prepare branch for CVE fix.
+
+    Args:
+        workspace_path: Path to the devtool workspace.
+        version: Recipe version to check out, if known.
+        cve_id: CVE identifier, also used as the branch name.
+        subproject: Monorepo subproject directory, if detected.
+        hash_details: CVE fix-commit metadata, forwarded to submodule setup to
+            resolve relative submodule URLs when ``upstream`` is a local
+            mirror.
+        mirror_dir: Local mirror directory, forwarded to submodule setup so
+            mirrored submodules are used instead of network URLs.
 
     Returns:
         Tuple of (version_checkout_ok, skipped_commits).
@@ -334,7 +524,8 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
     # missing files.  Without this, repos with submodules (e.g. jq with
     # modules/) leave submodule directories empty, and copy_missing_files
     # fills them with untracked files that block later cherry-picks.
-    _init_submodules(workspace_path)
+    _init_submodules(workspace_path, hash_details=hash_details,
+                     mirror_dir=mirror_dir)
 
     logger.info("Cherry-picking devtool commits")
     base_branch = None

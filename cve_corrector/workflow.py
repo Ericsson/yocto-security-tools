@@ -723,7 +723,15 @@ def initialize_cve_workflow(
             subproject = detect_monorepo_subproject(
                 workspace_path, tag, mirror_name, recipe=recipe)
 
-    checkout_ok, skipped = prepare_cve_branch(workspace_path, version, cve_id, subproject=subproject)
+    # Mirror lookup for submodules uses the same directory the superproject's
+    # mirror came from: --mirror-dir when given, else the parent of an explicit
+    # --mirror-path.
+    submodule_mirror_dir = config.mirror_dir
+    if submodule_mirror_dir is None and config.mirror_path:
+        submodule_mirror_dir = config.mirror_path.parent
+    checkout_ok, skipped = prepare_cve_branch(
+        workspace_path, version, cve_id, subproject=subproject,
+        hash_details=hash_details, mirror_dir=submodule_mirror_dir)
     if skipped:
         logger.warning("Skipped %d devtool commit(s) during branch preparation", len(skipped))
 
