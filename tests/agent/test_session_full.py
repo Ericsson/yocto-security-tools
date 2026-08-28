@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cve_agent.backend import SessionResult
 from cve_agent.kiro_backend import KiroBackend
 from cve_agent.session import (
@@ -239,6 +241,50 @@ class TestGuardedKiroSession:
             Path("/ctx"), ws, "abc123", {}, "model", 300, "CVE-1"
         )
         assert result.resolved is False
+
+    @patch("cve_agent.session._write_audit_log")
+    @patch("cve_agent.session.revert_unauthorized_changes")
+    @patch("cve_agent.session.remove_notes_hook")
+    @patch("cve_agent.session.install_notes_hook")
+    @patch("cve_agent.session.remove_scope_hook")
+    @patch("cve_agent.kiro_backend.KiroBackend.run_session",
+           return_value=SessionResult(resolved=True, duration=1.0))
+    @patch("cve_agent.session.install_scope_hook")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
+    @patch("cve_agent.session.upstream_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.compute_allowed_files", return_value={"a.c"})
+    @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
+    def test_notes_hook_installed_and_removed(
+            self, m_shas, m_allowed, m_files, m_git, m_hook, m_session,
+            m_unhook, m_notes_install, m_notes_remove, m_revert, m_audit,
+            tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                        "model", 300, "CVE-1")
+        m_notes_install.assert_called_once_with(ws)
+        m_notes_remove.assert_called_once_with(ws)
+
+    @patch("cve_agent.session.remove_notes_hook")
+    @patch("cve_agent.session.install_notes_hook")
+    @patch("cve_agent.session.remove_scope_hook")
+    @patch("cve_agent.kiro_backend.KiroBackend.run_session",
+           side_effect=RuntimeError("backend exploded"))
+    @patch("cve_agent.session.install_scope_hook")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
+    @patch("cve_agent.session.upstream_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.compute_allowed_files", return_value={"a.c"})
+    @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
+    def test_notes_hook_removed_when_backend_raises(
+            self, m_shas, m_allowed, m_files, m_git, m_hook, m_session,
+            m_unhook, m_notes_install, m_notes_remove, tmp_path):
+        ws = tmp_path / "ws_raise"
+        ws.mkdir()
+        with pytest.raises(RuntimeError):
+            guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                            "model", 300, "CVE-1")
+        m_notes_install.assert_called_once_with(ws)
+        m_notes_remove.assert_called_once_with(ws)
 
 
 class TestWriteAuditLog:

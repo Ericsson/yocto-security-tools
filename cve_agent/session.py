@@ -3,7 +3,8 @@
 """AI session management for CVE agent.
 
 Spawns AI sessions with context files, wraps them with file-scope
-enforcement (pre-commit hook + post-session revert).
+enforcement (pre-commit hook + post-session revert) and the backport-note
+length budget (commit-msg hook).
 """
 import difflib
 import re
@@ -23,7 +24,9 @@ from .git import (
     compute_allowed_files,
     expand_path_variants,
     get_all_upstream_shas,
+    install_notes_hook,
     install_scope_hook,
+    remove_notes_hook,
     remove_scope_hook,
     revert_unauthorized_changes,
     run_capture,
@@ -152,36 +155,42 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # the hook (and stripped post-session), which is the mechanical signal
     # for the agent to fall back to human review rather than widen its scope.
     install_scope_hook(workspace_path, allowed)
-    print(f"\n=== Allowed files for this session ({len(allowed)}) ===")
-    for f in sorted(allowed):
-        print(f"  {f}")
-
-    # Snapshot HEAD before session so audit log only covers agent changes
-    pre_session_head = run_git_stdout(
-        ['rev-parse', 'HEAD'], cwd=workspace_path
-    ).strip()
-
-    prompt = (
-        f"Read the file {context_file} and follow all instructions in it. "
-        f"The file contains conflict context, patch details, and resolution "
-        f"steps for a CVE backport. Complete all tasks described in the file.\n\n"
-        f"Key details (also in the file):\n"
-        f"- Recipe: {workspace_path.name}\n"
-        f"- Agent dir: {get_agent_dir(workspace_path)}\n"
-        f"- Workspace: {workspace_path}\n"
-        f"- Allowed files: {', '.join(sorted(allowed))}\n"
-    )
-
-    backend = get_backend(backend_name)
-    agent_dir = get_agent_dir(workspace_path)
-    _log_session_start(agent_dir, context_file)
-
-    print(f"Starting {backend_name} session (timeout {timeout}s)...")
+    # Same lifecycle as the scope guard: rejects the AI's own commits when its
+    # `Conflicts Resolved:` notes blow the per-file budget, and is gone before
+    # review.amend_commit_with_summary() appends the change summary.
+    install_notes_hook(workspace_path)
     try:
+        print(f"\n=== Allowed files for this session ({len(allowed)}) ===")
+        for f in sorted(allowed):
+            print(f"  {f}")
+
+        # Snapshot HEAD before session so audit log only covers agent changes
+        pre_session_head = run_git_stdout(
+            ['rev-parse', 'HEAD'], cwd=workspace_path
+        ).strip()
+
+        prompt = (
+            f"Read the file {context_file} and follow all instructions in it. "
+            f"The file contains conflict context, patch details, and resolution "
+            f"steps for a CVE backport. Complete all tasks described in the "
+            f"file.\n\n"
+            f"Key details (also in the file):\n"
+            f"- Recipe: {workspace_path.name}\n"
+            f"- Agent dir: {get_agent_dir(workspace_path)}\n"
+            f"- Workspace: {workspace_path}\n"
+            f"- Allowed files: {', '.join(sorted(allowed))}\n"
+        )
+
+        backend = get_backend(backend_name)
+        agent_dir = get_agent_dir(workspace_path)
+        _log_session_start(agent_dir, context_file)
+
+        print(f"Starting {backend_name} session (timeout {timeout}s)...")
         result = backend.run_session(
             prompt, workspace_path, allowed, model, timeout, interactive)
     finally:
         remove_scope_hook(workspace_path)
+        remove_notes_hook(workspace_path)
 
     _log_session_end(agent_dir, result)
 

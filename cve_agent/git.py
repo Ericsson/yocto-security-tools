@@ -3,11 +3,14 @@
 """Git helpers, upstream SHA resolution, and file-scope enforcement.
 
 Provides git command wrappers, upstream SHA lookup from CVE metadata /
-cve_corrector state, and the three-layer scope guard (pre-commit hook,
-post-session revert of unauthorized changes).
+cve_corrector state, the three-layer scope guard (pre-commit hook,
+post-session revert of unauthorized changes), and the commit-msg hook that
+enforces the backport-note length budget.
 """
 import json
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +24,7 @@ from shared.git_runner import (
 )
 
 from . import get_build_dir
+from .commit_notes import EXIT_NOTES_REJECTED
 
 
 def get_upstream_sha(cve_info: dict, workspace_path: Path) -> str:
@@ -247,6 +251,78 @@ def remove_scope_hook(workspace_path: Path) -> None:
     allowed_file = hooks_dir / 'cve-agent-allowed-files'
     if allowed_file.exists():
         allowed_file.unlink()
+    if backup_path.exists():
+        backup_path.rename(hook_path)
+
+
+# --- Commit-note budget enforcement ---
+
+def install_notes_hook(workspace_path: Path) -> None:
+    """Install a git commit-msg hook that rejects over-long backport notes.
+
+    The hook delegates to :mod:`cve_agent.commit_notes`, which owns the budget
+    rules, so the AI's own ``git cherry-pick --continue`` / ``git commit
+    --amend`` fails while the cherry-pick is still in progress and
+    ``.git/MERGE_MSG`` is preserved — the AI can shorten the notes and retry
+    without losing work.
+
+    The interpreter and package root are resolved at install time (the
+    workspace is a different repository with no relation to this package's
+    location) and shell-quoted, so a path with spaces cannot break the hook.
+
+    The hook **fails open**: only the checker's dedicated rejection status
+    (:data:`cve_agent.commit_notes.EXIT_NOTES_REJECTED`) rejects the commit. A
+    broken environment — interpreter gone, package not importable — warns and
+    lets the commit through, because a check that cannot run must not deadlock
+    a session that is told never to bypass the hook.
+
+    Backs up any existing hook, mirroring :func:`install_scope_hook`.
+
+    Args:
+        workspace_path: Path to workspace.
+    """
+    hooks_dir = workspace_path / '.git' / 'hooks'
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / 'commit-msg'
+    backup_path = hooks_dir / 'commit-msg.bak'
+
+    if hook_path.exists():
+        hook_path.rename(backup_path)
+
+    package_root = shlex.quote(str(Path(__file__).resolve().parent.parent))
+    interpreter = shlex.quote(sys.executable)
+
+    hook_path.write_text(
+        '#!/bin/bash\n'
+        '# CVE Agent commit-note budget guard — auto-installed, auto-removed\n'
+        f'PYTHONPATH={package_root}${{PYTHONPATH:+:$PYTHONPATH}} \\\n'
+        f'  {interpreter} -m cve_agent.commit_notes "$1"\n'
+        'rc=$?\n'
+        f'if [ "$rc" -eq {EXIT_NOTES_REJECTED} ]; then\n'
+        '  exit 1\n'
+        'fi\n'
+        'if [ "$rc" -ne 0 ]; then\n'
+        '  echo "cve-agent note check could not run (rc=$rc) — '
+        'allowing commit" >&2\n'
+        'fi\n'
+        'exit 0\n',
+        encoding='utf-8',
+    )
+    hook_path.chmod(0o755)
+
+
+def remove_notes_hook(workspace_path: Path) -> None:
+    """Remove the commit-note budget hook, restoring any backup.
+
+    Args:
+        workspace_path: Path to workspace.
+    """
+    hooks_dir = workspace_path / '.git' / 'hooks'
+    hook_path = hooks_dir / 'commit-msg'
+    backup_path = hooks_dir / 'commit-msg.bak'
+
+    if hook_path.exists():
+        hook_path.unlink()
     if backup_path.exists():
         backup_path.rename(hook_path)
 
