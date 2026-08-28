@@ -212,10 +212,11 @@ class TestGuardedKiroSession:
            return_value=SessionResult(resolved=True, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
     @patch("cve_agent.session.run_git_stdout", return_value="")
-    @patch("cve_agent.session.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.upstream_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.compute_allowed_files", return_value={"a.c"})
     @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
-    def test_full_flow(self, m_shas, m_files, m_git, m_hook, m_session,
-                       m_unhook, m_revert, m_audit, tmp_path):
+    def test_full_flow(self, m_shas, m_allowed, m_files, m_git, m_hook,
+                       m_session, m_unhook, m_revert, m_audit, tmp_path):
         ws = tmp_path / "ws"
         ws.mkdir()
         result = guarded_session(
@@ -228,10 +229,11 @@ class TestGuardedKiroSession:
            return_value=SessionResult(resolved=False, duration=1.0))
     @patch("cve_agent.session.install_scope_hook")
     @patch("cve_agent.session.run_git_stdout", return_value="")
-    @patch("cve_agent.session.get_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.upstream_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.compute_allowed_files", return_value={"a.c"})
     @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
-    def test_workspace_gone(self, m_shas, m_files, m_git, m_hook, m_session,
-                            m_unhook, tmp_path):
+    def test_workspace_gone(self, m_shas, m_allowed, m_files, m_git, m_hook,
+                            m_session, m_unhook, tmp_path):
         ws = tmp_path / "ws_gone"
         result = guarded_session(
             Path("/ctx"), ws, "abc123", {}, "model", 300, "CVE-1"

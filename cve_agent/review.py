@@ -11,7 +11,13 @@ from pathlib import Path
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 from . import AgentConfig, get_agent_dir
-from .git import get_changed_files, run_git_display, run_git_stdout
+from .git import (
+    get_changed_files,
+    merge_diff_flags,
+    run_git_display,
+    run_git_stdout,
+    upstream_changed_files,
+)
 from .interdiff import generate_interdiff, generate_interdiff_artifacts
 
 
@@ -75,10 +81,7 @@ def build_change_summary(workspace_path: Path, upstream_sha: str) -> str:
     Returns:
         Formatted change summary string.
     """
-    upstream_set = get_changed_files(
-        ['diff-tree', '--no-commit-id', '--name-only', '-r', upstream_sha],
-        workspace_path
-    )
+    upstream_set = upstream_changed_files(workspace_path, upstream_sha)
     applied_set = get_changed_files(
         ['diff', '--name-only', 'original-version..HEAD'], workspace_path
     )
@@ -259,10 +262,9 @@ def _save_review_diff(workspace_path: Path, upstream_sha: str) -> Path:
     agent_dir = get_agent_dir(workspace_path)
     diff_path = agent_dir / f"review-{upstream_sha[:12]}.diff"
 
-    upstream_diff = run_git_stdout(['show', upstream_sha], workspace_path)
-    upstream_files = get_changed_files(
-        ['show', '--name-only', '--format=', upstream_sha], workspace_path
-    )
+    flags = merge_diff_flags(workspace_path, upstream_sha)
+    upstream_diff = run_git_stdout(['show', *flags, upstream_sha], workspace_path)
+    upstream_files = upstream_changed_files(workspace_path, upstream_sha)
     if upstream_files:
         backport_diff = run_git_stdout(
             ['diff', 'original-version..HEAD', '--'] + sorted(upstream_files),
@@ -316,9 +318,8 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
     print("RESOLUTION REVIEW")
     print("=" * 60)
 
-    upstream_files = get_changed_files(
-        ['show', '--name-only', '--format=', upstream_sha], workspace_path
-    )
+    flags = merge_diff_flags(workspace_path, upstream_sha)
+    upstream_files = upstream_changed_files(workspace_path, upstream_sha)
 
     # Check if the upstream commit actually produced changes in the workspace
     if upstream_files:
@@ -338,7 +339,7 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
         print("\nNo new changes to review.")
     else:
         print("\n--- Original upstream patch ---")
-        run_git_display(['show', '--stat', upstream_sha], workspace_path)
+        run_git_display(['show', *flags, '--stat', upstream_sha], workspace_path)
 
         print("\n--- What was applied ---")
         run_git_display(
@@ -349,7 +350,7 @@ def _display_changes(workspace_path: Path, upstream_sha: str,
         print("\n--- Changes from upstream ---")
         print(summary)
 
-        upstream_diff = run_git_stdout(['show', upstream_sha], workspace_path)
+        upstream_diff = run_git_stdout(['show', *flags, upstream_sha], workspace_path)
         interdiff = generate_interdiff(upstream_diff, applied_diff)
         print("\n--- Interdiff (upstream \u2192 backport) ---")
         if interdiff:

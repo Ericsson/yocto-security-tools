@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judge pass on diffs that came out moderately/majorly different from the
   human reference backport. See `tests/benchmark/README.md`.
 
+### Fixed
+
+- **cve-corrector**: CVE fixes referenced by a *merge* commit (a GitHub
+  "Merge pull request …" SHA, e.g. setuptools' CVE-2024-6345 fix
+  `88807c70`) are now cherry-picked with `-m 1`. `git cherry-pick <merge>`
+  is refused outright ("is a merge but no -m option was given") and leaves
+  no cherry-pick in progress, so `find_least_conflict_commit()` scored such
+  a commit as "0 conflicts" — the best possible candidate — and the
+  workflow then reported `EXIT_CONFLICT` over a pristine workspace.
+  `find_least_conflict_commit()` now discards candidates whose pick never
+  started, and `_handle_no_clean_apply()` verifies real conflict state
+  (`CHERRY_PICK_HEAD`/unmerged entries) before reporting a conflict,
+  raising `PatchError` (exit 5) otherwise instead of sending a resolver
+  after a conflict that does not exist.
+- **cve-agent**: the session file scope (`Allowed Files`, the pre-commit
+  scope guard, review/interdiff output) is now merge-commit aware. `git
+  show` prints no diff for a merge, so a merge fix SHA produced an *empty*
+  allowed-files list: the guard rejected every write and the model could
+  only escalate. Scope is computed once in `compute_allowed_files()` and
+  shared by `context.md` and the guard, so the two can no longer disagree.
+- **cve-agent**: when the file scope still cannot be determined, the CVE is
+  escalated to human review *before* an AI session is launched, instead of
+  paying for a session that has nothing it is permitted to change.
+
 ## [1.0.5] - 2026-08-13
 
 ### Added

@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Optional
 
 from .git_ops import (
+    cherry_pick_command,
     detect_strip_level,
     get_repo_subdir,
     git_clean_workspace,
+    has_conflict_state,
     is_bad_object,
     try_cherry_pick,
 )
@@ -380,6 +382,19 @@ def find_least_conflict_commit(workspace_path: Path,
 
     Prefers the first hash in the list (usually the actual fix) and
     skips metadata-only commits (version bumps) unless no better option.
+
+    A commit whose cherry-pick is rejected *before it starts* (no conflict
+    state created — e.g. a merge SHA that git refuses, a dirty tree) is not a
+    candidate at all: scoring it as "0 conflicts" would make it look like the
+    best possible pick and send the caller off to resolve a conflict that was
+    never created.
+
+    Args:
+        workspace_path: Path to the git repository.
+        hashes: Candidate commit hashes.
+
+    Returns:
+        Tuple of (best commit hash or None, its conflict count or ``inf``).
     """
     logger.info("All cherry-picks failed, finding commit with least conflicts")
     candidates = []
@@ -387,10 +402,17 @@ def find_least_conflict_commit(workspace_path: Path,
     for idx, commit_hash in enumerate(hashes):
         if is_bad_object(workspace_path, commit_hash):
             continue
-        run_cmd(['git', 'cherry-pick', commit_hash], cwd=workspace_path)
+        pick = run_cmd_capture(
+            cherry_pick_command(workspace_path, commit_hash), cwd=workspace_path)
         result = run_cmd_capture(
             ['git', 'diff', '--name-only', '--diff-filter=U'], cwd=workspace_path)
         conflict_count = len(result.stdout.splitlines())
+        if pick.returncode != 0 and not has_conflict_state(workspace_path):
+            logger.warning(
+                "Skipping %s: cherry-pick could not start (no conflict state): %s",
+                commit_hash[:8], pick.stderr.strip().splitlines()[:1])
+            run_cmd(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
+            continue
         is_metadata = _is_metadata_only_commit(workspace_path, commit_hash)
         candidates.append((commit_hash, conflict_count, is_metadata, idx))
         run_cmd(['git', 'cherry-pick', '--abort'], cwd=workspace_path)

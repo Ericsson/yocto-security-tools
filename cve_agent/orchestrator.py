@@ -29,7 +29,7 @@ from . import (
 )
 from .context import build_context
 from .corrector import get_workspace_path, load_cve_metadata, run_corrector
-from .git import get_changed_files, get_upstream_sha, run_git_stdout
+from .git import compute_allowed_files, get_changed_files, get_upstream_sha, run_git_stdout
 from .knowledge import KnowledgeBase, gather_pattern_details, save_knowledge_pattern
 from .review import build_change_summary, request_approval
 from .session import guarded_session
@@ -361,6 +361,23 @@ def _run_single_resolution_attempt(
     # reflect only this session's verdict — a stale needs_human/not_applicable
     # file would otherwise override a resolution this attempt actually makes.
     _clear_conclusion(workspace_path)
+    # Pre-flight: without a file scope there is nothing the session may touch.
+    # The scope guard would reject every write and the AI can only escalate, so
+    # escalate here instead of paying for a session that cannot succeed.
+    allowed = compute_allowed_files(cve_info, workspace_path)
+    if not allowed:
+        upstream_sha = get_upstream_sha(cve_info, workspace_path)
+        reason = (
+            f"Cannot determine the file scope for {config.cve_id}: upstream "
+            f"commit {upstream_sha[:12] if upstream_sha else 'unknown'} lists "
+            f"no files in {workspace_path} and the workspace holds no "
+            f"corrector changes or unmerged paths to fall back on. Nothing "
+            f"can be modified or staged — needs human review."
+        )
+        print(f"\n\u26a0 {reason}")
+        return _AttemptOutcome(result=_make_result(
+            config.cve_id, ResultStatus.ESCALATED, attempt, start_time, reason))
+
     print("Building AI context (upstream diffs, knowledge, conflict details)...")
     context_file = build_context(
         workspace_path, exit_code, config.cve_id, cve_info, knowledge_base,

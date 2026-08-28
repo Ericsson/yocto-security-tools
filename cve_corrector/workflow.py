@@ -18,10 +18,12 @@ from .cherry_pick import (
     reset_devtool_to_base,
 )
 from .git_ops import (
+    cherry_pick_command,
     copy_missing_files_from_devtool,
     detect_monorepo_subproject,
     find_exact_tag,
     git_clean_workspace,
+    has_conflict_state,
     is_bad_object,
     remove_git_only_build_triggers,
     try_cherry_pick,
@@ -44,6 +46,7 @@ from .state import (
     IgnoredByStatusError,
     MetadataError,
     NotApplicableError,
+    PatchError,
     PtestError,
     PtestPreexistingError,
     WorkflowState,
@@ -585,7 +588,15 @@ def _handle_failed_series(workspace_path, best_series, make_state, recipe):
 
 def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
                            require_all_commits=False):
-    """Handle case where no commit applied cleanly."""
+    """Handle case where no commit applied cleanly.
+
+    Raises:
+        ConflictError: A conflict was materialized in the workspace and is
+            waiting for manual (or AI-assisted) resolution.
+        PatchError: The fix could not be applied at all and no conflict state
+            exists, so there is nothing to resolve. Reported separately so
+            callers do not send a resolver into a clean workspace.
+    """
     if series:
         logger.error("All commit series failed")
     if require_all_commits:
@@ -599,7 +610,19 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
         if best_hash and conflicts < float('inf'):
             logger.info("Applying commit %s with %s conflict(s)...",
                         best_hash[:8], conflicts)
-            run_cmd(['git', 'cherry-pick', best_hash], cwd=workspace_path)
+            run_cmd(cherry_pick_command(workspace_path, best_hash), cwd=workspace_path)
+            # Only report a conflict when one actually exists. A cherry-pick
+            # that git rejects before starting leaves a pristine workspace, and
+            # claiming "conflict" there makes every resolver (human or AI) hunt
+            # for conflict markers that were never written.
+            if not has_conflict_state(workspace_path):
+                logger.error(
+                    "Cherry-pick of %s left no conflict state — nothing to "
+                    "resolve; the commit could not be applied at all",
+                    best_hash[:8])
+                raise PatchError(
+                    f"Cherry-pick of {best_hash[:12]} produced neither a "
+                    f"successful apply nor a conflict to resolve")
             save_workflow_state(make_state(best_hash))
             print_conflict_instructions(workspace_path, recipe)
             raise ConflictError("Conflict detected")

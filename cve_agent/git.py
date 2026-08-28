@@ -14,6 +14,7 @@ from typing import Optional
 from shared import build_git_env
 from shared.git_runner import (
     force_checkout_branch,
+    merge_diff_flags,
     run_capture,  # noqa: F401
     run_git_display,  # noqa: F401
     run_git_stdout,  # noqa: F401
@@ -101,6 +102,93 @@ def get_changed_files(git_args: list[str], cwd: Path) -> set[str]:
     """
     output = run_git_stdout(git_args, cwd)
     return set(line for line in output.splitlines() if line)
+
+
+def upstream_changed_files(workspace_path: Path, sha: str) -> set[str]:
+    """Return the files an upstream commit touches, merge commits included.
+
+    Args:
+        workspace_path: Path to workspace.
+        sha: Upstream commit hash.
+
+    Returns:
+        Set of repo-relative paths; empty when the commit is unknown locally.
+    """
+    flags = merge_diff_flags(workspace_path, sha)
+    return get_changed_files(
+        ['show', *flags, '--name-only', '--format=', sha], workspace_path)
+
+
+_COMMON_PREFIXES = ('src/', 'lib/', 'source/')
+
+
+def expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
+    """Expand allowed paths to include variants with/without common prefixes.
+
+    If upstream uses src/foo.c but workspace has foo.c (or vice versa),
+    include both so the scope guard doesn't reject the agent's work.
+    Also handles monorepo subprojects/ prefixes (e.g. gstreamer).
+
+    Args:
+        allowed: Paths taken from the upstream commit(s).
+        workspace_path: Path to workspace, used to test which variants exist.
+
+    Returns:
+        The input set plus every existing path variant.
+    """
+    expanded = set(allowed)
+    for filepath in list(allowed):
+        # Handle subprojects/<name>/ prefix (monorepo pattern)
+        parts = filepath.split('/')
+        if len(parts) > 2 and parts[0] == 'subprojects':
+            # Strip subprojects/<name>/ prefix
+            stripped = '/'.join(parts[2:])
+            if (workspace_path / stripped).exists():
+                expanded.add(stripped)
+
+        for prefix in _COMMON_PREFIXES:
+            if filepath.startswith(prefix):
+                stripped = filepath[len(prefix):]
+                if (workspace_path / stripped).exists():
+                    expanded.add(stripped)
+            else:
+                prefixed = prefix + filepath
+                if (workspace_path / prefixed).exists():
+                    expanded.add(prefixed)
+    return expanded
+
+
+def compute_allowed_files(cve_info: dict, workspace_path: Path) -> set[str]:
+    """Compute the file-scope boundary for an AI session.
+
+    Single source of truth for both the scope guard
+    (:func:`install_scope_hook`) and the ``Allowed Files`` section of
+    ``context.md``, so the two can never disagree.
+
+    Derived from every upstream SHA in scope; when none of them resolve in the
+    workspace, falls back to what the corrector actually changed
+    (``original-version..HEAD``) plus any unmerged paths.
+
+    Args:
+        cve_info: CVE metadata dict.
+        workspace_path: Path to workspace.
+
+    Returns:
+        Set of files the agent may modify and stage. Empty means the scope
+        could not be determined — callers must not start a session, since the
+        guard would reject every write.
+    """
+    allowed: set[str] = set()
+    for sha in get_all_upstream_shas(cve_info, workspace_path):
+        allowed |= upstream_changed_files(workspace_path, sha)
+
+    if not allowed:
+        allowed |= get_changed_files(
+            ['diff', '--name-only', 'original-version..HEAD'], workspace_path)
+        allowed |= get_changed_files(
+            ['diff', '--name-only', '--diff-filter=U'], workspace_path)
+
+    return expand_path_variants(allowed, workspace_path)
 
 
 # --- File-scope enforcement ---
