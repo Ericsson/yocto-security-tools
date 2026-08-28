@@ -197,6 +197,61 @@ def compute_allowed_files(cve_info: dict, workspace_path: Path) -> set[str]:
 
 # --- File-scope enforcement ---
 
+#: Marker line every auto-installed hook carries, so a re-install can tell its
+#: own leftover hook from a user's real one and never back up (or delete) the
+#: wrong file.
+_HOOK_MARKER = '# CVE Agent auto-installed hook'
+
+
+def _backup_existing_hook(hook_path: Path, backup_path: Path) -> None:
+    """Move a user's hook aside, ignoring one we installed ourselves.
+
+    Installing twice without an intervening removal (a crashed session, or two
+    installs in a row) would otherwise back up our own hook over the user's
+    real backup and then restore ours as if it were theirs.
+
+    Args:
+        hook_path: Hook we are about to write.
+        backup_path: Where a pre-existing hook is preserved.
+    """
+    if not hook_path.exists():
+        return
+    try:
+        # errors='replace' keeps a non-UTF-8 hook (any script is possible here)
+        # from raising: a decode failure must not abort the session, and must
+        # not skip the backup either.
+        existing = hook_path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        existing = ''
+    if _HOOK_MARKER in existing:
+        hook_path.unlink()
+        return
+    hook_path.rename(backup_path)
+
+
+def warn_if_hooks_disabled(workspace_path: Path) -> bool:
+    """Warn when git config makes the auto-installed hooks inert.
+
+    ``core.hooksPath`` redirects git to a different hook directory, which
+    silently disables both the file-scope guard and the commit-note budget —
+    the guards would appear installed while never running.
+
+    Args:
+        workspace_path: Path to workspace.
+
+    Returns:
+        ``True`` when hooks are active, ``False`` when they are bypassed.
+    """
+    hooks_path = run_git_stdout(
+        ['config', '--get', 'core.hooksPath'], workspace_path).strip()
+    if not hooks_path:
+        return True
+    print(f"\n\u26a0 git core.hooksPath is set to {hooks_path!r} — the CVE "
+          f"agent's pre-commit scope guard and commit-msg note budget are "
+          f"NOT active in this workspace.")
+    return False
+
+
 def install_scope_hook(workspace_path: Path, allowed: set[str]) -> None:
     """Install a git pre-commit hook that rejects unauthorized files.
 
@@ -212,8 +267,7 @@ def install_scope_hook(workspace_path: Path, allowed: set[str]) -> None:
     hook_path = hooks_dir / 'pre-commit'
     backup_path = hooks_dir / 'pre-commit.bak'
 
-    if hook_path.exists():
-        hook_path.rename(backup_path)
+    _backup_existing_hook(hook_path, backup_path)
 
     # Write allowed files to a separate data file (avoids heredoc injection
     # and handles filenames with special characters safely).
@@ -222,6 +276,7 @@ def install_scope_hook(workspace_path: Path, allowed: set[str]) -> None:
 
     hook_path.write_text(
         '#!/bin/bash\n'
+        f'{_HOOK_MARKER}\n'
         '# CVE Agent scope guard — auto-installed, auto-removed\n'
         f'ALLOWED_FILE="{allowed_file}"\n'
         'while IFS= read -r f; do\n'
@@ -286,14 +341,14 @@ def install_notes_hook(workspace_path: Path) -> None:
     hook_path = hooks_dir / 'commit-msg'
     backup_path = hooks_dir / 'commit-msg.bak'
 
-    if hook_path.exists():
-        hook_path.rename(backup_path)
+    _backup_existing_hook(hook_path, backup_path)
 
     package_root = shlex.quote(str(Path(__file__).resolve().parent.parent))
     interpreter = shlex.quote(sys.executable)
 
     hook_path.write_text(
         '#!/bin/bash\n'
+        f'{_HOOK_MARKER}\n'
         '# CVE Agent commit-note budget guard — auto-installed, auto-removed\n'
         f'PYTHONPATH={package_root}${{PYTHONPATH:+:$PYTHONPATH}} \\\n'
         f'  {interpreter} -m cve_agent.commit_notes "$1"\n'

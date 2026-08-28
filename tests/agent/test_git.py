@@ -4,6 +4,7 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import patch as mock_patch
 
 from cve_agent.commit_notes import MAX_WORDS_SOFT
@@ -15,6 +16,7 @@ from cve_agent.git import (
     install_scope_hook,
     remove_notes_hook,
     remove_scope_hook,
+    warn_if_hooks_disabled,
 )
 
 # --- get_upstream_sha ---
@@ -138,6 +140,57 @@ def test_install_notes_hook_backup(tmp_path):
     assert (hooks_dir / "commit-msg.bak").read_text() == "#!/bin/bash\necho old"
 
 
+def test_reinstall_does_not_back_up_our_own_hook(tmp_path):
+    """A second install (crashed session) must not clobber the user's backup."""
+    ws = tmp_path / "repo"
+    hooks_dir = ws / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "commit-msg").write_text("#!/bin/bash\necho user hook")
+    install_notes_hook(ws)
+    install_notes_hook(ws)
+    remove_notes_hook(ws)
+    assert (hooks_dir / "commit-msg").read_text() == "#!/bin/bash\necho user hook"
+    assert not (hooks_dir / "commit-msg.bak").exists()
+
+
+def test_scope_hook_reinstall_preserves_user_hook(tmp_path):
+    ws = tmp_path / "repo"
+    hooks_dir = ws / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "pre-commit").write_text("#!/bin/bash\necho user hook")
+    install_scope_hook(ws, {"a.c"})
+    install_scope_hook(ws, {"a.c"})
+    remove_scope_hook(ws)
+    assert (hooks_dir / "pre-commit").read_text() == "#!/bin/bash\necho user hook"
+
+
+def test_reinstall_survives_a_non_utf8_existing_hook(tmp_path):
+    """A user hook in another encoding must not abort the session."""
+    ws = tmp_path / "repo"
+    hooks_dir = ws / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "commit-msg").write_bytes(b"#!/bin/sh\n# caf\xe9 hook\n")
+    install_notes_hook(ws)
+    assert (hooks_dir / "commit-msg.bak").read_bytes().endswith(b"caf\xe9 hook\n")
+    remove_notes_hook(ws)
+    assert (hooks_dir / "commit-msg").read_bytes().endswith(b"caf\xe9 hook\n")
+
+
+def test_warn_if_hooks_disabled_detects_hooks_path(tmp_path, capsys):
+    ws = _init_repo(tmp_path, install=False)
+    _git(ws, "config", "core.hooksPath", "/tmp/elsewhere")
+    assert warn_if_hooks_disabled(ws) is False
+    assert "core.hooksPath" in capsys.readouterr().out
+
+
+def test_warn_if_hooks_disabled_quiet_when_unset(capsys):
+    """Patched at the git boundary: build_git_env() strips GIT_CONFIG_* so a
+    developer's global core.hooksPath would otherwise leak into this test."""
+    with mock_patch("cve_agent.git.run_git_stdout", return_value=""):
+        assert warn_if_hooks_disabled(Path("/ws")) is True
+    assert capsys.readouterr().out == ""
+
+
 def test_remove_notes_hook_restores_backup(tmp_path):
     ws = tmp_path / "repo"
     hooks_dir = ws / ".git" / "hooks"
@@ -160,8 +213,18 @@ def test_remove_notes_hook_without_backup(tmp_path):
 
 # --- notes hook against real git ---
 
+# Keep the user's global/system git config out of these tests: a global
+# core.hooksPath would silently disable the hook under test.
+_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
+
+
 def _git(ws, *args, check=True):
-    return subprocess.run(["git", *args], cwd=ws,
+    return subprocess.run(["git", *args], cwd=ws, env=_GIT_ENV,
                           capture_output=True, text=True, check=check)
 
 

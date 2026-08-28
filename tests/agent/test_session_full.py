@@ -287,6 +287,28 @@ class TestGuardedKiroSession:
         m_notes_remove.assert_called_once_with(ws)
 
 
+    @patch("cve_agent.session.remove_notes_hook")
+    @patch("cve_agent.session.install_notes_hook",
+           side_effect=RuntimeError("hook install exploded"))
+    @patch("cve_agent.session.remove_scope_hook")
+    @patch("cve_agent.session.install_scope_hook")
+    @patch("cve_agent.session.run_git_stdout", return_value="")
+    @patch("cve_agent.session.upstream_changed_files", return_value={"a.c"})
+    @patch("cve_agent.session.compute_allowed_files", return_value={"a.c"})
+    @patch("cve_agent.session.get_all_upstream_shas", return_value=["abc123"])
+    def test_scope_hook_removed_when_notes_install_fails(
+            self, m_shas, m_allowed, m_files, m_git, m_hook, m_unhook,
+            m_notes_install, m_notes_remove, tmp_path):
+        """A failed second install must not leave the first guard behind."""
+        ws = tmp_path / "ws_install_fail"
+        ws.mkdir()
+        with pytest.raises(RuntimeError):
+            guarded_session(Path("/ctx"), ws, "abc123", {"hashes": ["abc123"]},
+                            "model", 300, "CVE-1")
+        m_unhook.assert_called_once_with(ws)
+        m_notes_remove.assert_called_once_with(ws)
+
+
 class TestWriteAuditLog:
     @patch("cve_agent.session._get_backport_note", return_value="adapted")
     @patch("cve_agent.session.run_git_stdout", return_value="")
