@@ -32,6 +32,7 @@ from .git import (
     run_capture,
     run_git_stdout,
     upstream_changed_files,
+    warn_if_hooks_disabled,
 )
 
 
@@ -154,12 +155,16 @@ def guarded_session(context_file: Path, workspace_path: Path,
     # commit. A prerequisite reaching files OUTSIDE `allowed` is rejected by
     # the hook (and stripped post-session), which is the mechanical signal
     # for the agent to fall back to human review rather than widen its scope.
-    install_scope_hook(workspace_path, allowed)
-    # Same lifecycle as the scope guard: rejects the AI's own commits when its
-    # `Conflicts Resolved:` notes blow the per-file budget, and is gone before
-    # review.amend_commit_with_summary() appends the change summary.
-    install_notes_hook(workspace_path)
+    # Both guards are installed inside the try: if installing the second one
+    # fails, or anything between here and the session raises, the finally must
+    # still be able to strip whichever hook did get written.
     try:
+        install_scope_hook(workspace_path, allowed)
+        # Same lifecycle as the scope guard: rejects the AI's own commits when
+        # its `Conflicts Resolved:` notes blow the per-file budget, and is gone
+        # before review.amend_commit_with_summary() appends the change summary.
+        install_notes_hook(workspace_path)
+        warn_if_hooks_disabled(workspace_path)
         print(f"\n=== Allowed files for this session ({len(allowed)}) ===")
         for f in sorted(allowed):
             print(f"  {f}")
