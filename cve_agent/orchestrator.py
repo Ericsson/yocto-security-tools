@@ -136,6 +136,30 @@ def _read_escalation(workspace_path: Path) -> Optional[_Escalation]:
     return None
 
 
+def _clear_conclusion(workspace_path: Path) -> None:
+    """Delete any ``conclusion.json`` left over from a previous attempt.
+
+    ``conclusion.json`` lives in the persistent agent dir, which survives
+    across resolution attempts within a single CVE run. Both
+    :func:`_read_conclusion` and :func:`_read_escalation` read it *after* a
+    session to learn that session's verdict. If an earlier attempt wrote a
+    ``needs_human`` (or ``not_applicable``) verdict and a later attempt then
+    *resolves* the conflict without writing a fresh conclusion, the stale file
+    would be misread as the new session's verdict — discarding a good
+    resolution and reporting the CVE as escalated (or skipped). Clearing it
+    before each session guarantees the orchestrator only ever observes the
+    verdict of the session that just ran.
+    """
+    try:
+        conclusion_file = get_agent_dir(workspace_path) / 'conclusion.json'
+        conclusion_file.unlink()
+    except (FileNotFoundError, OSError):
+        # FileNotFoundError: nothing to clear. OSError also covers a
+        # non-resolvable agent dir (e.g. get_agent_dir's mkdir failing in
+        # synthetic unit-test paths) — clearing is best-effort, so ignore it.
+        pass
+
+
 def _original_fix_url(cve_info: dict) -> Optional[str]:
     """Return the first fix-commit URL from the CVE metadata, if any.
 
@@ -333,6 +357,10 @@ def _run_single_resolution_attempt(
         cve_info: dict, knowledge_base: Optional[KnowledgeBase],
         attempt: int, start_time: float) -> _AttemptOutcome:
     """Execute one resolution attempt: context -> session -> approval -> continue."""
+    # Discard any conclusion.json from a previous attempt so the reads below
+    # reflect only this session's verdict — a stale needs_human/not_applicable
+    # file would otherwise override a resolution this attempt actually makes.
+    _clear_conclusion(workspace_path)
     print("Building AI context (upstream diffs, knowledge, conflict details)...")
     context_file = build_context(
         workspace_path, exit_code, config.cve_id, cve_info, knowledge_base,
