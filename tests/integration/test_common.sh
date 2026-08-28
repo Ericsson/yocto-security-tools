@@ -157,11 +157,14 @@ compare_patches_detailed() {
     local diff_file="${log_dir}/${cve_id}_differences.txt"
 
     # Original patches saved by remove_cve_patch as {mode}_{cve_id}_{filename}
-    # Exclude agent-generated copies ({mode}_agent_{cve_id}_{filename})
+    # Exclude agent-generated copies ({mode}_agent_{cve_id}_{filename}) and the
+    # benchmark's per-model generated archives (generated_{cve_id}_{model}_...),
+    # which live in the same results dir and would otherwise be mistaken for a
+    # reference patch on a later model's comparison.
     local -a old_patches=()
     while IFS= read -r -d '' f; do
         old_patches+=("$f")
-    done < <(find "$log_dir" -maxdepth 1 -name "*${cve_id}_*.patch" ! -name "*_diff.patch" ! -name "*_agent_*" -print0 2>/dev/null)
+    done < <(find "$log_dir" -maxdepth 1 -name "*${cve_id}_*.patch" ! -name "*_diff.patch" ! -name "*_agent_*" ! -name "generated_*" -print0 2>/dev/null)
 
     # Generated patches in the OE tree
     local -a new_patches=()
