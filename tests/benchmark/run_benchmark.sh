@@ -80,8 +80,8 @@ usage() {
     cat <<'EOF'
 Usage: run_benchmark.sh [options]
 
-The benchmark always runs the fixed 8-CVE roster in benchmark-roster.json
-(1 easy, 1 medium, 6 hard) -- committed, not regenerated, so every run tests
+The benchmark always runs the fixed 7-CVE roster in benchmark-roster.json
+(1 medium, 6 hard) -- committed, not regenerated, so every run tests
 the exact same CVEs. See tests/benchmark/README.md to change the roster.
 
   --retier            Re-probe the 8 roster CVEs with cve-corrector only (no
@@ -108,7 +108,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --retier) RETIER=true ;;
-        --full) die "--full was removed: the benchmark now always runs the fixed 8-CVE roster (see --help)" ;;
+        --full) die "--full was removed: the benchmark now always runs the fixed 7-CVE roster (see --help)" ;;
         --dry-run) DRY_RUN=true ;;
         --skip-judge) SKIP_JUDGE=true ;;
         --models)
@@ -232,7 +232,7 @@ fi
 
 
 # ── Fixed roster: re-verify (optional) then read ────────────────────────────
-# The 8 CVEs in benchmark-roster.json are the entire candidate pool -- always
+# The 7 CVEs in benchmark-roster.json are the entire candidate pool -- always
 # the same CVEs, every run. --retier re-probes them with cve-corrector only
 # (no AI cost) to refresh their recorded stats; it never changes which CVEs
 # are in the roster.

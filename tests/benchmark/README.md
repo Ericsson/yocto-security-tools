@@ -37,8 +37,8 @@ export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
 
 ## Running
 
-The benchmark always runs the fixed 8-CVE roster in `benchmark-roster.json`
-(1 easy, 1 medium, 6 hard) — committed, not regenerated — so every run tests
+The benchmark always runs the fixed 7-CVE roster in `benchmark-roster.json`
+(1 medium, 6 hard) — committed, not regenerated — so every run tests
 the exact same CVEs regardless of environment or when it's run. See
 [Fixed roster](#fixed-roster) below for what's in it and how to change it.
 
@@ -87,7 +87,7 @@ the exact same CVEs regardless of environment or when it's run. See
 | `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present |
 
 `--full` was removed along with dynamic per-tier candidate selection — the
-roster is a fixed 8 CVEs, so there is no "per tier count" left to inflate.
+roster is a fixed 7 CVEs, so there is no "per tier count" left to inflate.
 Passing `--full` now fails with an explanation instead of silently doing
 something unexpected.
 
@@ -180,17 +180,25 @@ Committed at `tests/benchmark/benchmark-roster.json` — the entire, fixed
 candidate pool. Every benchmark run reads exactly these CVEs; there is no
 regenerable cache or candidate probing involved in normal use.
 
+Every entry's `tier`/`exit_code`/`diff_lines`/`series_len`/`conflict_markers`
+is real measured data, not an estimate: captured from a live `cve-corrector`
+probe against openembedded-core (scarthgap), plus the historical bulk run in
+`tests/integration/test-results/bulk_20260626_081658/`. Refresh it with
+`--retier`, which re-probes without any AI cost. Note that `--retier`
+rewrites the file with `json.dump(sort_keys=True)`, so the entries come back
+alphabetized regardless of how they were ordered before.
+
 `conflict_markers` (count of git's `CONFLICT (content):` marker from the
 probe log; `0` for a clean or non-content-conflict failure, e.g. a merge
 commit the corrector's cherry-pick strategy can't handle) is a rough
 difficulty signal used only when this roster was assembled, to spread the
-`hard` entries across the real complexity range (`0` to `52` in the current
+`hard` entries across the real complexity range (`0` to `45` in the current
 roster) instead of picking several CVEs that all happen to be similarly
 easy or all similarly brutal.
 
 #### Fixed roster
 
-The current 8 CVEs, and why each was picked (see `bench_lib.is_mirror_gap_only`
+The current 7 CVEs, and why each was picked (see `bench_lib.is_mirror_gap_only`
 / `count_conflict_markers` / `score_tier` for how the underlying signals are
 computed):
 
