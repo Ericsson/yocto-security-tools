@@ -17,10 +17,12 @@ from tests.benchmark.bench_lib import (
     is_mirror_gap_only,
     judge_diff,
     observed_avg_credits,
+    ordered_roster_cases,
     project_remaining_cost,
     relative_cost_weight,
     resolve_models,
     score_tier,
+    select_cases,
     total_spent,
 )
 
@@ -154,6 +156,74 @@ class TestIsAgentEnvFailure:
 
     def test_empty_log_is_not_env_failure(self):
         assert is_agent_env_failure('') is False
+
+
+# A roster shaped like benchmark-roster.json: unordered keys, a _comment
+# meta key, and the same easy/medium/hard tiers the shell iterates.
+_ROSTER = {
+    "_comment": "meta, must be ignored",
+    "CVE-2025-1153": {"tier": "hard", "recipe": "binutils"},
+    "CVE-2025-4373": {"tier": "easy", "recipe": "glib-2.0"},
+    "CVE-2024-32487": {"tier": "hard", "recipe": "less"},
+    "CVE-2026-0990": {"tier": "medium", "recipe": "libxml2"},
+    "CVE-2024-6345": {"tier": "hard", "recipe": "python3-setuptools"},
+}
+
+
+class TestOrderedRosterCases:
+    def test_order_is_tier_then_alpha_and_comment_ignored(self):
+        cases = ordered_roster_cases(_ROSTER)
+        assert [(c["case"], c["cve_id"]) for c in cases] == [
+            (1, "CVE-2025-4373"),   # easy
+            (2, "CVE-2026-0990"),   # medium
+            (3, "CVE-2024-32487"),  # hard, alphabetical
+            (4, "CVE-2024-6345"),
+            (5, "CVE-2025-1153"),
+        ]
+
+    def test_entries_carry_tier_and_recipe(self):
+        first = ordered_roster_cases(_ROSTER)[0]
+        assert first == {"case": 1, "cve_id": "CVE-2025-4373",
+                         "tier": "easy", "recipe": "glib-2.0"}
+
+    def test_unknown_tier_appended_last_not_dropped(self):
+        roster = dict(_ROSTER)
+        roster["CVE-2030-0001"] = {"tier": "weird", "recipe": "z-recipe"}
+        cases = ordered_roster_cases(roster)
+        # nothing dropped, and the unknown tier lands after the known ones
+        assert len(cases) == 6
+        assert cases[-1]["cve_id"] == "CVE-2030-0001"
+
+    def test_numbering_is_contiguous_from_one(self):
+        cases = ordered_roster_cases(_ROSTER)
+        assert [c["case"] for c in cases] == list(range(1, len(cases) + 1))
+
+
+class TestSelectCases:
+    def test_selects_in_canonical_order_regardless_of_arg_order(self):
+        cases = ordered_roster_cases(_ROSTER)
+        sel = select_cases(cases, [3, 1])
+        assert [c["cve_id"] for c in sel] == ["CVE-2025-4373", "CVE-2024-32487"]
+
+    def test_deduplicates(self):
+        cases = ordered_roster_cases(_ROSTER)
+        sel = select_cases(cases, [2, 2, 2])
+        assert [c["cve_id"] for c in sel] == ["CVE-2026-0990"]
+
+    def test_empty_indices_raises(self):
+        cases = ordered_roster_cases(_ROSTER)
+        with pytest.raises(ValueError, match="No case numbers"):
+            select_cases(cases, [])
+
+    def test_out_of_range_low_raises(self):
+        cases = ordered_roster_cases(_ROSTER)
+        with pytest.raises(ValueError, match="out of range"):
+            select_cases(cases, [0])
+
+    def test_out_of_range_high_raises_and_lists_bad_values(self):
+        cases = ordered_roster_cases(_ROSTER)  # len 5
+        with pytest.raises(ValueError, match=r"6, 9"):
+            select_cases(cases, [1, 6, 9])
 
 
 class TestClassifyDiffBucket:
