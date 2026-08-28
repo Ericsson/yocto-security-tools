@@ -13,6 +13,7 @@ from tests.benchmark.bench_lib import (
     count_conflict_markers,
     count_tool_calls,
     filter_for_judging,
+    is_agent_env_failure,
     is_mirror_gap_only,
     judge_diff,
     observed_avg_credits,
@@ -107,6 +108,52 @@ class TestCountConflictMarkers:
 
     def test_empty_log_is_zero(self):
         assert count_conflict_markers('') == 0
+
+
+class TestIsAgentEnvFailure:
+    def test_kiro_cli_not_found_on_path(self):
+        # cve_agent/setup.py ensure_agents() when kiro-cli is missing.
+        log_text = (
+            "Error: kiro-cli not found on PATH.\n"
+            "Install it from: https://kiro.dev/docs/install\n"
+        )
+        assert is_agent_env_failure(log_text) is True
+
+    def test_kiro_cli_not_found_at_session_start(self):
+        # cve_agent/kiro_backend.py run_session()'s FileNotFoundError branch.
+        log_text = "kiro-cli not found. Install it or add to PATH.\n"
+        assert is_agent_env_failure(log_text) is True
+
+    def test_backend_prerequisites_not_met(self):
+        # cve_agent/__main__.py non-kiro backend availability check.
+        log_text = (
+            "Error: backend 'claude' prerequisites not met — "
+            "is the required CLI installed and on PATH?\n"
+        )
+        assert is_agent_env_failure(log_text) is True
+
+    def test_failed_to_install_agents(self):
+        log_text = "Error: Failed to install agents.\n"
+        assert is_agent_env_failure(log_text) is True
+
+    def test_failed_to_refresh_installed_agents(self):
+        log_text = "Error: Failed to refresh installed agents.\n"
+        assert is_agent_env_failure(log_text) is True
+
+    def test_case_insensitive(self):
+        assert is_agent_env_failure("KIRO-CLI NOT FOUND on path") is True
+
+    def test_genuine_conflict_is_not_env_failure(self):
+        # A real per-CVE conflict must NOT be mistaken for an env failure,
+        # otherwise the benchmark would abort on the first hard CVE.
+        log_text = (
+            "CONFLICT (content): Merge conflict in src/foo.c\n"
+            "Conflict detected\n"
+        )
+        assert is_agent_env_failure(log_text) is False
+
+    def test_empty_log_is_not_env_failure(self):
+        assert is_agent_env_failure('') is False
 
 
 class TestClassifyDiffBucket:
