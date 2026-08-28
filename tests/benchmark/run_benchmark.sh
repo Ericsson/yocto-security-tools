@@ -217,14 +217,16 @@ LOG_DIR="$RESULTS_DIR"  # test_common.sh's remove_cve_patch()/compare_patches_de
 AGENT_CSV="${RESULTS_DIR}/agent_results.csv"
 JUDGE_CSV="${RESULTS_DIR}/judge_results.csv"
 [[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
-JUDGE_HEADER="cve_id,model,judgment,judge_credits,scope"
+JUDGE_HEADER="cve_id,model,judgment,reason,judge_credits,scope"
 if [[ ! -f "$JUDGE_CSV" ]]; then
     echo "$JUDGE_HEADER" > "$JUDGE_CSV"
 elif [[ "$(head -n1 "$JUDGE_CSV")" != "$JUDGE_HEADER" && "$(wc -l < "$JUDGE_CSV")" -le 1 ]]; then
-    # --resume of a results dir created before the 'scope' column was added:
-    # the judge CSV holds only an outdated header (no data rows yet), so upgrade
-    # it in place. This avoids appending 5-field rows under a 4-field header.
-    # A file that already has data rows is left untouched to preserve results.
+    # --resume of a results dir created before the 'scope'/'reason' columns
+    # were added: the judge CSV holds only an outdated header (no data rows
+    # yet), so upgrade it in place. This avoids appending 6-field rows under a
+    # 4- or 5-field header. A file that already has data rows is left untouched
+    # to preserve results; those older rows keep their own column set, and
+    # csv.DictReader gives the missing keys as None.
     echo "$JUDGE_HEADER" > "$JUDGE_CSV"
 fi
 
@@ -591,27 +593,37 @@ for row in filter_for_judging(agent_rows, judge_rows):
             # distinct 'structural-only' verdict (no judge call) rather than
             # leaving the row unjudged — so the report doesn't conflate it with
             # a genuinely pending row, and a resume won't re-scope it.
-            result=$(python3 -c "
+            #
+            # judge_diff also drops comment-only changes and answers
+            # 'comment-only' by itself when nothing else is left, so a reworded
+            # comment never costs a model call.
+            #
+            # The row is written by csv.writer, not echo: the judge's reason is
+            # free-form prose containing commas and quotes.
+            scope="full"
+            [[ "$bucket" == "partial" ]] && scope="partial"
+            # stdout carries exactly two lines: the CSV row, then a short
+            # human-readable summary for the console log.
+            payload=$(python3 -c "
+import csv, io
 from tests.benchmark.bench_lib import judge_diff, scope_diff_to_common_files
 with open('${diff_patch}', encoding='utf-8', errors='replace') as f:
     diff_text = f.read()
 if '${bucket}' == 'partial':
     diff_text = scope_diff_to_common_files(diff_text)
 if not diff_text.strip():
-    print('structural-only,')
+    judgment, reason, credits = 'structural-only', 'Shared files are identical; only the set of touched files differs.', None
 else:
-    judgment, credits = judge_diff(diff_text, model='${JUDGE_MODEL}')
-    print(f'{judgment},{\"\" if credits is None else credits}')
+    judgment, reason, credits = judge_diff(diff_text, model='${JUDGE_MODEL}')
+buf = io.StringIO()
+csv.writer(buf, lineterminator='').writerow(
+    ['${cve_id}', '${model}', judgment, reason,
+     '' if credits is None else credits, '${scope}'])
+print(buf.getvalue())
+print(f'{judgment} (scope=${scope}) -- {reason}'.replace(chr(10), ' '))
 ")
-            # Record whether the verdict covers the whole patch or only the
-            # shared files of a partial overlap, so judge_results.csv is
-            # self-describing without cross-referencing agent_results.csv.
-            # (No 'local' here: the judge phase runs at top level, not in a
-            # function.)
-            scope="full"
-            [[ "$bucket" == "partial" ]] && scope="partial"
-            echo "${cve_id},${model},${result},${scope}" >> "$JUDGE_CSV"
-            log "    -> ${result} (scope=${scope})"
+            printf '%s\n' "$(printf '%s' "$payload" | head -n1)" >> "$JUDGE_CSV"
+            log "    -> $(printf '%s' "$payload" | tail -n1)"
         done <<< "$to_judge"
     fi
 fi

@@ -123,14 +123,17 @@ def generate_report(results_dir: Path) -> str:
     lines.append(
         "_Structural-only: a `partial` fileset overlap whose shared files were "
         "identical, so only the set of touched files differed — not sent to "
-        "the judge._"
+        "the judge. Comment-only: every remaining changed line was a comment, "
+        "so the code is equivalent — also not sent to the judge._"
     )
     lines.append("")
-    lines.append("| Model | Meaningful | Stylistic | Structural-only | Not Yet Judged |")
-    lines.append("|-------|------------|-----------|-----------------|-----------------|")
+    lines.append("| Model | Meaningful | Stylistic | Comment-only | Structural-only "
+                 "| Not Yet Judged |")
+    lines.append("|-------|------------|-----------|--------------|-----------------"
+                 "|-----------------|")
     for model in sorted(by_model):
         model_judged = [row for row in judged_subset if row["model"] == model]
-        meaningful = stylistic = structural_only = not_judged = 0
+        meaningful = stylistic = comment_only = structural_only = not_judged = 0
         for row in model_judged:
             key = (row["cve_id"], row["model"])
             judge_row = judge_by_key.get(key)
@@ -140,6 +143,8 @@ def generate_report(results_dir: Path) -> str:
                 meaningful += 1
             elif judge_row.get("judgment") == "stylistic":
                 stylistic += 1
+            elif judge_row.get("judgment") == "comment-only":
+                comment_only += 1
             elif judge_row.get("judgment") == "structural-only":
                 structural_only += 1
             else:
@@ -147,10 +152,29 @@ def generate_report(results_dir: Path) -> str:
         if not model_judged:
             continue
         lines.append(
-            f"| {model} | {meaningful} | {stylistic} | {structural_only} "
-            f"| {not_judged} |"
+            f"| {model} | {meaningful} | {stylistic} | {comment_only} "
+            f"| {structural_only} | {not_judged} |"
         )
     lines.append("")
+
+    # --- Per-verdict reasoning ------------------------------------------------
+    # The judge's own justification, so a verdict can be sanity-checked without
+    # opening the diff. Older results dirs have no 'reason' column; skip the
+    # section entirely rather than printing a table of blanks.
+    reasoned = [row for row in judge_rows if (row.get("reason") or "").strip()]
+    if reasoned:
+        lines.append("## Judge Reasoning")
+        lines.append("")
+        lines.append("| CVE | Model | Verdict | Reason |")
+        lines.append("|-----|-------|---------|--------|")
+        for row in sorted(reasoned, key=lambda r: (r["cve_id"], r["model"])):
+            # '|' would break the markdown table; the reason is free-form prose.
+            reason = row["reason"].replace("|", "\\|")
+            lines.append(
+                f"| {row['cve_id']} | {row['model']} | {row.get('judgment', '')} "
+                f"| {reason} |"
+            )
+        lines.append("")
 
     return "\n".join(lines)
 

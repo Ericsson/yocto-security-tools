@@ -522,6 +522,15 @@ JUDGEABLE_BUCKETS = ('moderate', 'major', 'partial')
 
 _JUDGMENT_RE = re.compile(r'\b(MEANINGFUL|STYLISTIC)\b', re.IGNORECASE)
 
+# Upper bound on the judge's stored justification. Long enough for the two
+# sentences the prompt asks for, short enough that judge_results.csv stays
+# readable in a terminal.
+JUDGE_REASON_MAX_CHARS = 300
+
+# kiro-cli appends a usage/credits footer to its response; it is not part of
+# the judge's reasoning and must not leak into the stored reason.
+_CREDITS_FOOTER_RE = re.compile(r'credits?\s*(used|remaining|:)', re.IGNORECASE)
+
 # Unified-diff hunk header: '@@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@'.
 # A missing length field means 1 (git/difflib convention).
 _HUNK_RE = re.compile(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@')
@@ -614,6 +623,184 @@ def count_diff_changed_lines(diff_text: str) -> int:
     return n
 
 
+# --- Comment-only change filtering -----------------------------------------
+
+# Extensions whose comments are '//', '/* ... */' (and continuation lines
+# starting with '*' inside a block comment).
+_C_LIKE_SUFFIXES = (
+    '.c', '.h', '.cc', '.cpp', '.cxx', '.hh', '.hpp', '.hxx', '.m',
+    '.java', '.js', '.ts', '.go', '.rs', '.cs', '.php', '.swift', '.kt',
+    '.scala', '.d', '.dts', '.dtsi',
+)
+
+# Extensions whose comments start with '#'. Deliberately excludes C-like
+# files, where '#if'/'#include'/'#define' are preprocessor directives whose
+# change is very much meaningful.
+_HASH_SUFFIXES = (
+    '.sh', '.bash', '.py', '.pl', '.rb', '.mk', '.am', '.ac', '.m4',
+    '.cmake', '.yaml', '.yml', '.toml', '.cfg', '.conf', '.bb', '.bbappend',
+    '.bbclass', '.inc', '.service', '.spec',
+)
+
+_HASH_FILENAMES = ('makefile', 'makefile.am', 'makefile.in', 'cmakelists.txt',
+                   'dockerfile', 'kconfig')
+
+
+def _comment_styles_for(path: str) -> tuple[bool, bool]:
+    """Pick the comment syntaxes that apply to ``path``.
+
+    Args:
+        path: A file path from a unified-diff header (prefixes already
+            stripped, or not — only the basename/suffix is inspected).
+
+    Returns:
+        ``(c_like, hash_style)``. An unrecognized extension gets ``c_like``
+        only: assuming ``#`` is a comment there risks silently ignoring a
+        preprocessor-directive change, which is the more damaging mistake.
+    """
+    name = path.rsplit('/', 1)[-1].lower()
+    if name in _HASH_FILENAMES:
+        return False, True
+    if name.endswith(_HASH_SUFFIXES):
+        return False, True
+    if name.endswith(_C_LIKE_SUFFIXES):
+        return True, False
+    return True, False
+
+
+def _code_outside_comments(content: str, in_block: bool) -> tuple[str, bool]:
+    """Strip C-style comments from one line, carrying block state across lines.
+
+    Args:
+        content: The line's content (the diff's ``+``/``-``/`` `` marker
+            already removed).
+        in_block: Whether the line starts inside a ``/* ... */`` block.
+
+    Returns:
+        ``(code, in_block_after)`` where ``code`` is what remains once
+        comments are removed. String literals are not tracked, so a ``/*``
+        inside a quoted string is misread as a comment start — the cost is a
+        line being treated as comment-only when it is not, which is why
+        callers only ever *skip* such lines rather than acting on them.
+    """
+    code = []
+    i = 0
+    n = len(content)
+    while i < n:
+        if in_block:
+            end = content.find('*/', i)
+            if end == -1:
+                return ''.join(code), True
+            i = end + 2
+            in_block = False
+            continue
+        if content.startswith('//', i):
+            break
+        if content.startswith('/*', i):
+            in_block = True
+            i += 2
+            continue
+        code.append(content[i])
+        i += 1
+    return ''.join(code), in_block
+
+
+def strip_comment_only_changes(diff_text: str) -> str:
+    """Drop changed lines that only add/remove a comment.
+
+    A backport that rewords, drops, or adds a comment relative to the
+    reference patch has not changed what the code does, so those lines are
+    noise for the judge — and a diff made up entirely of them used to be
+    classified as a genuine divergence. Context lines, hunk headers, and file
+    headers are preserved so the surviving delta stays readable; hunk line
+    counts are intentionally *not* recomputed, since the result is fed to a
+    model for reading, not to ``patch``.
+
+    Block-comment state is tracked separately for the two sides of the diff
+    (removed lines and context belong to the old side, added lines and context
+    to the new one), so a line inside a ``/* ... */`` block is recognized
+    without resorting to a "starts with ``*``" guess — which would misread
+    C pointer code such as ``*p++ = *s++;``. Blank changed lines are kept:
+    they are whitespace, not comments. The comment syntax is chosen per file
+    from the header preceding each block (see :func:`_comment_styles_for`).
+
+    Args:
+        diff_text: A unified diff.
+
+    Returns:
+        The diff with comment-only ``+``/``-`` lines removed.
+    """
+    kept: list[str] = []
+    c_like, hash_style = True, False
+    in_block_old = in_block_new = False
+
+    for line in diff_text.splitlines():
+        if line.startswith(('--- ', '+++ ')):
+            c_like, hash_style = _comment_styles_for(
+                line.split(' ', 1)[1].split('\t')[0].strip()
+                if ' ' in line else '')
+            in_block_old = in_block_new = False
+            kept.append(line)
+            continue
+        if line.startswith(('diff -u ', 'diff --git ')):
+            parts = line.split()
+            if len(parts) >= 4:
+                c_like, hash_style = _comment_styles_for(parts[3])
+            in_block_old = in_block_new = False
+            kept.append(line)
+            continue
+        if line.startswith('@@'):
+            # Hunks are not contiguous, so a block comment cannot be assumed
+            # to span the gap between them.
+            in_block_old = in_block_new = False
+            kept.append(line)
+            continue
+
+        if not line.startswith(('+', '-', ' ')):
+            kept.append(line)
+            continue
+
+        marker, content = line[0], line[1:]
+        if hash_style:
+            # Only a full-line '#' comment counts: splitting on a bare '#'
+            # would misread a '#' inside a shell or Python string literal.
+            if marker in '+-' and content.strip().startswith('#'):
+                continue
+            kept.append(line)
+            continue
+        if not c_like:
+            kept.append(line)
+            continue
+
+        if marker == '-':
+            code, in_block_old = _code_outside_comments(content, in_block_old)
+        elif marker == '+':
+            code, in_block_new = _code_outside_comments(content, in_block_new)
+        else:
+            # A context line exists on both sides, so advance both states —
+            # they can differ when one side opened a block the other did not.
+            code, in_block_old = _code_outside_comments(content, in_block_old)
+            _, in_block_new = _code_outside_comments(content, in_block_new)
+
+        if marker in '+-' and content.strip() and not code.strip():
+            continue
+        kept.append(line)
+
+    return '\n'.join(kept) + ('\n' if diff_text.endswith('\n') else '')
+
+
+def has_substantive_changes(diff_text: str) -> bool:
+    """Whether a diff still changes code once comment-only lines are ignored.
+
+    Args:
+        diff_text: A unified diff.
+
+    Returns:
+        ``True`` when at least one non-comment ``+``/``-`` line remains.
+    """
+    return count_diff_changed_lines(strip_comment_only_changes(diff_text)) > 0
+
+
 def filter_for_judging(agent_rows: list[dict],
                         judge_rows: list[dict]) -> list[dict]:
     """Select agent_results.csv rows that still need a judge verdict.
@@ -638,12 +825,17 @@ def filter_for_judging(agent_rows: list[dict],
 
 
 def judge_diff(diff_text: str,
-                model: str = 'claude-opus-4.8') -> tuple[str, float | None]:
+                model: str = 'claude-opus-4.8') -> tuple[str, str, float | None]:
     """Ask a fixed judge model whether a diff is meaningful or stylistic-only.
 
     Invokes a one-shot, non-interactive ``kiro-cli chat`` call with a compact
     classification prompt. No agent config is needed — a bare model
     classification prompt works without ``--agent``.
+
+    Comment-only changes are removed from the diff before it is sent (see
+    :func:`strip_comment_only_changes`): a reworded or dropped comment is not
+    a behavioral difference. When nothing but comment changes remain, the
+    verdict is ``'comment-only'`` and no model call is made at all.
 
     Args:
         diff_text: The unified diff to classify (backport vs. reference
@@ -654,12 +846,22 @@ def judge_diff(diff_text: str,
             deliberately not part of the roster being benchmarked.
 
     Returns:
-        A ``(judgment, judge_credits)`` tuple. ``judgment`` is
-        ``'meaningful'`` or ``'stylistic'``; defaults to ``'meaningful'``
-        (the more conservative reading) if the response has neither keyword.
-        ``judge_credits`` is the parsed credits figure, or ``None`` if not
-        present in the response.
+        A ``(judgment, reason, judge_credits)`` tuple. ``judgment`` is
+        ``'meaningful'``, ``'stylistic'``, or ``'comment-only'``; it defaults
+        to ``'meaningful'`` (the more conservative reading) if the response
+        has neither keyword. ``reason`` is the judge's own one-or-two-sentence
+        justification, flattened to a single line and truncated to
+        :data:`JUDGE_REASON_MAX_CHARS`; it is ``''`` when the model offered
+        none. ``judge_credits`` is the parsed credits figure, or ``None`` if
+        not present in the response (and always ``None`` when no call was
+        made).
     """
+    code_diff = strip_comment_only_changes(diff_text)
+    if count_diff_changed_lines(code_diff) == 0:
+        return ('comment-only',
+                'Only comment lines differ; the code changes are identical.',
+                None)
+
     prompt = (
         "You are classifying a unified diff between two CVE backport "
         "patches (an AI-generated backport vs. a human reference backport "
@@ -668,9 +870,13 @@ def judge_diff(diff_text: str,
         "conditions, a different fix approach) or STYLISTIC (whitespace, "
         "variable renames, comment wording, or equivalent logic expressed "
         "differently, with no behavior change).\n\n"
+        "Ignore comment-only differences entirely: a reworded, added, or "
+        "dropped comment is never MEANINGFUL on its own.\n\n"
         "Answer with exactly one word, MEANINGFUL or STYLISTIC, on the "
-        "first line. Nothing else on that line.\n\n"
-        f"--- DIFF ---\n{diff_text}\n--- END DIFF ---"
+        "first line. Nothing else on that line. Then, on the following "
+        "line, give one or two sentences naming the specific construct that "
+        "drove your decision.\n\n"
+        f"--- DIFF ---\n{code_diff}\n--- END DIFF ---"
     )
     result = subprocess.run(
         ['kiro-cli', 'chat', '--model', model, '--no-interactive', prompt],
@@ -679,5 +885,43 @@ def judge_diff(diff_text: str,
     output = strip_ansi(result.stdout or '')
     match = _JUDGMENT_RE.search(output)
     judgment = match.group(1).lower() if match else 'meaningful'
+    reason = _extract_judge_reason(output, match.end() if match else 0)
     credits = parse_kiro_credits(output)
-    return judgment, credits
+    return judgment, reason, credits
+
+
+def _extract_judge_reason(output: str, verdict_end: int) -> str:
+    """Pull the justification that follows the judge's verdict keyword.
+
+    Args:
+        output: The judge's full (ANSI-stripped) response.
+        verdict_end: Offset just past the matched verdict keyword, so the
+            keyword itself is not repeated in the reason. ``0`` when no
+            keyword matched, in which case the whole response is considered.
+
+    Returns:
+        The first one or two sentences after the verdict, flattened to a
+        single line and truncated to :data:`JUDGE_REASON_MAX_CHARS`. Empty
+        when the judge gave no prose. Credit/usage footers that ``kiro-cli``
+        appends are dropped.
+    """
+    tail = output[verdict_end:]
+    lines = []
+    for raw in tail.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _CREDITS_FOOTER_RE.search(line):
+            break
+        lines.append(line)
+    text = ' '.join(lines).strip()
+    if not text:
+        return ''
+    # Split only on a period followed by whitespace. Splitting on '!' or '?'
+    # too would cut C identifiers apart ('!S_ISLNK', '!=', '?:'), and a period
+    # with no following space keeps filenames like 'tar.c' intact.
+    sentences = re.split(r'(?<=\.)\s+', text)
+    reason = ' '.join(s.strip() for s in sentences[:2]).strip()
+    if len(reason) > JUDGE_REASON_MAX_CHARS:
+        reason = reason[:JUDGE_REASON_MAX_CHARS - 1].rstrip() + '…'
+    return reason

@@ -6,7 +6,7 @@ from pathlib import Path
 from tests.benchmark.generate_benchmark_report import generate_report
 
 AGENT_HEADER = "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines"
-JUDGE_HEADER = "cve_id,model,judgment,judge_credits"
+JUDGE_HEADER = "cve_id,model,judgment,reason,judge_credits,scope"
 
 
 def _write_agent_csv(results_dir: Path, rows: list[str]) -> None:
@@ -67,16 +67,16 @@ class TestGenerateReport:
             "CVE-4,hard,model-a,0,1.0,10,3,partial,46",
         ])
         _write_judge_csv(tmp_path, [
-            "CVE-1,model-a,meaningful,0.1",
-            "CVE-2,model-a,stylistic,0.1",
-            "CVE-4,model-a,meaningful,0.1",
+            "CVE-1,model-a,meaningful,Different bounds check.,0.1,full",
+            "CVE-2,model-a,stylistic,Variable rename only.,0.1,full",
+            "CVE-4,model-a,meaningful,Extra S_ISLNK guard.,0.1,partial",
         ])
         report = generate_report(tmp_path)
 
         assert "## Meaningful vs Stylistic (Judged Moderate/Major/Partial Diffs)" in report
-        # meaningful=2 (CVE-1, CVE-4), stylistic=1 (CVE-2), structural-only=0,
-        # not-yet-judged=1 (CVE-3)
-        assert "| model-a | 2 | 1 | 0 | 1 |" in report
+        # meaningful=2 (CVE-1, CVE-4), stylistic=1 (CVE-2), comment-only=0,
+        # structural-only=0, not-yet-judged=1 (CVE-3)
+        assert "| model-a | 2 | 1 | 0 | 0 | 1 |" in report
 
     def test_structural_only_partial_counted_separately(self, tmp_path):
         # A 'partial' row whose shared files were identical is recorded as
@@ -87,13 +87,27 @@ class TestGenerateReport:
             "CVE-2,hard,model-a,0,1.0,10,3,major,80",
         ])
         _write_judge_csv(tmp_path, [
-            "CVE-1,model-a,structural-only,",
+            "CVE-1,model-a,structural-only,Shared files are identical.,,partial",
         ])
         report = generate_report(tmp_path)
 
-        # meaningful=0, stylistic=0, structural-only=1 (CVE-1),
+        # meaningful=0, stylistic=0, comment-only=0, structural-only=1 (CVE-1),
         # not-yet-judged=1 (CVE-2, judgeable but no judge row)
-        assert "| model-a | 0 | 0 | 1 | 1 |" in report
+        assert "| model-a | 0 | 0 | 0 | 1 | 1 |" in report
+
+    def test_comment_only_counted_separately(self, tmp_path):
+        # judge_diff answers 'comment-only' without a model call when every
+        # remaining changed line is a comment; that is a pass, not a pending row.
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,1.0,10,3,moderate,12",
+        ])
+        _write_judge_csv(tmp_path, [
+            "CVE-1,model-a,comment-only,Only comment lines differ.,,full",
+        ])
+        report = generate_report(tmp_path)
+
+        assert "| model-a | 0 | 0 | 1 | 0 | 0 |" in report
+        assert "Comment-only" in report
 
     def test_minor_and_identical_excluded_from_judge_split(self, tmp_path):
         _write_agent_csv(tmp_path, [
@@ -120,5 +134,42 @@ class TestGenerateReport:
             "CVE-1,medium,model-a,0,1.0,10,3,moderate,20",
         ])
         report = generate_report(tmp_path)
-        # meaningful=0, stylistic=0, structural-only=0, not-yet-judged=1
-        assert "| model-a | 0 | 0 | 0 | 1 |" in report
+        # meaningful=0, stylistic=0, comment-only=0, structural-only=0,
+        # not-yet-judged=1
+        assert "| model-a | 0 | 0 | 0 | 0 | 1 |" in report
+
+    def test_judge_reasoning_section_lists_verdict_justifications(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,1.0,10,3,major,80",
+        ])
+        _write_judge_csv(tmp_path, [
+            "CVE-1,model-a,meaningful,\"Adds a !S_ISLNK guard, changing which "
+            "links are restored.\",0.1,full",
+        ])
+        report = generate_report(tmp_path)
+
+        assert "## Judge Reasoning" in report
+        assert "Adds a !S_ISLNK guard" in report
+
+    def test_reasoning_section_escapes_pipes(self, tmp_path):
+        # The reason is free-form prose; a bare '|' would break the table.
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,1.0,10,3,major,80",
+        ])
+        _write_judge_csv(tmp_path, [
+            "CVE-1,model-a,meaningful,\"Uses a || instead of &&.\",0.1,full",
+        ])
+        report = generate_report(tmp_path)
+        assert r"\|\|" in report
+
+    def test_no_reasoning_section_for_legacy_rows_without_reason(self, tmp_path):
+        # A results dir judged before the 'reason' column existed must not
+        # render a table of blanks.
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,1.0,10,3,major,80",
+        ])
+        (tmp_path / "judge_results.csv").write_text(
+            "cve_id,model,judgment,judge_credits\nCVE-1,model-a,meaningful,0.1\n"
+        )
+        report = generate_report(tmp_path)
+        assert "## Judge Reasoning" not in report
