@@ -11,6 +11,7 @@ from pathlib import Path
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 from . import AgentConfig, get_agent_dir
+from .commit_notes import DEDUPE_BLOCK_MARKERS
 from .git import (
     get_changed_files,
     merge_diff_flags,
@@ -106,10 +107,11 @@ def build_change_summary(workspace_path: Path, upstream_sha: str) -> str:
     return '\n'.join(lines)
 
 
-_AGENT_NOTE_MARKERS = (
-    'Conflicts Resolved:',
-    '## ', '### Conflicts Resolved',
-)
+# Shared with cve_agent.commit_notes so the note block is located by the same
+# rules everywhere. The dedupe variant is deliberately broader than the budget's
+# marker set: a false positive only collapses a duplicate block, whereas the
+# budget must not charge a stray markdown heading's prose to the AI.
+_AGENT_NOTE_MARKERS = DEDUPE_BLOCK_MARKERS
 
 
 def _dedupe_agent_notes(commit_msg: str) -> str:
