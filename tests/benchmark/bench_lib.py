@@ -102,6 +102,48 @@ def count_conflict_markers(log_text: str) -> int:
     return len(_CONTENT_CONFLICT_RE.findall(log_text))
 
 
+# --- Agent environment-failure detection ------------------------------------
+
+# Markers meaning the AI agent never actually ran because its runtime
+# environment was unusable -- the backend CLI is missing/unauthenticated, or
+# its required agent configs could not be installed. These strings are
+# emitted by cve_agent itself: cve_agent/setup.py's ensure_agents()
+# ("kiro-cli not found on PATH.", "Failed to install agents.",
+# "Failed to refresh installed agents."), cve_agent/__main__.py's non-kiro
+# backend check ("prerequisites not met"), and
+# cve_agent/kiro_backend.py's run_session() ("kiro-cli not found. Install it
+# or add to PATH."). Such a failure is NOT a model-quality signal -- it would
+# recur identically for every model and every CVE -- so the benchmark should
+# abort rather than record a wall of identical failures.
+_AGENT_ENV_FAILURE_RE = re.compile(
+    r"kiro-cli not found"                       # ensure_agents / kiro run_session
+    r"|prerequisites not met"                   # __main__ backend availability check
+    r"|Failed to install agents"                # install_agents() hard failure
+    r"|Failed to refresh installed agents",     # ensure_agents() refresh failure
+    re.IGNORECASE,
+)
+
+
+def is_agent_env_failure(log_text: str) -> bool:
+    """Return True if a run's log shows the AI agent never ran for an
+    environment reason (missing/unusable backend CLI or agent config).
+
+    Distinguishes an unusable benchmark environment -- which would fail
+    identically for every model and every CVE -- from a genuine per-CVE
+    agent failure (a real conflict/build/ptest the model could not resolve).
+    The orchestrator should stop the whole run on the former, but keep going
+    on the latter.
+
+    Args:
+        log_text: Full text of one run's cve-agent log.
+
+    Returns:
+        True if any known agent-environment-failure marker is present;
+        False otherwise (including empty/marker-free logs).
+    """
+    return bool(_AGENT_ENV_FAILURE_RE.search(log_text))
+
+
 # --- Commands-executed metric ------------------------------------------------
 
 # kiro-cli echoes each tool invocation on its own line as it happens, e.g.:
