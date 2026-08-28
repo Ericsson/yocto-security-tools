@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run (no similar-pattern lookups, no pattern saved on success). Useful for
   benchmarking a model's unaided backporting performance.
 - **tests/benchmark**: new cve-agent model benchmark suite — runs cve-agent
-  across a fixed, committed 7-CVE roster (1 easy, 1 medium, 5 hard spread
+  across a fixed, committed 8-CVE roster (1 easy, 1 medium, 6 hard spread
   across real conflict complexity) and a selection of models, then an AI
   judge pass on diffs that came out moderately/majorly different from the
   human reference backport. See `tests/benchmark/README.md`.
