@@ -39,6 +39,9 @@ cve-metadata.json
 # Cache files
 *.json.gz
 
+# Generated chart output (tools/plot_source_distribution.py)
+*.png
+
 # OS
 .DS_Store
 Thumbs.db
