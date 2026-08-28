@@ -10,10 +10,64 @@ from cve_agent.interdiff import (
     _ensure_trailing_newline,
     generate_interdiff,
     generate_interdiff_artifacts,
+    repair_whitespace_damage,
 )
 
 UPSTREAM = "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n"
 BACKPORT = "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new2\n"
+
+
+class TestRepairWhitespaceDamage:
+    """interdiff rejects a patch whose context lines lost their leading space.
+
+    Several patches carried in OE layers are damaged that way (e.g. oe-core's
+    less CVE-2024-32487.patch), which used to make every comparison against
+    them either impossible or pure whitespace noise.
+    """
+
+    def test_wellformed_patch_unchanged(self):
+        assert repair_whitespace_damage(UPSTREAM) == UPSTREAM
+
+    def test_is_idempotent(self):
+        damaged = "@@ -1,3 +1,3 @@\nctx\n-old\n+new\n"
+        once = repair_whitespace_damage(damaged)
+        assert repair_whitespace_damage(once) == once
+
+    def test_restores_space_on_damaged_context_line(self):
+        damaged = "--- a/f.c\n+++ b/f.c\n@@ -1,2 +1,2 @@\n\tctx\n-old\n+new\n"
+        assert repair_whitespace_damage(damaged) == (
+            "--- a/f.c\n+++ b/f.c\n@@ -1,2 +1,2 @@\n \tctx\n-old\n+new\n"
+        )
+
+    def test_restores_space_on_emptied_blank_context_line(self):
+        damaged = "@@ -1,3 +1,3 @@\n ctx\n\n-old\n+new\n"
+        # The blank line is a context line inside the hunk, so it must be
+        # re-prefixed; the empty string after the trailing newline is not.
+        assert repair_whitespace_damage(damaged) == "@@ -1,3 +1,3 @@\n ctx\n \n-old\n+new\n"
+
+    def test_trailing_empty_line_never_prefixed(self):
+        # Deliberately inconsistent counts (claims 9 lines, has 3): the
+        # end-of-file empty string must still be left alone.
+        damaged = "@@ -1,9 +1,9 @@\n ctx\n-old\n+new\n"
+        assert repair_whitespace_damage(damaged).endswith("+new\n")
+
+    def test_leaves_git_signature_alone(self):
+        damaged = "@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n--\n2.40.0\n"
+        assert repair_whitespace_damage(damaged).endswith("--\n2.40.0\n")
+
+    def test_leaves_metadata_between_hunks_alone(self):
+        text = ("@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n"
+                "diff --git a/g.c b/g.c\nindex 1..2 100644\n"
+                "--- a/g.c\n+++ b/g.c\n@@ -1,2 +1,2 @@\n ctx2\n-a\n+b\n")
+        assert repair_whitespace_damage(text) == text
+
+    def test_no_newline_marker_does_not_consume_budget(self):
+        text = "@@ -1,2 +1,2 @@\n ctx\n-old\n\\ No newline at end of file\n+new\n"
+        assert repair_whitespace_damage(text) == text
+
+    def test_hunk_header_without_counts_means_one_line(self):
+        text = "@@ -1 +1 @@\n-old\n+new\nnot a context line\n"
+        assert repair_whitespace_damage(text) == text
 
 
 class TestEnsureTrailingNewline:
@@ -81,6 +135,18 @@ class TestGenerateInterdiff:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = generate_interdiff(UPSTREAM, BACKPORT)
         assert result is None
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    @patch("cve_agent.interdiff.subprocess.run")
+    def test_allow_empty_distinguishes_equivalent_from_failed(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        assert generate_interdiff(UPSTREAM, BACKPORT, allow_empty=True) == ""
+
+    @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
+    @patch("cve_agent.interdiff.subprocess.run")
+    def test_allow_empty_still_none_on_failure(self, mock_run, mock_which):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
+        assert generate_interdiff(UPSTREAM, BACKPORT, allow_empty=True) is None
 
     @patch("cve_agent.interdiff.shutil.which", return_value="/usr/bin/interdiff")
     @patch("cve_agent.interdiff.subprocess.run",
