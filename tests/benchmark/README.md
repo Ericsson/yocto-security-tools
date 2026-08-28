@@ -37,8 +37,8 @@ export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
 
 ## Running
 
-The benchmark always runs the fixed 7-CVE roster in `benchmark-roster.json`
-(1 easy, 1 medium, 5 hard) — committed, not regenerated — so every run tests
+The benchmark always runs the fixed 8-CVE roster in `benchmark-roster.json`
+(1 easy, 1 medium, 6 hard) — committed, not regenerated — so every run tests
 the exact same CVEs regardless of environment or when it's run. See
 [Fixed roster](#fixed-roster) below for what's in it and how to change it.
 
@@ -71,14 +71,14 @@ the exact same CVEs regardless of environment or when it's run. See
 
 | Flag | Effect |
 |------|--------|
-| `--retier` | Re-probes the 7 roster CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in `benchmark-roster.json` in place. Never changes which CVEs are in the roster. |
+| `--retier` | Re-probes the 8 roster CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in `benchmark-roster.json` in place. Never changes which CVEs are in the roster. |
 | `--models <default\|full\|comma-list>` | Model selection for phase 1 (default: `default`) |
 | `--dry-run` | Print the planned run (rows, cost-weight) without invoking cve-agent, without running the judge, and without prompting for confirmation |
 | `--skip-judge` | Phase 2 (the judge pass) does not run at all |
 | `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present |
 
 `--full` was removed along with dynamic per-tier candidate selection — the
-roster is a fixed 7 CVEs, so there is no "per tier count" left to inflate.
+roster is a fixed 8 CVEs, so there is no "per tier count" left to inflate.
 Passing `--full` now fails with an explanation instead of silently doing
 something unexpected.
 
@@ -158,7 +158,7 @@ easy or all similarly brutal.
 
 #### Fixed roster
 
-The current 7 CVEs, and why each was picked (see `bench_lib.is_mirror_gap_only`
+The current 8 CVEs, and why each was picked (see `bench_lib.is_mirror_gap_only`
 / `count_conflict_markers` / `score_tier` for how the underlying signals are
 computed):
 
@@ -171,6 +171,7 @@ computed):
 | `CVE-2025-47183` | hard | gstreamer1.0-plugins-good | 6 | Moderate conflict |
 | `CVE-2025-47203` | hard | dropbear | 12 | Moderate-high conflict |
 | `CVE-2025-1153` | hard | binutils | 52 | Sprawling, multi-file conflict — high end |
+| `CVE-2026-26158` | hard | busybox | 5 | 2-commit dependent series (shared fix with CVE-2026-26157) + genuine conflict, plus a post-apply ptest failure — cheap to rebuild |
 
 **Changing the roster.** Edit `benchmark-roster.json` directly. To pick new
 candidates with real data instead of guessing, use `bench_lib.score_tier` /
