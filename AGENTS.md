@@ -84,7 +84,7 @@ Each tool works independently. Chain via `--cve-info cve-metadata.json`.
 ## CI & Quality Gates
 
 - **Pre-commit**: ruff (lint+format) + mypy
-- **CI matrix**: Python 3.10–3.13 on ubuntu-latest
+- **CI matrix**: Python 3.10–3.14 on ubuntu-latest
 - **Pipeline**: ruff check → mypy → pytest --cov (threshold: 65%)
 - **Ruff rules**: E, F, W, I, UP, B, SIM (line-length 100, E501 ignored)
 - **Mypy config**: check_untyped_defs=true, ignore_missing_imports=true, target py3.10
