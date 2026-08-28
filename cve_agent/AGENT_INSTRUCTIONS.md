@@ -59,6 +59,11 @@ Bash commands you CAN run:
   `git submodule status[ *]` (diagnoses a gitlink recorded upstream that does
   not exist in a tarball-sourced workspace), `cat *`, `head *`, `tail *`,
   `wc *`.
+- Read a file **as committed** rather than as it sits in the working tree:
+  `git show HEAD:<path>` (or `git show <sha>:<path>` for any other commit) —
+  e.g. to see the file exactly as your own resolution committed it, or its
+  pre-conflict content at `original-version`. Use your file-reading tool for
+  the working-tree copy; use this when the committed content is what matters.
 - Stage / unstage: `git add *`, `git rm [--cached] <path>`,
   `git restore --staged <path>`.
 - Take one side of a conflict wholesale: `git checkout --ours <path>`,
