@@ -30,5 +30,12 @@ absent. Then:
   SHA (see "Suggesting a commit for a scope extension"); do not edit those files.
 - **No companion commit, real defect** → fix the code in the allowed files.
 
-Document in the `Conflicts Resolved:` block: which cases failed, the cause, and
-either the code fix or the companion commit you suggested.
+Document in the `Conflicts Resolved:` block, inside the stanza of the file you
+changed: **one bullet** naming either the code fix or the companion commit you
+suggested. If that file had no merge conflict, open its stanza as
+`<file> (0 conflicts):`. Do NOT list the failing cases, do NOT quote pass/fail
+counts, and do NOT narrate the investigation — the per-file budget (3 bullets /
+~40 words, over 48 words is rejected by the `commit-msg` hook) applies to the
+amended block exactly as it does to a fresh one. Amend with
+`git commit --amend -F <file>`, not `--amend --no-edit`, when you change the
+message.

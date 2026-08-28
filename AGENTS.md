@@ -30,6 +30,8 @@
 │   ├── kiro_backend.py          # KiroBackend (drives `kiro-cli`, default)
 │   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
 │   ├── context.py / knowledge.py / review.py
+│   ├── commit_notes.py          # Length budget for the AI's `Conflicts
+│   │                            # Resolved:` notes (commit-msg hook + gate)
 │   ├── AGENT_INSTRUCTIONS.md    # Phase-independent core AI system prompt
 │   └── instructions/           # Per-phase workflow fragments embedded into
 │                               # context.md by exit code (conflict/build/ptest)

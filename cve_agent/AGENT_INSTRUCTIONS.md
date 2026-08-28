@@ -101,6 +101,14 @@ listing the directory first to confirm it exists.
 You may ONLY modify files listed in the **Allowed Files** section of the context header.
 A git pre-commit hook enforces this — commits with unauthorized files will be rejected.
 
+Two hooks guard your commits, and they fail for different reasons — read the
+rejection message before reacting:
+
+| Hook | Rejects when | Fix |
+|---|---|---|
+| `pre-commit` | a staged file is outside **Allowed Files** | unstage it (`git restore --staged <path>`), or escalate — never widen your scope |
+| `commit-msg` | a `Conflicts Resolved:` file stanza is over the length budget | shorten the notes, rewrite the message file, re-run the same command — never `--amend --no-edit` (see **Commit Message Format**) |
+
 **Untracked files from tarball extraction:** The workspace will contain many
 untracked files (configure, Makefile.in, m4/*.m4, aclocal.m4, etc.) copied
 from the devtool branch. These are generated autotools/build files from the
@@ -198,7 +206,8 @@ branch in any form is it a real prerequisite.** Then choose one of:
 **Files not in the baseline**: If the upstream commit adds a NEW file that is
 in the Allowed Files list, include it — `git cherry-pick` will stage it
 automatically. If it conflicts or requires infrastructure not present in the
-stable branch, mention it in the commit message as:
+stable branch, mention it in the commit message with the omitted-file form from
+**Commit Message Format**:
 `<file>: omitted (depends on <missing infrastructure>)`
 
 Only omit a file if including it would break the build or if it depends on
@@ -272,6 +281,9 @@ regardless of what the tool result says.
 - **Exit code non-zero**: the build failed. Read ONLY the error:
   `tail -50 <agent_dir>/build.log`. Fix the code, `git commit --amend
   --no-edit`, and re-run the build.
+  (`--amend --no-edit` is right here — you are fixing *code*, not the message.
+  Never use it to recover from a `commit-msg` note-budget rejection: it
+  resubmits the same rejected message. See **Commit Message Format**.)
   If `devtool build` logs are insufficient, check Yocto task logs at:
   `<yocto_tmp>/work/<arch>/<recipe>/*/temp/log.do_compile`
   (paths are in the context header).
@@ -300,7 +312,8 @@ first. If it already contains a `Conflicts Resolved:` block from a previous
 attempt, **update that existing block in place** — amend it to reflect the
 current state of the resolution — rather than appending a second block. The
 final commit message must contain exactly one `Conflicts Resolved:` block
-and one `Assisted-by:` trailer.
+and one `Assisted-by:` trailer. The length budget below applies to the updated
+block exactly as it does to a fresh one — an amend is re-checked by the hook.
 
 Only append notes if you adapted the patch. Use EXACTLY this markdown format — no
 alternative headers like "Conflict resolution notes:" or "Backport changes:".
@@ -327,13 +340,34 @@ Rules:
   types, APIs, and why the stable branch differs
 - **No duplication**: each fact (what changed, in which function, why) must
   appear exactly once
-- **Be succinct — hard limit**: at most 2–3 lines (~40 words) per file. State
+- **Be succinct — enforced hard limit**: at most 3 bullet points and ~40 words
+  per file. A `commit-msg` hook counts them: more than 3 bullets, or more than
+  48 words, and **your commit is rejected**. Wrapping is not penalised — a
+  bullet that spans several physical lines still counts as one bullet. State
   only the *adaptation*: what changed and the stable-vs-upstream reason. Do NOT
   include the investigation that led you there — no "checked upstream history",
   no "no companion commit exists", no describing how unrelated code paths handle
   the case, no test-run counts or step-by-step narration. If you cherry-picked
-  or suggested a companion commit, name it in one clause.
-- Omitted files: `<file>: omitted (not in branch)`
+  or suggested a companion commit, name it in one clause. The `Commit Note`
+  column of **Common Conflict Patterns** (in the conflict-resolution
+  instructions) shows the target length: one short clause per adaptation.
+- **Every line inside the block must sit under a `<file> (<N> conflict[s]):`
+  header.** Text under no header is charged to the whole block and rejected as
+  `(notes outside any file stanza)`. For a file you changed that had **no merge
+  conflict** — e.g. a build or ptest fix — open its stanza with
+  `<file> (0 conflicts):`.
+- **If the hook rejects your commit**: nothing was lost — the cherry-pick is
+  still in progress and `.git/MERGE_MSG` is untouched. Shorten the notes in
+  `.git/MERGE_MSG` (or in your `-F` message file) with your file-writing tool,
+  then re-run the same command (`git cherry-pick --no-edit --continue`, or
+  `git commit --amend -F <file>`). Do **NOT** run `git commit --amend
+  --no-edit` to recover — it resubmits the identical rejected message and the
+  hook will reject it again, forever. Do **NOT** run `git cherry-pick --abort`
+  or `--skip`, and do not try to bypass the hook.
+- Omitted files: `<file>: omitted (<why>)` — e.g.
+  `<file>: omitted (not in branch)` or
+  `<file>: omitted (depends on <missing infrastructure>)`. These one-liners are
+  exempt from the length budget.
 - Do NOT add a "Changes from upstream" section (the agent generates that)
 - If you adapted the patch (not a verbatim cherry-pick), add a trailer line
   after a blank line at the end of the commit message:

@@ -16,4 +16,7 @@ bitbake -c cleansstate <recipe>
 **Different recipe.** If the failing task belongs to a recipe other than the one
 being patched, **abort immediately** — it is pre-existing/environmental.
 
-Otherwise fix the code, amend the commit, and re-run the build.
+Otherwise fix the code, amend the commit, and re-run the build. If you also need
+to mention the fix in the `Conflicts Resolved:` block, keep it to one bullet in
+that file's stanza (`<file> (0 conflicts):` if the file had no merge conflict) —
+the per-file budget applies to the amended block too.
