@@ -77,6 +77,12 @@ MUST_ALLOW = [
     "git ls-files -s tests/jq.test",
     "git submodule status",
     "git submodule status modules/oniguruma",
+    # Read a file as committed rather than as it sits in the working tree —
+    # documented in AGENT_INSTRUCTIONS.md "Available Tools".
+    "git show HEAD:src/execute.c",
+    "git show HEAD:tests/jq.test",
+    "git show original-version:src/execute.c",
+    "git show abc1234:src/execute.c",
     # Recover stale build state (busybox .config.orig etc.) — a single recipe,
     # forces do_configure to re-run. Recipe names may contain '.', '-', digits.
     "bitbake -c cleansstate busybox",

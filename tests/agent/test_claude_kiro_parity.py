@@ -108,6 +108,13 @@ def test_no_claude_bash_rule_beyond_kiro_allowlist():
             f"matching allowedCommands entry")
 
 
+def test_documented_git_show_path_form_is_allowed_for_claude():
+    """``git show HEAD:<path>`` is documented in AGENT_INSTRUCTIONS.md as the
+    way to read a file as committed, so the ``git show`` family must stay in
+    Claude's allow-list too — not just kiro's."""
+    assert 'git show' in _claude_bash_prefixes()
+
+
 def test_every_kiro_denied_path_is_write_denied_for_claude():
     """Each path kiro denies writes to must appear in a Claude deny list
     (in Claude's ``//`` absolute-path spelling where applicable)."""
