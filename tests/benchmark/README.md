@@ -60,6 +60,13 @@ the exact same CVEs regardless of environment or when it's run. See
 # A specific model selection:
 ./run_benchmark.sh --models claude-sonnet-5,minimax-m2.5
 
+# List the roster CVEs as numbered cases (in run order), then run only some
+# of them -- handy to avoid an expensive recipe (e.g. skip glib/binutils) or
+# to re-run a single case:
+./run_benchmark.sh --list-cases
+./run_benchmark.sh --run-case 3          # just case 3
+./run_benchmark.sh --run-case 1 2 3      # the first three cases
+
 # Skip the judge phase entirely (no prompt, no cost, nothing runs):
 ./run_benchmark.sh --skip-judge
 
@@ -73,6 +80,8 @@ the exact same CVEs regardless of environment or when it's run. See
 |------|--------|
 | `--retier` | Re-probes the 8 roster CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in `benchmark-roster.json` in place. Never changes which CVEs are in the roster. |
 | `--models <default\|full\|comma-list>` | Model selection for phase 1 (default: `default`) |
+| `--list-cases` | List the roster CVEs as numbered cases (in run order: easy→medium→hard, alphabetical within a tier) and exit, without running anything. |
+| `--run-case <N...>` | Run only the given 1-based case number(s) from `--list-cases` (space-separated, e.g. `--run-case 1 2 3`). Scopes the agent run, the cost estimate, and `--retier`; the judge phase follows whatever was run. |
 | `--dry-run` | Print the planned run (rows, cost-weight) without invoking cve-agent, without running the judge, and without prompting for confirmation |
 | `--skip-judge` | Phase 2 (the judge pass) does not run at all |
 | `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present |
@@ -105,6 +114,19 @@ the script prints:
   run**, not a credit prediction either.
 
 ## CSV Schemas
+
+### Per-model artifact files
+
+Because the roster runs every CVE against multiple models, the patch-comparison
+artifacts are keyed by **both** CVE and model so one model's run never
+overwrites another's:
+
+- `<cve>_<model>_differences.txt` — the human-readable comparison report
+- `<cve>_<model>_differences_diff.patch` — the per-file unified diff the judge reads
+- `generated_<cve>_<model>_<file>.patch` — the patch(es) the model generated, archived before the OE tree is reset
+
+(`compare_patches_detailed` writes the first two per-CVE; the benchmark renames
+them per-model right after reading the bucket/diff_lines.)
 
 ### `agent_results.csv`
 
