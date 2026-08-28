@@ -3,7 +3,8 @@
 
 Runs `cve-agent` across a fixed roster of CVEs and a selection of models,
 then (optionally) an AI judge pass on the diffs that came out
-moderately/majorly different from the human reference backport. Produces
+moderately/majorly different from the human reference backport, or that
+partially overlap it (judged on the shared files only). Produces
 `agent_results.csv`, `judge_results.csv`, and (via
 `generate_benchmark_report.py`) a markdown summary.
 
@@ -115,17 +116,18 @@ cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines
 - `credits` — parsed from cve-agent's kiro-cli output (`cve_agent.metrics.parse_kiro_credits`); empty if unavailable
 - `duration_s` — wall-clock seconds measured by the script
 - `commands` — tool-call count from the captured log (`bench_lib.count_tool_calls`)
-- `diff_bucket` — `identical` / `minor` / `moderate` / `major` / `file-mismatch`, same thresholds as `tests/integration/generate_differences_report.py`
-- `diff_lines` — changed-line count from `compare_patches_detailed`
+- `diff_bucket` — `identical` / `minor` / `moderate` / `major` / `partial` / `file-mismatch`, same line thresholds as `tests/integration/generate_differences_report.py`. `partial` means the generated and reference patch sets overlap but aren't identical filesets (some files shared, some missing/extra); the judge then evaluates only the shared files (`bench_lib.scope_diff_to_common_files`). `file-mismatch` is reserved for fully disjoint filesets, which stay unjudged.
+- `diff_lines` — changed-line count from `compare_patches_detailed`. For a `partial` row this is scoped to the shared files only (counted over `bench_lib.scope_diff_to_common_files`), matching what the judge evaluates; for all other buckets it is the whole-patch divergence.
 
 ### `judge_results.csv`
 
 ```
-cve_id,model,judgment,judge_credits
+cve_id,model,judgment,judge_credits,scope
 ```
 
-- `judgment` — `meaningful` or `stylistic`, from the fixed judge model (`claude-opus-4.8`, deliberately not part of the benchmarked roster)
-- `judge_credits` — credits spent on that one judge call; empty if unavailable
+- `judgment` — `meaningful` or `stylistic`, from the fixed judge model (`claude-opus-4.8`, deliberately not part of the benchmarked roster); or `structural-only` for a `partial` overlap whose shared files were identical (recorded without a judge call — see the report note)
+- `judge_credits` — credits spent on that one judge call; empty if unavailable (and always empty for `structural-only`)
+- `scope` — `full` when the verdict covers the whole patch (moderate/major rows), or `partial` when it covers only the shared files of a partial overlap
 
 ### `benchmark-roster.json`
 
@@ -190,7 +192,7 @@ python3 generate_benchmark_report.py test-results/bench_20260814_120000
 Produces `benchmark_report.md` (or `-o <path>`) with a per-model summary
 (total credits, avg duration, avg commands, run count), a per-tier bucket
 distribution table, and a meaningful-vs-stylistic split for the judged
-moderate/major subset.
+moderate/major/partial subset.
 
 ## Files
 

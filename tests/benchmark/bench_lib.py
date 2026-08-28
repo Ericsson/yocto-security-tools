@@ -429,15 +429,28 @@ def classify_diff_bucket(differences_text: str | None) -> str:
             file could not be read (e.g. the comparison itself failed).
 
     Returns:
-        ``'file-mismatch'`` if ``differences_text`` is falsy, or if the
-        report says a file is missing/extra on either side. ``'identical'``
-        if the patches are equivalent. Otherwise ``'minor'``
-        (<= :data:`MINOR_DIFF_LINES_THRESHOLD` lines), ``'moderate'``
-        (<= :data:`MEDIUM_DIFF_LINES_THRESHOLD` lines), or ``'major'``.
+        ``'file-mismatch'`` if ``differences_text`` is falsy, or if the report
+        says files are missing/extra AND the two patch sets share no files.
+        ``'partial'`` if files are missing/extra but the sets still share at
+        least one file (a judgeable overlap — see
+        :func:`scope_diff_to_common_files`). ``'identical'`` if the patches are
+        equivalent. Otherwise ``'minor'`` (<= :data:`MINOR_DIFF_LINES_THRESHOLD`
+        lines), ``'moderate'`` (<= :data:`MEDIUM_DIFF_LINES_THRESHOLD` lines),
+        or ``'major'``.
     """
     if not differences_text:
         return 'file-mismatch'
-    if 'Missing in generated:' in differences_text or 'Extra in generated:' in differences_text:
+    if ('Missing in generated:' in differences_text
+            or 'Extra in generated:' in differences_text):
+        # Fileset mismatch. When the two patch sets still share at least one
+        # file, those common files are a meaningful backport-vs-reference
+        # comparison, so classify as 'partial' (judgeable on the intersection,
+        # see scope_diff_to_common_files) rather than discarding the run as a
+        # purely structural 'file-mismatch'. Fall back to 'file-mismatch' when
+        # the filesets are disjoint, or when the report lacks the 'Files
+        # touched' header needed to prove an overlap.
+        if _common_file_count(differences_text) > 0:
+            return 'partial'
         return 'file-mismatch'
     if 'Patches are equivalent.' in differences_text:
         return 'identical'
@@ -451,6 +464,43 @@ def classify_diff_bucket(differences_text: str | None) -> str:
     return 'major'
 
 
+def _count_listed_files(differences_text: str, label: str) -> int:
+    """Count the comma-separated filenames on the report line under ``label``.
+
+    ``compare_patches_detailed`` writes the missing/extra file lists as a
+    single indented line, e.g. ``  Missing in generated: a.c, b.c``. Returns 0
+    when no line starts with ``label`` (after stripping leading whitespace).
+    """
+    for line in differences_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(label):
+            rest = stripped[len(label):].strip()
+            return len([f for f in rest.split(',') if f.strip()])
+    return 0
+
+
+def _common_file_count(differences_text: str) -> int:
+    """Number of files touched by BOTH patch sets, per a differences report.
+
+    Derived from ``compare_patches_detailed``'s header::
+
+        Files touched - original: A, generated: B
+          Missing in generated: <M comma-separated files>
+
+    The intersection size is ``A - M`` (files in the original that are not
+    missing from the generated set). Returns 0 when the ``Files touched``
+    header is absent — without it an overlap cannot be proven, so callers
+    should treat the run as a pure ``file-mismatch``.
+    """
+    m = re.search(r'Files touched - original: (\d+), generated: (\d+)',
+                  differences_text)
+    if not m:
+        return 0
+    original_count = int(m.group(1))
+    missing = _count_listed_files(differences_text, 'Missing in generated:')
+    return original_count - missing
+
+
 
 
 # --- Judge phase (phase 2) ---------------------------------------------------
@@ -461,9 +511,92 @@ def classify_diff_bucket(differences_text: str | None) -> str:
 # are excluded: identical/minor are self-evidently close to the reference,
 # and a file-mismatch is a structural difference no wording judgment helps
 # with.
-JUDGEABLE_BUCKETS = ('moderate', 'major')
+# Buckets worth asking the judge about. ``moderate`` (11-50 diff lines) and
+# ``major`` (50+) are whole-patch line divergences. ``partial`` is a fileset
+# overlap where the shared files still differ — judged on the intersection
+# alone (see scope_diff_to_common_files), not the one-sided missing/extra
+# files. ``identical``/``minor`` are self-evidently close to the reference,
+# and a pure ``file-mismatch`` (disjoint filesets) is a structural difference
+# no wording judgment helps with, so both stay excluded.
+JUDGEABLE_BUCKETS = ('moderate', 'major', 'partial')
 
 _JUDGMENT_RE = re.compile(r'\b(MEANINGFUL|STYLISTIC)\b', re.IGNORECASE)
+
+# Unified-diff hunk header: '@@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@'.
+# A missing length field means 1 (git/difflib convention).
+_HUNK_RE = re.compile(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@')
+
+
+def scope_diff_to_common_files(diff_patch_text: str) -> str:
+    """Keep only the per-file diff blocks for files present on BOTH sides.
+
+    ``compare_patches_detailed`` writes ``<cve>_differences_diff.patch`` as a
+    series of per-file blocks. A file touched by BOTH patch sets renders as a
+    normal two-sided unified diff; a file on only one side renders either as an
+    all-removed / all-added block (a hunk whose new-span or old-span is 0, e.g.
+    ``@@ -1,23 +0,0 @@``) or as a manual ``/dev/null`` block with no hunk
+    header at all. For a ``partial`` fileset overlap only the two-sided
+    (common-file) blocks are a meaningful backport-vs-reference comparison, so
+    this returns just those — dropping the one-sided missing/extra noise.
+
+    A block is treated as common when it has at least one hunk and its summed
+    old-span AND new-span are both greater than zero. Because unified diffs
+    include surrounding context lines (which count toward both spans), a span
+    is 0 only when that side's file is entirely absent — exactly the
+    missing/extra case.
+
+    Args:
+        diff_patch_text: Full text of a ``<cve>_differences_diff.patch`` file.
+
+    Returns:
+        The concatenated common-file blocks (blank-line separated, trailing
+        newline), or ``''`` when there are none (e.g. the shared files are
+        byte-identical and were therefore omitted from the diff patch).
+    """
+    lines = diff_patch_text.splitlines()
+    # A file block starts at a '--- ' header immediately followed by a '+++ '
+    # header. Requiring the pair (rather than any '--- ' line) avoids splitting
+    # mid-block on a removed source line that happens to start with '--- '.
+    starts = [
+        i for i in range(len(lines) - 1)
+        if lines[i].startswith('--- ') and lines[i + 1].startswith('+++ ')
+    ]
+    kept: list[str] = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        block = lines[start:end]
+        old_span = new_span = 0
+        saw_hunk = False
+        for line in block[2:]:
+            m = _HUNK_RE.match(line)
+            if m:
+                saw_hunk = True
+                old_span += int(m.group(1)) if m.group(1) is not None else 1
+                new_span += int(m.group(2)) if m.group(2) is not None else 1
+        if saw_hunk and old_span > 0 and new_span > 0:
+            while block and block[-1] == '':
+                block.pop()
+            kept.append('\n'.join(block))
+    return ('\n\n'.join(kept) + '\n') if kept else ''
+
+
+def count_diff_changed_lines(diff_text: str) -> int:
+    """Count changed (added/removed) lines in a unified diff.
+
+    Counts lines starting with ``+`` or ``-``, excluding the ``+++ ``/``--- ``
+    file-header lines (``@@`` hunk headers start with neither and are ignored
+    too). Used to report a ``partial`` row's ``diff_lines`` scoped to the
+    shared files — i.e. counted over :func:`scope_diff_to_common_files`'s output,
+    which is what the judge actually sees — rather than the whole-patch
+    divergence dominated by the missing/extra files.
+    """
+    n = 0
+    for line in diff_text.splitlines():
+        if line.startswith('+++ ') or line.startswith('--- '):
+            continue
+        if line.startswith(('+', '-')):
+            n += 1
+    return n
 
 
 def filter_for_judging(agent_rows: list[dict],

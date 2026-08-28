@@ -11,6 +11,7 @@ from tests.benchmark.bench_lib import (
     MODELS,
     classify_diff_bucket,
     count_conflict_markers,
+    count_diff_changed_lines,
     count_tool_calls,
     filter_for_judging,
     is_agent_env_failure,
@@ -21,6 +22,7 @@ from tests.benchmark.bench_lib import (
     project_remaining_cost,
     relative_cost_weight,
     resolve_models,
+    scope_diff_to_common_files,
     score_tier,
     select_cases,
     total_spent,
@@ -233,12 +235,41 @@ class TestClassifyDiffBucket:
     def test_empty_string_is_file_mismatch(self):
         assert classify_diff_bucket('') == 'file-mismatch'
 
-    def test_missing_in_generated_is_file_mismatch(self):
+    def test_missing_in_generated_without_header_is_file_mismatch(self):
+        # No "Files touched" header -> overlap can't be proven -> file-mismatch.
         text = "Missing in generated:\n  some/file.patch\n"
         assert classify_diff_bucket(text) == 'file-mismatch'
 
-    def test_extra_in_generated_is_file_mismatch(self):
+    def test_extra_in_generated_without_header_is_file_mismatch(self):
         text = "Extra in generated:\n  some/file.patch\n"
+        assert classify_diff_bucket(text) == 'file-mismatch'
+
+    def test_missing_with_overlap_is_partial(self):
+        # 7 original files, 6 missing -> 1 shared -> partial (judgeable).
+        text = (
+            "Files touched - original: 7, generated: 1\n"
+            "  Missing in generated: a.c, b.c, c.c, d.c, e.c, f.c\n"
+            "\nDifferences: 46 lines\n"
+        )
+        assert classify_diff_bucket(text) == 'partial'
+
+    def test_extra_only_with_overlap_is_partial(self):
+        # Generated is a superset: 2 original all present, 1 extra -> partial.
+        text = (
+            "Files touched - original: 2, generated: 3\n"
+            "  Extra in generated:   extra.c\n"
+            "\nDifferences: 20 lines\n"
+        )
+        assert classify_diff_bucket(text) == 'partial'
+
+    def test_disjoint_filesets_is_file_mismatch(self):
+        # 1 original file, it is missing, plus 1 unrelated extra -> 0 shared.
+        text = (
+            "Files touched - original: 1, generated: 1\n"
+            "  Missing in generated: only_orig.c\n"
+            "  Extra in generated:   only_gen.c\n"
+            "\nDifferences: 30 lines\n"
+        )
         assert classify_diff_bucket(text) == 'file-mismatch'
 
     def test_equivalent_is_identical(self):
@@ -453,6 +484,10 @@ class TestFilterForJudging:
         result = filter_for_judging(rows, [])
         assert result == rows
 
+    def test_includes_partial(self):
+        rows = [self._agent_row('CVE-1', 'm', 'partial')]
+        assert filter_for_judging(rows, []) == rows
+
     def test_excludes_minor_identical_file_mismatch(self):
         rows = [
             self._agent_row('CVE-1', 'm', 'minor'),
@@ -478,6 +513,176 @@ class TestFilterForJudging:
         judge_rows = [{'cve_id': 'CVE-1', 'model': 'model-a'}]
         result = filter_for_judging(rows, judge_rows)
         assert result == [rows[1]]
+
+
+class TestScopeDiffToCommonFiles:
+    # A diff patch shaped like compare_patches_detailed's output. Note how a
+    # file missing from the generated set renders as an all-removed
+    # (original)/(generated) block (@@ ... +0,0 @@), NOT a /dev/null block —
+    # this is the real shape that a header-string filter would wrongly keep.
+    _DIFF = (
+        "--- a/get_header_tar.c (original)\n"
+        "+++ b/get_header_tar.c (generated)\n"
+        "@@ -1,3 +1,3 @@\n"
+        " context\n"
+        "-strip_unsafe_prefix(x);\n"
+        "+overlapping_strcpy(x, strip_unsafe_prefix(x));\n"
+        "\n"
+        "--- a/data_extract_all.c (original)\n"
+        "+++ b/data_extract_all.c (generated)\n"
+        "@@ -1,4 +0,0 @@\n"
+        "-line1\n"
+        "-line2\n"
+        "-line3\n"
+        "-line4\n"
+        "\n"
+        "--- a/extra_file.c (original)\n"
+        "+++ b/extra_file.c (generated)\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+added1\n"
+        "+added2\n"
+        "\n"
+    )
+
+    def test_keeps_only_two_sided_common_block(self):
+        scoped = scope_diff_to_common_files(self._DIFF)
+        assert 'get_header_tar.c' in scoped
+        assert 'overlapping_strcpy' in scoped
+        assert '-strip_unsafe_prefix(x);' in scoped
+
+    def test_drops_all_removed_missing_file(self):
+        # +0,0 hunk -> new span 0 -> one-sided (missing) -> excluded.
+        scoped = scope_diff_to_common_files(self._DIFF)
+        assert 'data_extract_all.c' not in scoped
+
+    def test_drops_all_added_extra_file(self):
+        # -0,0 hunk -> old span 0 -> one-sided (extra) -> excluded.
+        scoped = scope_diff_to_common_files(self._DIFF)
+        assert 'extra_file.c' not in scoped
+
+    def test_drops_manual_dev_null_blocks(self):
+        # Belt-and-suspenders: the manual /dev/null blocks (no @@ hunk) are
+        # also excluded because they have no hunk span at all.
+        only_structural = (
+            "--- a/only_orig.c (original)\n"
+            "+++ /dev/null (missing in generated)\n"
+            "-gone\n"
+            "\n"
+            "--- /dev/null (not in original)\n"
+            "+++ b/only_gen.c (extra in generated)\n"
+            "+added\n"
+            "\n"
+        )
+        assert scope_diff_to_common_files(only_structural) == ''
+
+    def test_empty_when_no_common_files(self):
+        only_one_sided = (
+            "--- a/missing.c (original)\n"
+            "+++ b/missing.c (generated)\n"
+            "@@ -1,2 +0,0 @@\n"
+            "-a\n"
+            "-b\n"
+            "\n"
+        )
+        assert scope_diff_to_common_files(only_one_sided) == ''
+
+    def test_empty_input_returns_empty(self):
+        assert scope_diff_to_common_files('') == ''
+
+    def test_multi_hunk_common_file_is_kept(self):
+        # Spans summed across hunks; both sides nonzero -> common.
+        diff = (
+            "--- a/foo.c (original)\n"
+            "+++ b/foo.c (generated)\n"
+            "@@ -7,7 +7,7 @@\n"
+            " ctx\n"
+            "-old\n"
+            "+new\n"
+            "@@ -18,3 +18,4 @@\n"
+            " more\n"
+            "+added\n"
+            "\n"
+        )
+        scoped = scope_diff_to_common_files(diff)
+        assert 'foo.c' in scoped
+        assert '+added' in scoped
+
+    def test_does_not_split_on_removed_line_starting_with_dashes(self):
+        # A removed source line rendered as '--- ...' must not be mistaken for
+        # a file header: only a '--- '/'+++ ' *pair* starts a block.
+        diff = (
+            "--- a/foo.c (original)\n"
+            "+++ b/foo.c (generated)\n"
+            "@@ -1,2 +1,2 @@\n"
+            "--- a decrement-style removed line\n"
+            "+a replacement line\n"
+            "\n"
+        )
+        scoped = scope_diff_to_common_files(diff)
+        assert '--- a decrement-style removed line' in scoped
+        assert '+a replacement line' in scoped
+
+
+class TestCountDiffChangedLines:
+    def test_empty_is_zero(self):
+        assert count_diff_changed_lines('') == 0
+
+    def test_counts_added_and_removed_excluding_headers(self):
+        diff = (
+            "--- a/foo.c (original)\n"
+            "+++ b/foo.c (generated)\n"
+            "@@ -1,3 +1,3 @@\n"
+            " context\n"
+            "-old line\n"
+            "+new line\n"
+        )
+        # Only '-old line' and '+new line' count; the '---'/'+++' headers,
+        # the '@@' hunk header, and the ' context' line do not.
+        assert count_diff_changed_lines(diff) == 2
+
+    def test_multiple_changes(self):
+        diff = (
+            "--- a/foo.c (original)\n"
+            "+++ b/foo.c (generated)\n"
+            "@@ -1,4 +1,4 @@\n"
+            "-a\n"
+            "-b\n"
+            "+c\n"
+            "+d\n"
+            "+e\n"
+        )
+        assert count_diff_changed_lines(diff) == 5
+
+    def test_file_headers_never_counted(self):
+        # A diff that is only headers has no changed lines.
+        diff = (
+            "--- a/foo.c (original)\n"
+            "+++ b/foo.c (generated)\n"
+        )
+        assert count_diff_changed_lines(diff) == 0
+
+    def test_matches_scoped_diff(self):
+        # The intended usage: count changes in a scoped intersection diff.
+        raw = (
+            "--- a/common.c (original)\n"
+            "+++ b/common.c (generated)\n"
+            "@@ -1,2 +1,2 @@\n"
+            " ctx\n"
+            "-x\n"
+            "+y\n"
+            "\n"
+            "--- a/missing.c (original)\n"
+            "+++ b/missing.c (generated)\n"
+            "@@ -1,3 +0,0 @@\n"
+            "-p\n"
+            "-q\n"
+            "-r\n"
+            "\n"
+        )
+        scoped = scope_diff_to_common_files(raw)
+        # Only common.c survives scoping -> 2 changed lines (-x, +y), NOT the
+        # 3 removed lines of the missing file.
+        assert count_diff_changed_lines(scoped) == 2
 
 
 class TestJudgeDiff:
