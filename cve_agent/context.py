@@ -86,10 +86,15 @@ def build_context(workspace_path: Path, exit_code: int, cve_id: str,
     if feedback_file.exists():
         feedback = feedback_file.read_text(encoding='utf-8').strip()
         if feedback:
+            # Quote every line: the feedback may be a multi-line report (e.g.
+            # a commit-note budget verdict), and prefixing only the first line
+            # breaks the block out of the markdown quote.
+            quoted = '\n'.join(f"> {line}" if line else '>'
+                               for line in feedback.splitlines())
             sections.append(
                 f"## Human Feedback (from previous review)\n\n"
                 f"The reviewer requested the following changes:\n\n"
-                f"> {feedback}\n\n"
+                f"{quoted}\n\n"
                 f"Apply ONLY these requested changes to the current code in "
                 f"the workspace. Do not redo the entire resolution."
             )

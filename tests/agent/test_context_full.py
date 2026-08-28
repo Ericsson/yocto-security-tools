@@ -322,6 +322,26 @@ class TestBuildContext:
         assert "fix the null check" in content
         assert not (agent_dir / "human_feedback.txt").exists()
 
+    @patch("cve_agent.context._gather_knowledge", return_value="")
+    @patch("cve_agent.context._gather_context_for_exit_code", return_value="## D")
+    @patch("cve_agent.context._build_phase_instructions", return_value="## I")
+    @patch("cve_agent.context._build_header", return_value="# H")
+    @patch("cve_agent.context.get_agent_dir")
+    def test_multiline_feedback_is_fully_quoted(self, mock_dir, mock_hdr,
+                                                mock_instr, mock_ctx, mock_kb,
+                                                tmp_path):
+        """A multi-line report (e.g. a note-budget verdict) must stay quoted."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        (agent_dir / "human_feedback.txt").write_text(
+            "REJECTED a.c: 60 words\n\nShorten the notes and retry.")
+        mock_dir.return_value = agent_dir
+        result = build_context(Path("/ws"), 0, "CVE-1", {"name": "r"})
+        quoted = [line for line in result.read_text().splitlines()
+                  if "REJECTED a.c" in line or "Shorten the notes" in line]
+        assert len(quoted) == 2
+        assert all(line.startswith("> ") for line in quoted), quoted
+
     @patch("cve_agent.context._gather_knowledge", return_value="## KB\npattern")
     @patch("cve_agent.context._gather_context_for_exit_code", return_value="## D")
     @patch("cve_agent.context._build_phase_instructions", return_value="## I")
