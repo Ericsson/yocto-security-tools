@@ -6,7 +6,7 @@
 Reads agent_results.csv and judge_results.csv from a results directory,
 joins them on (cve_id, model), and produces markdown with a per-model
 summary, a per-tier bucket distribution, and a meaningful-vs-stylistic split
-for the judged (moderate/major) subset. Bucket names/thresholds mirror
+for the judged (moderate/major/partial) subset. Bucket names/thresholds mirror
 tests/integration/generate_differences_report.py rather than restating them.
 """
 
@@ -22,8 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.benchmark.bench_lib import JUDGEABLE_BUCKETS  # noqa: E402
 
-# Same bucket set generate_differences_report.py classifies diffs into.
-DIFF_BUCKETS = ("identical", "minor", "moderate", "major", "file-mismatch")
+# Same bucket set generate_differences_report.py classifies diffs into, plus
+# 'partial' (fileset overlap, judged on the shared files — see
+# bench_lib.scope_diff_to_common_files).
+DIFF_BUCKETS = ("identical", "minor", "moderate", "major", "partial", "file-mismatch")
 
 # Judge model used by run_benchmark.sh's phase 2 — fixed, and deliberately
 # not part of the model roster being benchmarked (see bench_lib.judge_diff).
@@ -113,16 +115,22 @@ def generate_report(results_dir: Path) -> str:
         )
     lines.append("")
 
-    # --- Meaningful vs stylistic split (judged moderate/major subset) ---
+    # --- Meaningful vs stylistic split (judged moderate/major/partial subset) ---
     judged_subset = [row for row in agent_rows if row.get("diff_bucket") in JUDGEABLE_BUCKETS]
 
-    lines.append("## Meaningful vs Stylistic (Judged Moderate/Major Diffs)")
+    lines.append("## Meaningful vs Stylistic (Judged Moderate/Major/Partial Diffs)")
     lines.append("")
-    lines.append("| Model | Meaningful | Stylistic | Not Yet Judged |")
-    lines.append("|-------|------------|-----------|-----------------|")
+    lines.append(
+        "_Structural-only: a `partial` fileset overlap whose shared files were "
+        "identical, so only the set of touched files differed — not sent to "
+        "the judge._"
+    )
+    lines.append("")
+    lines.append("| Model | Meaningful | Stylistic | Structural-only | Not Yet Judged |")
+    lines.append("|-------|------------|-----------|-----------------|-----------------|")
     for model in sorted(by_model):
         model_judged = [row for row in judged_subset if row["model"] == model]
-        meaningful = stylistic = not_judged = 0
+        meaningful = stylistic = structural_only = not_judged = 0
         for row in model_judged:
             key = (row["cve_id"], row["model"])
             judge_row = judge_by_key.get(key)
@@ -132,11 +140,16 @@ def generate_report(results_dir: Path) -> str:
                 meaningful += 1
             elif judge_row.get("judgment") == "stylistic":
                 stylistic += 1
+            elif judge_row.get("judgment") == "structural-only":
+                structural_only += 1
             else:
                 not_judged += 1
         if not model_judged:
             continue
-        lines.append(f"| {model} | {meaningful} | {stylistic} | {not_judged} |")
+        lines.append(
+            f"| {model} | {meaningful} | {stylistic} | {structural_only} "
+            f"| {not_judged} |"
+        )
     lines.append("")
 
     return "\n".join(lines)

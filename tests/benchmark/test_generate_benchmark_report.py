@@ -44,33 +44,56 @@ class TestGenerateReport:
             "CVE-2,easy,model-a,0,1.0,10,3,minor,5",
             "CVE-3,medium,model-a,0,1.0,10,3,moderate,20",
             "CVE-4,hard,model-a,1,1.0,10,3,major,80",
+            "CVE-5,hard,model-a,0,1.0,10,3,partial,46",
         ])
         _write_judge_csv(tmp_path, [])
         report = generate_report(tmp_path)
 
         assert "## Per-Tier Bucket Distribution" in report
+        # Columns: identical | minor | moderate | major | partial | file-mismatch
         lines = report.splitlines()
         easy_line = next(line for line in lines if line.startswith("| easy |"))
-        assert easy_line == "| easy | 1 | 1 | 0 | 0 | 0 |"
+        assert easy_line == "| easy | 1 | 1 | 0 | 0 | 0 | 0 |"
         medium_line = next(line for line in lines if line.startswith("| medium |"))
-        assert medium_line == "| medium | 0 | 0 | 1 | 0 | 0 |"
+        assert medium_line == "| medium | 0 | 0 | 1 | 0 | 0 | 0 |"
         hard_line = next(line for line in lines if line.startswith("| hard |"))
-        assert hard_line == "| hard | 0 | 0 | 0 | 1 | 0 |"
+        assert hard_line == "| hard | 0 | 0 | 0 | 1 | 1 | 0 |"
 
     def test_meaningful_vs_stylistic_split(self, tmp_path):
         _write_agent_csv(tmp_path, [
             "CVE-1,medium,model-a,0,1.0,10,3,moderate,20",
             "CVE-2,hard,model-a,0,1.0,10,3,major,80",
             "CVE-3,hard,model-a,0,1.0,10,3,major,90",
+            "CVE-4,hard,model-a,0,1.0,10,3,partial,46",
         ])
         _write_judge_csv(tmp_path, [
             "CVE-1,model-a,meaningful,0.1",
             "CVE-2,model-a,stylistic,0.1",
+            "CVE-4,model-a,meaningful,0.1",
         ])
         report = generate_report(tmp_path)
 
-        assert "## Meaningful vs Stylistic (Judged Moderate/Major Diffs)" in report
-        assert "| model-a | 1 | 1 | 1 |" in report
+        assert "## Meaningful vs Stylistic (Judged Moderate/Major/Partial Diffs)" in report
+        # meaningful=2 (CVE-1, CVE-4), stylistic=1 (CVE-2), structural-only=0,
+        # not-yet-judged=1 (CVE-3)
+        assert "| model-a | 2 | 1 | 0 | 1 |" in report
+
+    def test_structural_only_partial_counted_separately(self, tmp_path):
+        # A 'partial' row whose shared files were identical is recorded as
+        # 'structural-only' by run_benchmark.sh — it must land in its own
+        # column, not "Not Yet Judged".
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,1.0,10,3,partial,46",
+            "CVE-2,hard,model-a,0,1.0,10,3,major,80",
+        ])
+        _write_judge_csv(tmp_path, [
+            "CVE-1,model-a,structural-only,",
+        ])
+        report = generate_report(tmp_path)
+
+        # meaningful=0, stylistic=0, structural-only=1 (CVE-1),
+        # not-yet-judged=1 (CVE-2, judgeable but no judge row)
+        assert "| model-a | 0 | 0 | 1 | 1 |" in report
 
     def test_minor_and_identical_excluded_from_judge_split(self, tmp_path):
         _write_agent_csv(tmp_path, [
@@ -97,4 +120,5 @@ class TestGenerateReport:
             "CVE-1,medium,model-a,0,1.0,10,3,moderate,20",
         ])
         report = generate_report(tmp_path)
-        assert "| model-a | 0 | 0 | 1 |" in report
+        # meaningful=0, stylistic=0, structural-only=0, not-yet-judged=1
+        assert "| model-a | 0 | 0 | 0 | 1 |" in report
