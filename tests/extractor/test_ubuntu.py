@@ -172,7 +172,7 @@ class TestExtractFromUbuntuResponse(unittest.TestCase):
             },
             'references': []
         }
-        with patch('cve_metadata_extractor.ubuntu.process_pr_url') as mock_pr:
+        with patch('cve_metadata_extractor.utils.process_pr_url') as mock_pr:
             extract_from_ubuntu_response(ubuntu_data)
             mock_pr.assert_called_once()
 
@@ -199,18 +199,18 @@ class TestUbuntuSource(unittest.TestCase):
     '''Test UbuntuSource class integration.'''
 
     def test_is_enabled_default(self):
-        '''Ubuntu is enabled by default.'''
+        '''Ubuntu API source is disabled by default.'''
         args = MagicMock()
-        args.no_ubuntu = False
-        source = UbuntuSource()
-        self.assertTrue(source.is_enabled(args))
-
-    def test_is_disabled_with_flag(self):
-        '''Ubuntu is disabled with --no-ubuntu.'''
-        args = MagicMock()
-        args.no_ubuntu = True
+        args.ubuntu_api = False
         source = UbuntuSource()
         self.assertFalse(source.is_enabled(args))
+
+    def test_is_disabled_with_flag(self):
+        '''Ubuntu API source is enabled with --ubuntu-api.'''
+        args = MagicMock()
+        args.ubuntu_api = True
+        source = UbuntuSource()
+        self.assertTrue(source.is_enabled(args))
 
     def test_extract_tags_results(self):
         '''Extract returns results tagged with source ubuntu.'''

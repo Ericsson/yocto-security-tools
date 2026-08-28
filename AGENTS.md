@@ -15,7 +15,7 @@
 │   ├── sources.py               # CveSource base + SOURCE_REGISTRY + plugin loader
 │   ├── cve_sources.py           # Input loading (cve-summary.json, VEX)
 │   ├── oe_status.py             # Check CVE status in OE branches
-│   ├── debian.py / osv.py / cvelistv5.py / ubuntu.py  # Data sources
+│   ├── debian.py / osv.py / cvelistv5.py / uct.py / ubuntu.py  # Data sources
 │   └── config.json              # Public URLs (override via CVE_EXTRACTOR_CONFIG)
 ├── cve_corrector/               # Tool 2: apply patches via devtool
 │   ├── workflow.py              # Main state machine (largest file)

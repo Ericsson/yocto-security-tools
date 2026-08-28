@@ -50,6 +50,7 @@ def load_config(config_path=None):
     cfg.setdefault('debian_tracker_dir', f'{_shared_data}/security-tracker')
     cfg.setdefault('cvelistv5_dir', f'{_shared_data}/cvelistV5')
     cfg.setdefault('nvd_dir', f'{_shared_data}/nvd')
+    cfg.setdefault('uct_dir', f'{_shared_data}/ubuntu-cve-tracker')
 
     if config_path == str(_DEFAULT_CONFIG):
         _cached_config = cfg

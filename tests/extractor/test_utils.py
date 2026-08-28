@@ -12,6 +12,7 @@ from cve_metadata_extractor.utils import (
     URL_RE,
     extract_commit_hash,
     normalize_component_name,
+    resolve_url_refs,
 )
 
 
@@ -120,6 +121,39 @@ class TestRegexPatterns(unittest.TestCase):
         match = URL_RE.search('See https://example.com/path for details')
         self.assertIsNotNone(match)
         self.assertEqual(match.group(0), 'https://example.com/path')
+
+
+class TestResolveUrlRefs(unittest.TestCase):
+    '''Test resolve_url_refs PR/issue dispatch and hash extraction.'''
+
+    def test_pr_url_appends_to_series(self):
+        '''GitHub PR URL is dispatched to process_pr_url, appending to series.'''
+        from unittest.mock import patch
+        series = []
+        with patch('cve_metadata_extractor.utils.process_pr_url') as mock_pr:
+            resolve_url_refs('https://github.com/test/repo/pull/42', series)
+            mock_pr.assert_called_once_with(
+                'https://github.com/test/repo/pull/42', series)
+
+    def test_gitlab_issue_url_appends_to_series(self):
+        '''GitLab issue URL is dispatched to process_gitlab_issue_url.'''
+        from unittest.mock import patch
+        series = []
+        url = 'https://gitlab.com/test/repo/-/issues/7'
+        with patch(
+                'cve_metadata_extractor.utils.process_gitlab_issue_url'
+        ) as mock_issue:
+            resolve_url_refs(url, series)
+            mock_issue.assert_called_once_with(url, series)
+
+    def test_commit_url_returns_hash(self):
+        '''Plain commit URL returns the extracted hash.'''
+        url = 'https://github.com/test/repo/commit/abc1234'
+        self.assertEqual(resolve_url_refs(url, []), 'abc1234')
+
+    def test_non_matching_url_returns_none(self):
+        '''URL with no commit hash and no PR/issue returns None.'''
+        self.assertIsNone(resolve_url_refs('https://example.com/page', []))
 
 
 if __name__ == '__main__':

@@ -21,7 +21,8 @@ class TestSourceRegistry(unittest.TestCase):
         import cve_metadata_extractor.debian  # noqa: F401
         import cve_metadata_extractor.osv  # noqa: F401
         import cve_metadata_extractor.ubuntu  # noqa: F401
-        expected = {'cvelistv5', 'nvd', 'debian', 'osv', 'ubuntu'}
+        import cve_metadata_extractor.uct  # noqa: F401
+        expected = {'cvelistv5', 'nvd', 'debian', 'osv', 'ubuntu', 'uct'}
         self.assertTrue(expected <= {s.name for s in SOURCE_REGISTRY})
 
 

@@ -9,14 +9,7 @@ import requests
 
 from .config import load_config
 from .sources import SOURCE_REGISTRY, CveSource
-from .utils import (
-    _GITLAB_ISSUE_RE,
-    URL_RE,
-    extract_commit_hash,
-    process_gitlab_issue_url,
-    process_pr_url,
-    tag_results,
-)
+from .utils import URL_RE, resolve_url_refs, tag_results
 
 _cfg = load_config()
 UBUNTU_API = _cfg.get('ubuntu_api', 'https://ubuntu.com')
@@ -70,11 +63,7 @@ def get_ubuntu_cve(cache, cve_id, refresh=False):
 
 def _process_url(url, hashes, patch_links, series, *, add_patch_link=False):
     '''Extract hash, detect PRs/issues, and add to results for a single URL.'''
-    if '/pull/' in url:
-        process_pr_url(url, series)
-    elif _GITLAB_ISSUE_RE.match(url):
-        process_gitlab_issue_url(url, series)
-    h = extract_commit_hash(url)
+    h = resolve_url_refs(url, series)
     if h and not any(e['hash'] == h for e in hashes):
         hashes.append({'hash': h, 'url': url})
         if add_patch_link:
@@ -122,12 +111,21 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 
 
 class UbuntuSource(CveSource):
-    '''Ubuntu Security API source.'''
+    '''Ubuntu Security API source.
+
+    Deprecated: superseded by the Ubuntu CVE Tracker source (uct.py), which
+    reads a local git mirror instead of making a rate-limited HTTP request
+    per CVE. Disabled by default; pass --ubuntu-api to re-enable it.
+    '''
     name = 'ubuntu'
     cli_args = [
         (['--no-ubuntu'], {
             'action': 'store_true',
-            'help': 'Disable Ubuntu source',
+            'help': 'Deprecated, no-op: this source is disabled by default',
+        }),
+        (['--ubuntu-api'], {
+            'action': 'store_true',
+            'help': 'Enable the deprecated Ubuntu Security API source',
         }),
     ]
 
@@ -139,7 +137,7 @@ class UbuntuSource(CveSource):
         self._refresh = args.refresh
 
     def is_enabled(self, args):
-        return not args.no_ubuntu
+        return bool(getattr(args, 'ubuntu_api', False))
 
     def extract(self, cve_id, stats):
         '''Extract metadata from Ubuntu Security API for a single CVE.'''
