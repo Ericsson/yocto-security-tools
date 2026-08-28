@@ -144,12 +144,22 @@ cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines
 ### `judge_results.csv`
 
 ```
-cve_id,model,judgment,judge_credits,scope
+cve_id,model,judgment,reason,judge_credits,scope
 ```
 
-- `judgment` — `meaningful` or `stylistic`, from the fixed judge model (`claude-opus-4.8`, deliberately not part of the benchmarked roster); or `structural-only` for a `partial` overlap whose shared files were identical (recorded without a judge call — see the report note)
-- `judge_credits` — credits spent on that one judge call; empty if unavailable (and always empty for `structural-only`)
+- `judgment` — `meaningful` or `stylistic`, from the fixed judge model (`claude-opus-4.8`, deliberately not part of the benchmarked roster); or one of two verdicts recorded without a judge call: `structural-only` for a `partial` overlap whose shared files were identical, and `comment-only` when every remaining changed line was a comment (see the report note)
+- `reason` — the judge's own one-or-two-sentence justification, flattened to a single line and capped at `bench_lib.JUDGE_REASON_MAX_CHARS`. Free-form prose, so rows are written with `csv.writer` and must be read with a CSV parser rather than `cut -d,`
+- `judge_credits` — credits spent on that one judge call; empty if unavailable (and always empty for `structural-only` and `comment-only`, which make no call)
 - `scope` — `full` when the verdict covers the whole patch (moderate/major rows), or `partial` when it covers only the shared files of a partial overlap
+
+Comment-only changes are stripped from the diff before it reaches the judge
+(`bench_lib.strip_comment_only_changes`): a reworded, added, or dropped comment
+is not a behavioral difference. The comment syntax is picked per file from the
+diff headers — `//` and `/* … */` for C-like sources, `#` for shell/Python/make
+— and block-comment state is tracked per diff side so C pointer code such as
+`*p++ = *s++;` is never mistaken for a comment continuation. Note that
+`diff_lines` and `diff_bucket` in `agent_results.csv` still count comment lines;
+only the judge ignores them.
 
 ### `benchmark-roster.json`
 

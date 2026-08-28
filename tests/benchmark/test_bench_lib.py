@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.benchmark.bench_lib import (
+    JUDGE_REASON_MAX_CHARS,
     MEDIUM_DIFF_LINES_THRESHOLD,
     MINOR_DIFF_LINES_THRESHOLD,
     MODELS,
@@ -14,6 +15,7 @@ from tests.benchmark.bench_lib import (
     count_diff_changed_lines,
     count_tool_calls,
     filter_for_judging,
+    has_substantive_changes,
     is_agent_env_failure,
     is_mirror_gap_only,
     judge_diff,
@@ -25,6 +27,7 @@ from tests.benchmark.bench_lib import (
     scope_diff_to_common_files,
     score_tier,
     select_cases,
+    strip_comment_only_changes,
     total_spent,
 )
 
@@ -695,7 +698,8 @@ class TestJudgeDiff:
     def test_prompt_contains_diff_and_model(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("MEANINGFUL\n")
-            judge_diff("--- a/foo\n+++ b/foo\n-old\n+new\n", model="claude-opus-4.8")
+            judge_diff("--- a/foo.c\n+++ b/foo.c\n-old\n+new\n",
+                       model="claude-opus-4.8")
 
         args = mock_run.call_args[0][0]
         assert 'kiro-cli' in args
@@ -707,7 +711,7 @@ class TestJudgeDiff:
     def test_no_interactive_and_no_agent_flag(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("MEANINGFUL\n")
-            judge_diff("diff text", model="claude-opus-4.8")
+            judge_diff("-old\n+new\n", model="claude-opus-4.8")
 
         args = mock_run.call_args[0][0]
         assert '--no-interactive' in args
@@ -716,31 +720,198 @@ class TestJudgeDiff:
     def test_parses_meaningful(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("MEANINGFUL\nSome extra text.\n")
-            judgment, _ = judge_diff("diff text")
+            judgment, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
 
     def test_parses_stylistic_case_insensitive_with_surrounding_text(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "  stylistic  \nThis is a purely cosmetic change.\n")
-            judgment, _ = judge_diff("diff text")
+            judgment, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'stylistic'
 
     def test_defaults_to_meaningful_when_unparseable(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("I am not sure.\n")
-            judgment, _ = judge_diff("diff text")
+            judgment, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
 
     def test_credits_parsing_delegates_to_parse_kiro_credits(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "MEANINGFUL\n\n Credits: 0.03 \u2022 Time: 1s\n")
-            _, credits = judge_diff("diff text")
+            _, _, credits = judge_diff("-old\n+new\n")
         assert credits == pytest.approx(0.03)
 
     def test_no_credits_line_returns_none(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("STYLISTIC\n")
-            _, credits = judge_diff("diff text")
+            _, _, credits = judge_diff("-old\n+new\n")
         assert credits is None
+
+
+class TestJudgeReason:
+    """The verdict alone does not say why, which makes a surprising
+    classification impossible to audit without re-reading the diff."""
+
+    def _mock_result(self, stdout):
+        result = MagicMock()
+        result.stdout = stdout
+        result.returncode = 0
+        return result
+
+    def test_prompt_asks_for_one_or_two_sentences(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result("MEANINGFUL\nWhy.\n")
+            judge_diff("-old\n+new\n")
+        prompt = mock_run.call_args[0][0][-1]
+        assert 'one or two sentences' in prompt
+
+    def test_captures_reason_after_verdict(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result(
+                "MEANINGFUL\nThe backport adds a !S_ISLNK guard. "
+                "That changes which links are restored.\n")
+            judgment, reason, _ = judge_diff("-old\n+new\n")
+        assert judgment == 'meaningful'
+        assert reason == ("The backport adds a !S_ISLNK guard. "
+                          "That changes which links are restored.")
+
+    def test_keeps_at_most_two_sentences(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result(
+                "STYLISTIC\nOne. Two. Three. Four.\n")
+            _, reason, _ = judge_diff("-old\n+new\n")
+        assert reason == "One. Two."
+
+    def test_reason_is_a_single_line(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result(
+                "MEANINGFUL\nFirst part\nwrapped onto two lines.\n")
+            _, reason, _ = judge_diff("-old\n+new\n")
+        assert '\n' not in reason
+        assert reason == "First part wrapped onto two lines."
+
+    def test_credits_footer_is_not_part_of_the_reason(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result(
+                "STYLISTIC\nJust a rename.\n\n Credits: 0.02 \u2022 Time: 1s\n")
+            _, reason, credits = judge_diff("-old\n+new\n")
+        assert reason == "Just a rename."
+        assert credits == pytest.approx(0.02)
+
+    def test_empty_reason_when_verdict_only(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result("MEANINGFUL\n")
+            _, reason, _ = judge_diff("-old\n+new\n")
+        assert reason == ''
+
+    def test_reason_is_length_capped(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result(
+                "MEANINGFUL\n" + ("word " * 200) + "\n")
+            _, reason, _ = judge_diff("-old\n+new\n")
+        assert len(reason) <= JUDGE_REASON_MAX_CHARS
+
+
+class TestCommentOnlyChanges:
+    """A reworded comment is not a behavioral difference, so it must neither
+    reach the judge nor be reported as a divergence."""
+
+    C_HEADER = "--- b/archival/tar.c\n+++ b/archival/tar.c\n@@ -1,4 +1,4 @@\n"
+
+    def test_line_comment_change_is_dropped(self):
+        diff = self.C_HEADER + " code();\n-// old note\n+// new note\n"
+        assert count_diff_changed_lines(
+            strip_comment_only_changes(diff)) == 0
+        assert not has_substantive_changes(diff)
+
+    def test_block_comment_change_is_dropped(self):
+        diff = self.C_HEADER + " code();\n-/* old note */\n+/* new note */\n"
+        assert not has_substantive_changes(diff)
+
+    def test_block_comment_continuation_is_dropped(self):
+        diff = (self.C_HEADER + " /* GNU tar 1.34 examples:\n"
+                "- * tar: Removing leading '/'\n"
+                "+ * tar: Removing a leading slash\n"
+                "  */\n")
+        assert not has_substantive_changes(diff)
+
+    def test_pointer_dereference_is_not_a_comment(self):
+        """Regression guard: a 'starts with *' heuristic would drop this."""
+        diff = self.C_HEADER + "-\t*p++ = *s++;\n+\t*p-- = *s--;\n"
+        assert has_substantive_changes(diff)
+        assert '*p++ = *s++;' in strip_comment_only_changes(diff)
+
+    def test_code_with_trailing_comment_is_kept(self):
+        diff = self.C_HEADER + "-\tlen += 3; /* open quote */\n+\tlen += 4; /* open quote */\n"
+        assert has_substantive_changes(diff)
+
+    def test_preprocessor_directive_is_not_a_comment(self):
+        diff = self.C_HEADER + "-#if ENABLE_FEATURE_FOO\n+#if ENABLE_FEATURE_BAR\n"
+        assert has_substantive_changes(diff)
+
+    def test_hash_comment_dropped_in_shell_file(self):
+        diff = ("--- b/scripts/run.sh\n+++ b/scripts/run.sh\n@@ -1,3 +1,3 @@\n"
+                "-# old note\n+# new note\n exit 0\n")
+        assert not has_substantive_changes(diff)
+
+    def test_hash_code_change_kept_in_shell_file(self):
+        diff = ("--- b/scripts/run.sh\n+++ b/scripts/run.sh\n@@ -1,3 +1,3 @@\n"
+                "-exit 0\n+exit 1\n")
+        assert has_substantive_changes(diff)
+
+    def test_real_code_change_survives_alongside_comment_churn(self):
+        diff = (self.C_HEADER
+                + "-/* old note */\n+/* new note */\n"
+                + "-\tif (a) {\n+\tif (a && b) {\n")
+        filtered = strip_comment_only_changes(diff)
+        assert has_substantive_changes(diff)
+        assert 'if (a && b) {' in filtered
+        assert 'new note' not in filtered
+
+    def test_blank_changed_line_is_kept(self):
+        """A blank line is whitespace, not a comment; dropping it silently
+        would make a whitespace-only diff look empty for a different reason."""
+        diff = self.C_HEADER + " code();\n-\n"
+        assert count_diff_changed_lines(strip_comment_only_changes(diff)) == 1
+
+    def test_headers_and_context_are_preserved(self):
+        diff = self.C_HEADER + " code();\n-// note\n"
+        filtered = strip_comment_only_changes(diff)
+        assert '--- b/archival/tar.c' in filtered
+        assert '+++ b/archival/tar.c' in filtered
+        assert '@@ -1,4 +1,4 @@' in filtered
+        assert ' code();' in filtered
+
+
+class TestJudgeSkipsCommentOnlyDiffs:
+    def test_comment_only_diff_is_not_sent_to_the_model(self):
+        diff = ("--- b/foo.c\n+++ b/foo.c\n@@ -1,2 +1,2 @@\n"
+                " code();\n-// old\n+// new\n")
+        with patch('subprocess.run') as mock_run:
+            judgment, reason, credits = judge_diff(diff)
+        mock_run.assert_not_called()
+        assert judgment == 'comment-only'
+        assert credits is None
+        assert reason
+
+    def test_comment_lines_are_stripped_from_the_prompt(self):
+        diff = ("--- b/foo.c\n+++ b/foo.c\n@@ -1,3 +1,3 @@\n"
+                "-// chatty note\n+// other note\n"
+                "-\tif (a) {\n+\tif (a && b) {\n")
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="MEANINGFUL\nAdded condition.\n", returncode=0)
+            judge_diff(diff)
+        prompt = mock_run.call_args[0][0][-1]
+        assert 'chatty note' not in prompt
+        assert 'if (a && b) {' in prompt
+
+    def test_prompt_tells_the_judge_to_ignore_comments(self):
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout="MEANINGFUL\n", returncode=0)
+            judge_diff("--- b/f.c\n+++ b/f.c\n-a();\n+b();\n")
+        prompt = mock_run.call_args[0][0][-1]
+        assert 'comment-only differences' in prompt
+
