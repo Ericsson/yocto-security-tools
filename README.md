@@ -183,6 +183,12 @@ fresh identical snapshots, immutable same-campaign resume, complete crossover
 cohorts, baseline-health exclusions, decomposed telemetry, and semantic—not
 legacy union—success metrics.
 
+To measure only a model's patch-adaptation ability without Yocto, mirrors,
+metadata extraction, or corrector setup, use the opt-in
+[isolated LLM backport capability suite](docs/llm-backport-capability-suite.md).
+It scores fresh conflicted Git fixtures with host-owned builds, reproducers,
+semantic validation, strict scope checks, and repeated-trial qualification.
+
 Before a controlled evaluation release, run the
 [adversarial release gate](docs/adversarial-release-gate.md). It maps the
 report-derived false positives and hostile model/provider/repository cases to
