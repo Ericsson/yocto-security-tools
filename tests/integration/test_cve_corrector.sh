@@ -5,7 +5,7 @@
 # runs cve_corrector to regenerate it, then compares old vs new patch.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Prefer proprietary metadata from extra/ if available, fall back to open-source test data
 if [[ -z "${CVE_METADATA:-}" ]]; then
@@ -27,9 +27,23 @@ COMPONENTS=()  # empty = all
 RESULT_SCHEMA_TOOL="${SCRIPT_DIR}/result_schema.py"
 RESULTS_HEADER="cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_files,duration_s,schema_version,workflow_status,build_status,security_status,failure_class,failure_code,legacy_status,summary_state"
 EVALUATION_RUN_MODE="resume-compatible-legacy"
+AGENT_BACKEND="${AGENT_BACKEND:-kiro}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 
 # shellcheck source=test_common.sh
 source "${SCRIPT_DIR}/test_common.sh"
+
+build_agent_flags() {
+    local output_name="$1" extra_flags="$2"
+    local -n output="$output_name"
+    output=(--backend "$AGENT_BACKEND")
+    [[ -n "$AGENT_MODEL" ]] && output+=(--model "$AGENT_MODEL")
+    if [[ -n "$extra_flags" ]]; then
+        local -a extra_flags_array=()
+        read -ra extra_flags_array <<< "$extra_flags"
+        output+=("${extra_flags_array[@]}")
+    fi
+}
 
 # ── Run test for single CVE ──────────────────────────────────────────────────
 test_single_cve() {
@@ -56,7 +70,7 @@ test_single_cve() {
         cd "$SCRIPT_DIR"
         local agent_exit=0
         local -a flags_arr=()
-        [[ -n "$extra_flags" ]] && read -ra flags_arr <<< "$extra_flags"
+        build_agent_flags flags_arr "$extra_flags"
         # Run agent with timeout — kill entire process group on expiry
         AGENT_LOG="$agent_log" setsid bash -c '
             echo "y" | python3 -m cve_agent \
@@ -402,4 +416,6 @@ main() {
     log "Done. Results in $LOG_DIR"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

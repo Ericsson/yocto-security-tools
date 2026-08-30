@@ -28,8 +28,8 @@ export MIRROR_DIR=/path/to/upstream-git     # Git mirrors of upstream repos
 Optional:
 ```bash
 export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
-export AGENT_BACKEND=claude    # AI backend for agent cases (default: kiro)
-export AGENT_MODEL=sonnet      # model override for the chosen backend
+export AGENT_BACKEND=openai-qwen3.8-l40s  # backend or named native profile
+export AGENT_MODEL=local-model            # optional model override
 ```
 
 ## Running
@@ -44,12 +44,22 @@ export AGENT_MODEL=sonnet      # model override for the chosen backend
 # Agent cases (6, 7, 11, 13) with the Claude Code backend
 # (requires an authenticated `claude` CLI on PATH)
 AGENT_BACKEND=claude ./test_cve_corrector_cases.sh --test 6
+
+# Bulk full-mode campaign with a named local OpenAI-compatible profile
+CVE_METADATA="$PWD/test-cve-metadata-agent.json" \
+AGENT_BACKEND=openai-qwen3.8-l40s \
+./test_cve_corrector.sh --full-only
 ```
 
 The agent test cases run whichever backend `AGENT_BACKEND` selects; any
 backend registered with `cve_agent` works (`kiro`, `claude`, or a plugin
 from `extra/`). `cve-agent` itself verifies the backend CLI is available
 before starting and exits with a clear error if not.
+
+The bulk runner invokes the selected backend only after `cve-corrector`
+returns a recoverable conflict, build, ptest, or patch error. Clean automatic
+backports do not invoke the agent. Its resume-compatible output is therefore
+an end-to-end pipeline result rather than a pure model-capability score.
 
 For live pytest smoke tests of the Claude backend that do **not** need a
 Yocto build environment, see `tests/agent/test_claude_live.py`:
