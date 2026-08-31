@@ -264,9 +264,11 @@ def _run_build_step(state: WorkflowState) -> None:
     logger.info("Building %s", state.recipe)
     _clean_and_reset_sstate(state.workspace_path, state.recipe)
     before_build = _capture_tracked_paths(state.workspace_path)
-    if run_cmd(['devtool', 'build', state.recipe]) != 0:
-        after_build = _capture_tracked_paths(state.workspace_path)
-        state.known_generated_paths = sorted(after_build - before_build)
+    build_result = run_cmd(['devtool', 'build', state.recipe])
+    after_build = _capture_tracked_paths(state.workspace_path)
+    state.known_generated_paths = sorted(
+        set(state.known_generated_paths) | (after_build - before_build))
+    if build_result != 0:
         save_progress(state, 'build_after_patch')
         print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Build failed for {state.recipe}")
@@ -299,12 +301,19 @@ def _run_ptest_step(state: WorkflowState) -> Optional[str]:
         logger.info("Skipping ptest")
         return None
     logger.info("Running ptest for %s (after patch)", state.recipe)
+    before_ptest = _capture_tracked_paths(state.workspace_path)
     try:
         ptest_after = run_ptest(state.recipe)
     except BuildPreexistingError:
+        after_ptest = _capture_tracked_paths(state.workspace_path)
+        state.known_generated_paths = sorted(
+            set(state.known_generated_paths) | (after_ptest - before_ptest))
         save_progress(state, 'build_after_patch')
         print_build_failure_instructions(state.workspace_path, state.recipe)
         raise BuildError(f"Test image build failed for {state.recipe}") from None
+    after_ptest = _capture_tracked_paths(state.workspace_path)
+    state.known_generated_paths = sorted(
+        set(state.known_generated_paths) | (after_ptest - before_ptest))
     # Persist the post-patch summary — which includes the `Failing cases:` list
     # — to state *before* any save_progress/raise below, so a regression
     # surfaces the exact failing cases in the agent's context (save_progress
@@ -613,7 +622,7 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
     """
     if series:
         logger.error("All commit series failed")
-    if require_all_commits:
+    if series or require_all_commits:
         # The commits form a dependent chain: picking the single
         # least-conflicting commit would produce a partial, wrong fix.
         logger.error("Dependent commit chain must be resolved as a whole — "
@@ -815,7 +824,6 @@ def initialize_cve_workflow(
                 raise NotApplicableError("CVE not applicable")
 
     ptest_before = None
-
     if not config.skip_ptest and check_ptest_in_recipe(recipe):
         logger.info("Running ptest for %s (before patch)", recipe)
         ptest_before = run_ptest(recipe)
@@ -848,6 +856,12 @@ def initialize_cve_workflow(
         logger.info("Pre-patch build OK, cleaning")
         run_cmd(['bitbake', '-c', 'clean', recipe])
 
+    post_validation_tracked = _capture_tracked_paths(workspace_path)
+    # No CVE commit has been applied yet. Every tracked worktree change at
+    # this boundary is therefore pre-existing corrector/build state, not an
+    # agent patch path, and may be restored narrowly when emitting a handoff.
+    prepatch_generated_paths = sorted(post_validation_tracked)
+
     def make_state(commit_hash, series_state=None):
         state = WorkflowState(
             workspace_path=workspace_path, cve_id=cve_id, recipe=recipe,
@@ -858,7 +872,8 @@ def initialize_cve_workflow(
             ptest_before=ptest_before, series_state=series_state,
             subproject=subproject, bbappend=config.bbappend,
             version=version, sign_off=config.sign_off,
-            mainline_parent=config.mainline_parent)
+            mainline_parent=config.mainline_parent,
+            known_generated_paths=list(prepatch_generated_paths))
         state.transfer_source_prefix = source_prefix
         state.transfer_path_map = dict(path_map)
         return state
@@ -889,9 +904,9 @@ def initialize_cve_workflow(
             _handle_failed_series(
                 workspace_path, best_series, make_state, recipe)
 
-    # A dependent chain must apply in full, so never fall back to trying the
-    # commits individually — one commit alone is a partial fix.
-    if not success and hashes and not config.require_all_commits:
+    # A declared series is one ordered fix unit. Never fall back to applying
+    # one hash from it individually, which can produce a partial CVE fix.
+    if not success and hashes and not series:
         success, successful_hash = apply_single_commits(
             workspace_path, hashes, subproject=subproject,
             mainline_parent=config.mainline_parent)
