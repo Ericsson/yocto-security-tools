@@ -39,9 +39,17 @@ RETIER=false
 DRY_RUN=false
 SKIP_JUDGE=false
 MODELS_SELECTOR="default"
+MODELS_EXPLICIT=false
+AGENT_BACKEND="kiro"
+AGENT_MODEL=""
+AGENT_MODEL_SET=false
+CUSTOM_MODEL_LABEL=""
 RESUME_DIR=""
 RUN_TIMEOUT="${RUN_TIMEOUT:-3600}"  # per cve-agent invocation, seconds
+SESSION_TIMEOUT=""
+JUDGE_BACKEND="kiro"
 JUDGE_MODEL="claude-opus-4.8"
+JUDGE_MODEL_SET=false
 LIST_CASES=false
 declare -a RUN_CASES=()   # 1-based case numbers from --run-case; empty = all
 SELECTED_CVES=""          # newline-separated CVE ids to run; empty = all
@@ -122,7 +130,16 @@ tests/benchmark/README.md for what is in each and how to change them.
                        Does NOT add, remove, or reorder roster CVEs, and
                        preserves the author-supplied recipe and series_len.
   --models <sel>      "default" (default), "full", or a comma-separated list
-                       of model names
+                       of Kiro model names
+  --backend <name>    Agent backend selector (default: kiro). Named native
+                       OpenAI profiles use openai-<profile>.
+  --model <name>      Run one model instead of the Kiro model roster. Optional
+                       for a named OpenAI profile that supplies its own model.
+  --session-timeout N Agent session timeout in seconds. When omitted, use the
+                       cve-agent default. The OpenAI wrapper defaults to 1800.
+  --judge-backend <b> Judge with kiro (default), openai, or openai-<profile>
+  --judge-model <m>   Judge model (default: claude-opus-4.8 for Kiro). May be
+                       omitted when a named OpenAI judge profile supplies it.
   --list-cases        List the roster CVEs as numbered cases (in run order)
                        and exit, without running anything.
   --run-case N [N...] Run only the given case number(s) from --list-cases
@@ -163,6 +180,34 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || die "--models requires an argument"
             MODELS_SELECTOR="$1"
+            MODELS_EXPLICIT=true
+            ;;
+        --backend)
+            shift
+            [[ $# -gt 0 ]] || die "--backend requires an argument"
+            AGENT_BACKEND="$1"
+            ;;
+        --model)
+            shift
+            [[ $# -gt 0 ]] || die "--model requires an argument"
+            AGENT_MODEL="$1"
+            AGENT_MODEL_SET=true
+            ;;
+        --session-timeout)
+            shift
+            [[ $# -gt 0 ]] || die "--session-timeout requires an argument"
+            SESSION_TIMEOUT="$1"
+            ;;
+        --judge-backend)
+            shift
+            [[ $# -gt 0 ]] || die "--judge-backend requires an argument"
+            JUDGE_BACKEND="$1"
+            ;;
+        --judge-model)
+            shift
+            [[ $# -gt 0 ]] || die "--judge-model requires an argument"
+            JUDGE_MODEL="$1"
+            JUDGE_MODEL_SET=true
             ;;
         --list-cases) LIST_CASES=true ;;
         --run-case)
@@ -186,6 +231,45 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if [[ "$AGENT_MODEL_SET" == true && "$MODELS_EXPLICIT" == true ]]; then
+    die "--model and --models are mutually exclusive"
+fi
+if [[ -n "$SESSION_TIMEOUT" && ! "$SESSION_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    die "--session-timeout must be a positive integer"
+fi
+if [[ ! "$RUN_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    die "RUN_TIMEOUT must be a positive integer"
+fi
+if [[ "$AGENT_BACKEND" != "kiro" && "$MODELS_EXPLICIT" == true ]]; then
+    die "--models is the Kiro roster; use --model with backend '$AGENT_BACKEND'"
+fi
+if [[ "$JUDGE_BACKEND" != "kiro" && "$JUDGE_BACKEND" != "openai" \
+        && "$JUDGE_BACKEND" != openai-* ]]; then
+    die "--judge-backend must be kiro, openai, or openai-<profile>"
+fi
+if [[ "$JUDGE_BACKEND" != "kiro" && "$JUDGE_MODEL_SET" != true ]]; then
+    # A named OpenAI profile (or CVE_AGENT_OPENAI_MODEL for plain openai)
+    # supplies the model unless the operator explicitly overrides it.
+    JUDGE_MODEL=""
+fi
+
+# Non-Kiro backends and an explicit --model are single-model runs. Keep the
+# display/artifact key separate from the optional model override: a named
+# OpenAI profile can supply its model without receiving a conflicting --model.
+if [[ "$AGENT_MODEL_SET" == true || "$AGENT_BACKEND" != "kiro" ]]; then
+    if [[ -n "$AGENT_MODEL" ]]; then
+        CUSTOM_MODEL_LABEL="${AGENT_MODEL//\//_}"
+        CUSTOM_MODEL_LABEL="${CUSTOM_MODEL_LABEL//:/_}"
+    elif [[ "$AGENT_BACKEND" == openai-* ]]; then
+        CUSTOM_MODEL_LABEL="${AGENT_BACKEND#openai-}"
+    else
+        CUSTOM_MODEL_LABEL="openai"
+    fi
+    if [[ ! "$CUSTOM_MODEL_LABEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+        die "model label is not safe for result filenames: $CUSTOM_MODEL_LABEL"
+    fi
+fi
 
 [[ -f "$CVE_METADATA" ]] || die "CVE metadata fixture not found: $CVE_METADATA"
 [[ -f "$ROSTER_FILE" ]] || die "Fixed roster not found: $ROSTER_FILE"
@@ -285,6 +369,48 @@ elif [[ "$(head -n1 "$JUDGE_CSV")" != "$JUDGE_HEADER" && "$(wc -l < "$JUDGE_CSV"
     # csv.DictReader gives the missing keys as None.
     echo "$JUDGE_HEADER" > "$JUDGE_CSV"
 fi
+
+ensure_campaign_manifest() {
+    local resume=false
+    [[ -n "$RESUME_DIR" ]] && resume=true
+    python3 - "$RESULTS_DIR" "$resume" "$ROSTER_FILE" "$CVE_METADATA" \
+        "$AGENT_BACKEND" "$AGENT_MODEL" "$CUSTOM_MODEL_LABEL" \
+        "$MODELS_SELECTOR" "$JUDGE_BACKEND" "$JUDGE_MODEL" \
+        "$SESSION_TIMEOUT" "$RUN_TIMEOUT" <<'PY'
+import sys
+from pathlib import Path
+
+from tests.benchmark.bench_lib import resolve_models
+from tests.benchmark.benchmark_manifest import (
+    BenchmarkManifestError,
+    build_run_manifest,
+    ensure_run_manifest,
+)
+
+(results_dir, resume, roster, metadata, agent_backend, agent_model,
+ custom_label, models_selector, judge_backend, judge_model,
+ session_timeout, run_timeout) = sys.argv[1:]
+agent_models = (
+    [agent_model or None]
+    if custom_label else [entry['name'] for entry in resolve_models(models_selector)]
+)
+try:
+    manifest = build_run_manifest(
+        Path(roster),
+        Path(metadata),
+        agent_backend,
+        agent_models,
+        judge_backend,
+        judge_model or None,
+        session_timeout=int(session_timeout) if session_timeout else None,
+        run_timeout=int(run_timeout),
+    )
+    ensure_run_manifest(Path(results_dir), manifest, resume=resume == 'true')
+except (BenchmarkManifestError, OSError, ValueError) as error:
+    print(f'ERROR: {error}', file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
 
 
 # ── Fixed roster: re-verify (optional) then read ────────────────────────────
@@ -487,6 +613,10 @@ if [[ "$RETIER" == true ]]; then
     fi
 fi
 
+if ! ensure_campaign_manifest; then
+    die "Benchmark run manifest validation failed"
+fi
+
 cves_for_tier() {
     local tier="$1"
     python3 -c "
@@ -521,11 +651,16 @@ done
 
 # ── Cost visibility + single confirmation (covers phase 1 AND phase 2) ─────
 if [[ "$DRY_RUN" != true ]]; then
-    weight=$(python3 -c "
+    if [[ -n "$CUSTOM_MODEL_LABEL" ]]; then
+        weight=$(python3 -c "print(f'{float(${TOTAL_PLANNED}):.2f}')")
+        log "Relative cost weight uses a neutral 1.00 multiplier for custom model '$CUSTOM_MODEL_LABEL'."
+    else
+        weight=$(python3 -c "
 from tests.benchmark.bench_lib import relative_cost_weight, resolve_models
 models = resolve_models('${MODELS_SELECTOR}')
 print(f'{relative_cost_weight(models, ${TOTAL_PLANNED}):.2f}')
 ")
+    fi
     log "Relative cost weight (models x planned CVEs, NOT a credit prediction): $weight"
 
     if [[ -s "$AGENT_CSV" ]] && [[ $(wc -l < "$AGENT_CSV") -gt 1 ]]; then
@@ -552,20 +687,28 @@ row_exists() {
 run_agent_phase() {
     source_build_env
 
-    # Preflight: the benchmark always drives `--backend kiro`, so kiro-cli must
-    # be invokable. If it isn't, every run would fail identically for an
-    # environment reason (not a model-quality one), so fail fast here rather
-    # than churning through the whole roster recording the same failure.
-    if [[ "$DRY_RUN" != true ]] && ! command -v kiro-cli >/dev/null 2>&1; then
-        die "kiro-cli not found on PATH — the AI agent cannot be triggered. Install/activate kiro-cli (https://kiro.dev/docs/install) before benchmarking."
+    # Kiro is required when it drives either phase. An OpenAI agent run with
+    # --skip-judge or an OpenAI judge does not need kiro-cli at all.
+    local needs_kiro=false
+    if [[ "$AGENT_BACKEND" == "kiro" \
+            || ("$SKIP_JUDGE" != true && "$JUDGE_BACKEND" == "kiro") ]]; then
+        needs_kiro=true
+    fi
+    if [[ "$DRY_RUN" != true && "$needs_kiro" == true ]] \
+            && ! command -v kiro-cli >/dev/null 2>&1; then
+        die "kiro-cli not found on PATH — the selected agent or judge requires it. Install/activate kiro-cli (https://kiro.dev/docs/install) before benchmarking."
     fi
 
     local models_list
-    models_list=$(python3 -c "
+    if [[ -n "$CUSTOM_MODEL_LABEL" ]]; then
+        models_list="$CUSTOM_MODEL_LABEL"
+    else
+        models_list=$(python3 -c "
 from tests.benchmark.bench_lib import resolve_models
 for m in resolve_models('${MODELS_SELECTOR}'):
     print(m['name'])
 ")
+    fi
 
     for tier in "${ROSTER_TIERS[@]}"; do
         while IFS= read -r cve_id; do
@@ -610,21 +753,57 @@ for m in resolve_models('${MODELS_SELECTOR}'):
                     # the agent in its own process group; $! is that group's
                     # leader, so on_interrupt can `kill -- -$AGENT_PGID` the
                     # whole tree.
-                    echo "y" | setsid timeout "$RUN_TIMEOUT" python3 -m cve_agent \
+                    local requested_model="$model"
+                    if [[ -n "$CUSTOM_MODEL_LABEL" ]]; then
+                        requested_model="$AGENT_MODEL"
+                    fi
+                    local artifact_data_root="" artifact_dir=""
+                    mkdir -p "${RESULTS_DIR}/agent-artifacts"
+                    artifact_data_root=$(mktemp -d \
+                        "${RESULTS_DIR}/agent-artifacts/${cve_id}_${model}.XXXXXX") \
+                        || die "Cannot create host-owned artifact root"
+                    local -a agent_command=(python3 -m cve_agent \
                         --cve-info "$CVE_METADATA" \
                         --cve-id "$cve_id" \
-                        --model "$model" \
-                        --backend kiro \
+                        --backend "$AGENT_BACKEND" \
                         --trust \
                         --no-knowledge \
                         --meta-layer "${OE_DIR}/meta" \
                         --mirror-dir "$MIRROR_DIR" \
-                        --clean \
+                        --clean)
+                    if [[ -n "$requested_model" ]]; then
+                        agent_command+=(--model "$requested_model")
+                    fi
+                    if [[ -n "$SESSION_TIMEOUT" ]]; then
+                        agent_command+=(--session-timeout "$SESSION_TIMEOUT")
+                    fi
+                    echo "y" | CVE_TOOLS_DATA_DIR="$artifact_data_root" \
+                        setsid timeout "$RUN_TIMEOUT" "${agent_command[@]}" \
                         >> "$run_log" 2>&1 &
                     AGENT_PGID=$!
                     wait "$AGENT_PGID" || agent_exit=$?
                     AGENT_PGID=""
                     duration_s=$(( $(date +%s) - start_s ))
+
+                    # The root is unique to this host-launched process, and its
+                    # location is filtered out of the Kiro child environment.
+                    # Select the sole created run directory out-of-band; model
+                    # text in the combined stdout/stderr log is never consulted.
+                    artifact_dir=$(python3 - "$artifact_data_root" "$cve_id" <<'PY'
+import sys
+from pathlib import Path
+
+case_root = Path(sys.argv[1]) / 'results' / 'cases' / sys.argv[2]
+try:
+    runs = [entry for entry in case_root.iterdir()
+            if entry.is_dir() and not entry.is_symlink()]
+except OSError:
+    runs = []
+if len(runs) != 1:
+    raise SystemExit(1)
+print(runs[0].resolve(strict=True))
+PY
+                    ) || artifact_dir=""
 
                     # An agent that never ran because the environment can't
                     # trigger it (missing/unusable kiro-cli, un-installable
@@ -656,24 +835,81 @@ with open('${run_log}', encoding='utf-8', errors='replace') as f:
     c = parse_kiro_credits(f.read())
 print('' if c is None else c)
 ")
-                    commands=$(python3 -c "
-from tests.benchmark.bench_lib import count_tool_calls
-with open('${run_log}', encoding='utf-8', errors='replace') as f:
-    print(count_tool_calls(f.read()))
-")
+                    commands=$(python3 - "$run_log" "$artifact_dir" \
+                        "$cve_id" "$AGENT_BACKEND" "$requested_model" <<'PY'
+import sys
+from pathlib import Path
 
-                    # cve-agent's SUCCESS and SKIPPED result statuses both exit
-                    # 0 (see cve_agent/__init__.py's ResultStatus and
-                    # __main__.py's success-status tuple) — SKIPPED means "the
-                    # corrector bailed out before touching anything" (e.g. a
-                    # pre-existing build failure unrelated to this CVE), so
-                    # there is no generated patch to compare against the
-                    # reference fix. Detect it from the CLI's own printed
-                    # "✓ <cve>: skipped" line and record it distinctly instead
-                    # of running compare_patches_detailed against nothing.
-                    if [[ "$exit_status" == "0" ]] && grep -q "✓ ${cve_id}: skipped" "$run_log"; then
+from tests.benchmark.bench_lib import (
+    BenchmarkArtifactExpectation,
+    count_tool_calls,
+)
+from tests.benchmark.benchmark_manifest import resolve_backend_identity
+
+log_path, artifact_path, cve_id, selector, requested_model = sys.argv[1:]
+identity = resolve_backend_identity(selector, requested_model or None)
+expected = BenchmarkArtifactExpectation(
+    cve_id,
+    str(identity['backend']),
+    identity['profile'] if isinstance(identity['profile'], str) else None,
+    str(identity['model']),
+)
+with open(log_path, encoding='utf-8', errors='replace') as handle:
+    transcript = handle.read()
+artifact_dir = Path(artifact_path) if artifact_path else None
+print(count_tool_calls(transcript, artifact_dir, expected))
+PY
+                    )
+
+                    # Preserve generated recipe patches before classifying the
+                    # durable result. A strict semantic gate may make cve-agent
+                    # exit non-zero after the workflow and build completed.
+                    save_generated_patches "$cve_id" "$model"
+
+                    local durable_summary="" candidate_ready=false
+                    read -r durable_summary candidate_ready < <(python3 - \
+                        "$artifact_dir" "$cve_id" "$AGENT_BACKEND" \
+                        "$requested_model" <<'PY'
+import sys
+from pathlib import Path
+
+from tests.benchmark.bench_lib import (
+    BenchmarkArtifactExpectation,
+    benchmark_artifact_outcome,
+)
+from tests.benchmark.benchmark_manifest import resolve_backend_identity
+
+artifact_path, cve_id, selector, requested_model = sys.argv[1:]
+identity = resolve_backend_identity(selector, requested_model or None)
+expected = BenchmarkArtifactExpectation(
+    cve_id,
+    str(identity['backend']),
+    identity['profile'] if isinstance(identity['profile'], str) else None,
+    str(identity['model']),
+)
+outcome = (
+    benchmark_artifact_outcome(Path(artifact_path), expected)
+    if artifact_path else None
+)
+if outcome is None:
+    print('- false')
+else:
+    print(outcome[0], 'true' if outcome[1] else 'false')
+PY
+                    )
+                    if [[ "$durable_summary" == "SECURITY_VERIFIED" ]]; then
+                        exit_status="0"
+                    elif [[ "$durable_summary" != "-" ]]; then
+                        exit_status="$durable_summary"
+                    fi
+
+                    # A skipped durable outcome has no candidate. Completed,
+                    # built outcomes remain comparable even when the semantic
+                    # release gate requires review and returned exit 14.
+                    if [[ "$durable_summary" == "SKIPPED" ]]; then
                         diff_bucket="skipped"
-                    elif [[ "$exit_status" == "0" ]]; then
+                    elif [[ "$candidate_ready" == true \
+                            || "$exit_status" == "0" ]]; then
                         local diff_output
                         diff_output=$(compare_patches_detailed "$cve_id" "$RESULTS_DIR" "meta") || true
                         diff_lines=$(echo "$diff_output" | grep "^DIFF_CHANGES:" | cut -d: -f2 || echo "-")
@@ -742,10 +978,6 @@ print(outcome or '-', reason or '-')
                 echo "${cve_id},${tier},${model},${exit_status},${outcome},${skip_reason},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
                 log "  -> exit=${exit_status} outcome=${outcome:-?}${skip_reason:+ (${skip_reason})} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
 
-                # Save the agent's generated patch(es) for later evaluation
-                # before the reset wipes them from the tree.
-                save_generated_patches "$cve_id" "$model"
-
                 # Always reset, regardless of outcome, to recover for the next run.
                 reset_oe_tree >> "$run_log" 2>&1
             done <<< "$models_list"
@@ -803,24 +1035,34 @@ for row in filter_for_judging(agent_rows, judge_rows):
             [[ "$bucket" == "partial" ]] && scope="partial"
             # stdout carries exactly two lines: the CSV row, then a short
             # human-readable summary for the console log.
-            payload=$(python3 -c "
-import csv, io
+            if ! payload=$(python3 - "$diff_patch" "$bucket" "$cve_id" \
+                    "$model" "$scope" "$JUDGE_BACKEND" "$JUDGE_MODEL" <<'PY'
+import csv
+import io
+import sys
+
 from tests.benchmark.bench_lib import judge_diff, scope_diff_to_common_files
-with open('${diff_patch}', encoding='utf-8', errors='replace') as f:
+
+diff_patch, bucket, cve_id, model, scope, backend, judge_model = sys.argv[1:]
+with open(diff_patch, encoding='utf-8', errors='replace') as f:
     diff_text = f.read()
-if '${bucket}' == 'partial':
+if bucket == 'partial':
     diff_text = scope_diff_to_common_files(diff_text)
 if not diff_text.strip():
     judgment, reason, credits = 'structural-only', 'Shared files are identical; only the set of touched files differs.', None
 else:
-    judgment, reason, credits = judge_diff(diff_text, model='${JUDGE_MODEL}')
+    judgment, reason, credits = judge_diff(
+        diff_text, model=judge_model, backend=backend)
 buf = io.StringIO()
 csv.writer(buf, lineterminator='').writerow(
-    ['${cve_id}', '${model}', judgment, reason,
-     '' if credits is None else credits, '${scope}'])
+    [cve_id, model, judgment, reason,
+     '' if credits is None else credits, scope])
 print(buf.getvalue())
-print(f'{judgment} (scope=${scope}) -- {reason}'.replace(chr(10), ' '))
-")
+print(f'{judgment} (scope={scope}) -- {reason}'.replace(chr(10), ' '))
+PY
+            ); then
+                die "Judge backend '$JUDGE_BACKEND' failed for $cve_id / $model"
+            fi
             printf '%s\n' "$(printf '%s' "$payload" | head -n1)" >> "$JUDGE_CSV"
             log "    -> $(printf '%s' "$payload" | tail -n1)"
         done <<< "$to_judge"

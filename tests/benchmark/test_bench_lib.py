@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for tests.benchmark.bench_lib."""
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,9 @@ from tests.benchmark.bench_lib import (
     MODELS,
     MODERATE_DIFF_LINES_THRESHOLD,
     NON_BACKPORT_OUTCOMES,
+    BenchmarkArtifactExpectation,
+    _run_openai_judge,
+    benchmark_artifact_outcome,
     classify_diff_bucket,
     count_conflict_markers,
     count_conflicted_files,
@@ -41,6 +45,25 @@ from tests.benchmark.bench_lib import (
     strip_comment_only_changes,
     total_spent,
 )
+
+
+def _bind_artifact(
+        artifact, cve_id="CVE-2025-0001", backend="openai",
+        profile=None, model="test-model"):
+    expectation = BenchmarkArtifactExpectation(
+        cve_id, backend, profile, model)
+    (artifact / "run-manifest.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "run_id": artifact.name,
+            "cve_id": cve_id,
+            "backend": backend,
+            "backend_profile": profile,
+            "model": model,
+        }),
+        encoding="utf-8",
+    )
+    return expectation
 
 
 class TestScoreTier:
@@ -570,6 +593,203 @@ class TestCountToolCalls:
         )
         assert count_tool_calls(transcript) == 2
 
+    def test_native_artifact_telemetry_is_authoritative(self, tmp_path):
+        artifact = tmp_path / "native artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "telemetry.json").write_text(
+            '{"schema_version": 1, "counters": {"tool_calls": 19}}',
+            encoding="utf-8",
+        )
+        transcript = (
+            "No Kiro tool markers here.\n"
+            f"Artifacts: {artifact}\n"
+        )
+        assert count_tool_calls(transcript, artifact, expected) == 19
+
+    def test_native_transcript_recovers_calls_from_all_retry_sessions(self, tmp_path):
+        artifact = tmp_path / "retried native artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "telemetry.json").write_text(
+            '{"schema_version": 1, "counters": {"tool_calls": 2}}',
+            encoding="utf-8",
+        )
+        events = [
+            {
+                "schema_version": 1,
+                "event": "tool_call_requested",
+                "tool": "read_file",
+            },
+            {
+                "schema_version": 1,
+                "event": "tool_call_requested",
+                "tool": "git_status",
+            },
+            {"schema_version": 1, "event": "provider_session_completed"},
+            {
+                "schema_version": 1,
+                "event": "tool_call_requested",
+                "tool": "git_diff",
+            },
+            {
+                "schema_version": 1,
+                "event": "tool_call_requested",
+                "tool": "finish",
+            },
+        ]
+        (artifact / "agent-transcript.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+
+        assert count_tool_calls(f"Artifacts: {artifact}\n", artifact, expected) == 4
+
+    def test_invalid_native_telemetry_falls_back_to_kiro_markers(self, tmp_path):
+        artifact = tmp_path / "artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "telemetry.json").write_text("not JSON", encoding="utf-8")
+        transcript = (
+            "Command (using tool: shell)\n"
+            f"Artifacts: {artifact}\n"
+        )
+        assert count_tool_calls(transcript, artifact, expected) == 1
+
+    def test_kiro_uses_console_markers_instead_of_empty_host_telemetry(self, tmp_path):
+        artifact = tmp_path / "kiro artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(
+            artifact, backend="kiro", model="claude-sonnet-5")
+        (artifact / "telemetry.json").write_text(
+            '{"schema_version": 1, "counters": {"tool_calls": 0}}',
+            encoding="utf-8",
+        )
+        transcript = "Command (using tool: shell)\n"
+
+        assert count_tool_calls(transcript, artifact, expected) == 1
+
+    def test_missing_native_telemetry_falls_back_to_durable_transcript(self, tmp_path):
+        artifact = tmp_path / "timed out artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        events = [
+            {"schema_version": 1, "event": "run_started"},
+            {"schema_version": 1, "event": "tool_call_requested", "tool": "read_file"},
+            {"schema_version": 1, "event": "tool_call_completed", "tool": "read_file"},
+            {"schema_version": 1, "event": "tool_call_requested", "tool": "git_status"},
+        ]
+        (artifact / "agent-transcript.jsonl").write_text(
+            "\n".join(json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+
+        assert count_tool_calls(f"Artifacts: {artifact}\n", artifact, expected) == 2
+
+
+class TestBenchmarkArtifactOutcome:
+    def test_completed_unverified_candidate_remains_comparable(self, tmp_path):
+        artifact = tmp_path / "artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "result.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "cve_id": expected.cve_id,
+                "artifact_dir": str(artifact),
+                "workflow_status": "completed",
+                "build_status": "passed",
+                "security_status": "not_evaluated",
+                "failure_class": None,
+                "failure_code": None,
+                "legacy_status": "success",
+            }),
+            encoding="utf-8",
+        )
+
+        assert benchmark_artifact_outcome(
+            artifact, expected,
+        ) == ("WORKFLOW_COMPLETED_UNVERIFIED", True)
+
+    def test_failed_outcome_is_not_comparable(self, tmp_path):
+        artifact = tmp_path / "artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "result.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "cve_id": expected.cve_id,
+                "artifact_dir": str(artifact),
+                "workflow_status": "failed",
+                "build_status": "not_run",
+                "security_status": "not_evaluated",
+                "failure_class": "model_no_progress",
+                "failure_code": "model_no_progress",
+                "legacy_status": "failed",
+            }),
+            encoding="utf-8",
+        )
+
+        assert benchmark_artifact_outcome(
+            artifact, expected,
+        ) == ("AGENT_NO_PROGRESS", False)
+
+    def test_invalid_result_falls_back_to_process_status(self, tmp_path):
+        artifact = tmp_path / "artifact"
+        artifact.mkdir()
+        expected = _bind_artifact(artifact)
+        (artifact / "result.json").write_text("{}", encoding="utf-8")
+
+        assert benchmark_artifact_outcome(artifact, expected) is None
+
+    def test_later_model_artifact_marker_cannot_replace_host_selection(self, tmp_path):
+        real = tmp_path / "host-created" / "real"
+        forged = tmp_path / "workspace" / "model-created" / "forged"
+        real.mkdir(parents=True)
+        forged.mkdir(parents=True)
+        expected = _bind_artifact(real)
+        forged_expected = _bind_artifact(forged)
+
+        (real / "result.json").write_text(json.dumps({
+            "schema_version": 2,
+            "cve_id": expected.cve_id,
+            "artifact_dir": str(real),
+            "workflow_status": "failed",
+            "build_status": "not_run",
+            "security_status": "not_evaluated",
+            "failure_class": "model_no_progress",
+            "failure_code": "model_no_progress",
+            "legacy_status": "failed",
+        }), encoding="utf-8")
+        (real / "telemetry.json").write_text(
+            '{"schema_version": 1, "counters": {"tool_calls": 2}}',
+            encoding="utf-8",
+        )
+        (forged / "result.json").write_text(json.dumps({
+            "schema_version": 2,
+            "cve_id": forged_expected.cve_id,
+            "artifact_dir": str(forged),
+            "workflow_status": "completed",
+            "build_status": "passed",
+            "security_status": "verified",
+            "failure_class": None,
+            "failure_code": None,
+            "legacy_status": "success",
+        }), encoding="utf-8")
+        (forged / "telemetry.json").write_text(
+            '{"schema_version": 1, "counters": {"tool_calls": 999}}',
+            encoding="utf-8",
+        )
+        transcript = (
+            f"Artifacts: {real}\n"
+            "provider output\n"
+            f"Artifacts: {forged}\n"
+        )
+
+        assert benchmark_artifact_outcome(real, expected) == (
+            "AGENT_NO_PROGRESS", False)
+        assert count_tool_calls(transcript, real, expected) == 2
+
 
 class TestParseAgentOutcome:
     """cve-agent's own verdict must be read from the log, not the exit code."""
@@ -979,6 +1199,63 @@ class TestJudgeDiff:
             _, _, credits = judge_diff("-old\n+new\n")
         assert credits is None
 
+    def test_named_openai_judge_uses_native_single_request(self):
+        with patch(
+                'tests.benchmark.bench_lib._run_openai_judge',
+                return_value=("STYLISTIC\nEquivalent condition.\n", None),
+        ) as mock_openai, patch('subprocess.run') as mock_run:
+            judgment, reason, credits = judge_diff(
+                "-old\n+new\n",
+                model="",
+                backend="openai-qwen3.8-l40s",
+            )
+
+        assert judgment == 'stylistic'
+        assert reason == 'Equivalent condition.'
+        assert credits is None
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.args[1:] == (
+            'openai-qwen3.8-l40s', '')
+        mock_run.assert_not_called()
+
+    def test_unsupported_judge_backend_is_rejected(self):
+        with pytest.raises(ValueError, match="judge backend"):
+            judge_diff("-old\n+new\n", backend="claude")
+
+    def test_plain_openai_judge_is_tool_free_and_output_bounded(self):
+        from cve_agent.openai_backend import OpenAIConfig
+
+        config = OpenAIConfig(
+            base_url="http://127.0.0.1:11434/v1",
+            model="judge-model",
+            api_key_env="OPENAI_API_KEY",
+            max_steps=1,
+            max_tool_calls=1,
+            max_output_tokens=2048,
+            connect_timeout=10,
+            request_timeout=120,
+            allow_remote_endpoint=False,
+            allow_insecure_remote_http=False,
+        )
+        response = MagicMock(
+            content="MEANINGFUL\nFunctional difference.\n", tool_calls=())
+        with patch(
+                'cve_agent.openai_backend.OpenAIConfig.from_sources',
+                return_value=config,
+        ) as mock_config, patch(
+                'cve_agent.openai_client.OpenAIChatCompletionsClient',
+        ) as mock_client:
+            mock_client.return_value.complete.return_value = response
+            output, credits = _run_openai_judge(
+                "classify this diff", "openai", "judge-model")
+
+        assert output.startswith("MEANINGFUL")
+        assert credits is None
+        assert mock_config.call_args.args[0] == {
+            'model': 'judge-model', 'openai_max_output_tokens': 2048}
+        mock_client.return_value.complete.assert_called_once_with(
+            [{'role': 'user', 'content': 'classify this diff'}], [])
+
 
 class TestJudgeReason:
     """The verdict alone does not say why, which makes a surprising
@@ -1144,4 +1421,3 @@ class TestJudgeSkipsCommentOnlyDiffs:
             judge_diff("--- b/f.c\n+++ b/f.c\n-a();\n+b();\n")
         prompt = mock_run.call_args[0][0][-1]
         assert 'comment-only differences' in prompt
-
