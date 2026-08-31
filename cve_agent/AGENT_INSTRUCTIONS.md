@@ -52,22 +52,30 @@ of tool names:
 
 Bash commands you CAN run:
 
-- Inspect: `git status`, `git status --porcelain`, `git status --porcelain -- <path>`,
+- Inspect: `git status`, `git status --porcelain`,
+  `git status --porcelain -- <path>...`,
   `git diff[ *]`, `git log *`,
   `git show *`, `git rev-parse *`, `git merge-base *`, `git ls-files[ *]`
   (`git ls-files -u` lists the unmerged stage entries of a conflict directly),
   `git submodule status[ *]` (diagnoses a gitlink recorded upstream that does
   not exist in a tarball-sourced workspace), `cat *`, `head *`, `tail *`,
-  `wc *`.
+  `wc *`, `sed -n '<start>,<end>p' [<path>]` (print one line range — the only
+  `sed` form allowed; `sed -i` and `s///` are rejected).
+- Inspect refs and objects (all read-only): `git branch`, `git branch -a`,
+  `git branch [-a|-r] --contains <sha>` (which branches hold a commit),
+  `git describe [--tags] <rev>`, `git show-ref`, `git ls-tree *`,
+  `git cat-file -t|-s|-p <sha>` (confirm an object exists before using it),
+  `git grep *`. The mutating forms — `git branch -f/-d/-D/-m`,
+  `git update-ref` — are NOT available.
 - Read a file **as committed** rather than as it sits in the working tree:
   `git show HEAD:<path>` (or `git show <sha>:<path>` for any other commit) —
   e.g. to see the file exactly as your own resolution committed it, or its
   pre-conflict content at `original-version`. Use your file-reading tool for
   the working-tree copy; use this when the committed content is what matters.
 - Stage / unstage: `git add *`, `git rm [--cached] <path>`,
-  `git restore --staged <path>`.
-- Take one side of a conflict wholesale: `git checkout --ours <path>`,
-  `git checkout --theirs <path>`.
+  `git restore --staged <path>...`.
+- Take one side of a conflict wholesale: `git checkout --ours <path>...`,
+  `git checkout --theirs <path>...`.
 - Cherry-pick: `git cherry-pick <sha>` (start a fresh cherry-pick, e.g. `git
   cherry-pick -x <sha>` for a prerequisite), `git cherry-pick
   --continue|--no-edit --continue|--abort|--skip`, `git am --continue|--abort`.
@@ -80,22 +88,28 @@ Bash commands you CAN run:
   scratch (e.g. so `do_configure` regenerates files a stale sstate restore
   left missing). No other `bitbake` subcommand is permitted.
 - Capture build output: `tee <agent_dir>/<name>.log` (only paths under a
-  `cve_agent/` directory ending in `.log`), and
-  `echo "Exit code: ${PIPESTATUS[0]}"` / `echo "Exit code: $?"` verbatim.
+  `cve_agent/` directory ending in `.log`), and an `echo` whose double-quoted
+  message ends in `$?` or `${PIPESTATUS[0]}` — e.g.
+  `echo "Exit code: ${PIPESTATUS[0]}"`. `echo` with any other content is
+  rejected; it exists only to surface an exit code.
 
 Notes on the allow-list's exact shapes:
 
-- Pathspec commands (`git rm`, `git restore --staged`, `git checkout
-  --ours/--theirs`) take **one** path per invocation and the path must not
-  start with `-`. Run them once per file instead of passing several.
+- Pathspec commands accept **several** paths in one call
+  (`git restore --staged a.c b.c`, `git checkout --theirs a.c b.c`,
+  `git status --porcelain -- a.c b.c`), but every path must be
+  whitespace-separated and must not start with `-`. `git rm` remains one path
+  per invocation. A trailing flag such as `git restore --staged a.c --worktree`
+  is therefore rejected — it is read as a path starting with `-`.
 - `-m` messages must be double-quoted and contain no `"`, `$`, or backtick.
   For a multi-paragraph message, write it to a file and use `git commit -F
   <file>`.
 - `git reset` is NOT available in any form. Use `git restore --staged <path>`
-  to unstage — it is index-only and leaves the working tree untouched.
+  to unstage — it is index-only and leaves the working tree untouched. To back
+  out a cherry-pick, see **Undoing a Bad Cherry-Pick**.
 - Also unavailable: `git stash`, `git submodule update`, `git checkout <path>`
-  (without `--ours`/`--theirs`), and anything with `--no-verify`, `--force`, or
-  `--hard`.
+  (without `--ours`/`--theirs`), `git revert`, `git update-ref`,
+  `git branch -f`, and anything with `--no-verify`, `--force`, or `--hard`.
 
 The context file path given to you at session start (e.g. `context.md`
 under the agent dir) is always valid — read it directly rather than
@@ -217,6 +231,62 @@ stable branch, mention it in the commit message with the omitted-file form from
 
 Only omit a file if including it would break the build or if it depends on
 code/headers/build rules that don't exist in the stable branch.
+
+## Undoing a Bad Cherry-Pick
+
+`git reset`, `git revert`, `git update-ref`, `git branch -f` and
+`git checkout <commit>` are all unavailable — **you cannot move `HEAD` or
+rewrite history, and no variation of those commands will work.** Do not spend
+turns probing for one. Identify which case you are in and follow it.
+
+**Case 1 — the cherry-pick is still in progress.** Confirm with `git status`
+(it reports "You are currently cherry-picking"), then:
+```bash
+git cherry-pick --abort     # discard this cherry-pick entirely
+git cherry-pick --skip      # drop just this commit, continue the sequence
+```
+This is a true, complete undo. Always prefer it while a cherry-pick is in
+progress.
+
+**Case 2 — already committed, but only the content is wrong.** You do not need
+to undo the commit. Correct the tree and amend in place:
+```bash
+git status --porcelain      # what is staged / modified
+git show --stat HEAD        # what the commit currently contains
+```
+Fix the file with your file-editing tool, then `git add <path>...` and
+`git commit --amend --no-edit`. The commit keeps its message and position;
+only its content changes. This covers almost every "the cherry-pick brought in
+too much" situation, because the fix is to *delete* the unwanted hunks.
+
+**Case 3 — you need a file back exactly as it was before the cherry-pick.**
+Its pre-cherry-pick content is at the `original-version` tag. Capture it to a
+log in the agent dir, read that with your file-reading tool, and write the
+needed parts back with your file-editing tool:
+```bash
+git show original-version:<path> | tee <agent_dir>/pre-image.log
+```
+Then `git add <path>` and `git commit --amend --no-edit`. Use targeted
+replacements against the pre-image rather than retyping a large file. `git
+restore <path>` (without `--staged`) is not available, so this `tee` +
+file-tool route is the sanctioned way to recover committed content.
+
+**Case 4 — the wrong commit was cherry-picked altogether** (wrong SHA, or a
+commit vastly larger than the upstream fix). Confirm the mismatch first:
+```bash
+git log original-version..HEAD --oneline   # what actually got applied
+git show --stat HEAD                       # size of what was applied
+git show --stat <upstream_sha>              # size of the intended fix
+```
+If the applied commit is a different change rather than an adaptable version of
+the intended fix, do **NOT** try to reconstruct the tree by hand — that
+produces a large, unreviewable diff. Stop and escalate: write
+`<agent_dir>/conclusion.json` **with your file-writing tool** —
+```json
+{"needs_human": true, "reason": "cherry-picked <applied_sha> (<N> lines / <M> files) instead of the intended fix <upstream_sha> (<n> lines); a committed cherry-pick cannot be undone with the available commands"}
+```
+— then **stop and make no other changes.** Escalating here is the correct
+outcome, not a failure.
 
 ## Workflow
 
