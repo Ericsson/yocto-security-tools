@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sys
 from collections.abc import Mapping
@@ -85,6 +86,14 @@ def _fields(args: argparse.Namespace) -> None:
     print(",".join(_outcome_fields(outcome)))
 
 
+def _artifact_fields(args: argparse.Namespace) -> None:
+    with Path(args.result_json).open(encoding="utf-8") as source:
+        value = json.load(source)
+    if not isinstance(value, Mapping):
+        raise ValueError("durable result must be a JSON object")
+    print(",".join(_outcome_fields(ResultOutcome.from_dict(value))))
+
+
 def _migrate(args: argparse.Namespace) -> None:
     path = Path(args.csv_file)
     with path.open(newline="", encoding="utf-8") as source:
@@ -124,6 +133,9 @@ def main() -> None:
     fields.add_argument("--build-evidence", action="store_true")
     fields.add_argument("--failure-code")
     fields.set_defaults(func=_fields)
+    artifact_fields = subparsers.add_parser("artifact-fields")
+    artifact_fields.add_argument("result_json")
+    artifact_fields.set_defaults(func=_artifact_fields)
     migrate = subparsers.add_parser("migrate")
     migrate.add_argument("csv_file")
     migrate.add_argument("mode")

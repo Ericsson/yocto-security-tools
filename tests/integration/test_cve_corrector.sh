@@ -46,6 +46,33 @@ build_agent_flags() {
 }
 
 # ── Run test for single CVE ──────────────────────────────────────────────────
+remove_agent_reference_copies() {
+    local cve_id="$1" mode="$2"
+    local reference_copy
+    for reference_copy in "${LOG_DIR}/${mode}_agent_${cve_id}_"*.patch; do
+        [[ -e "$reference_copy" ]] || continue
+        rm -f -- "$reference_copy"
+    done
+}
+
+copy_agent_candidate() {
+    local artifacts="$1" cve_id="$2" mode="$3"
+    local candidate="${artifacts}/final.patch"
+    [[ -f "$candidate" ]] || return 0
+    cp -- "$candidate" "${LOG_DIR}/${mode}_agent_${cve_id}_candidate.patch"
+}
+
+classify_agent_summary() {
+    local summary_state="$1"
+    case "$summary_state" in
+        SECURITY_VERIFIED) echo "AGENT_RESOLVED success" ;;
+        SECURITY_REVIEW_REQUIRED|WORKFLOW_COMPLETED_UNVERIFIED)
+            echo "$summary_state review" ;;
+        SKIPPED) echo "SKIP_AGENT skip" ;;
+        *) echo "FAIL_${summary_state} fail" ;;
+    esac
+}
+
 test_single_cve() {
     local cve_id="$1" recipe="$2" extra_flags="$3" mode="$4"
     local log_file="${LOG_DIR}/${cve_id}_${mode}.log"
@@ -67,6 +94,9 @@ test_single_cve() {
         log "  Corrector failed (exit $exit_code), retrying with cve_agent..."
         local agent_log="${LOG_DIR}/${cve_id}_${mode}_agent.log"
         setup_cve_branch "$cve_id" "$agent_log" "${mode}_agent"
+        # The second setup saves another reference snapshot with an _agent_
+        # name. Remove it so agent-prefixed patches are always real candidates.
+        remove_agent_reference_copies "$cve_id" "$mode"
         cd "$SCRIPT_DIR"
         local agent_exit=0
         local -a flags_arr=()
@@ -95,15 +125,37 @@ test_single_cve() {
         kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null || true
         local durable_artifacts
         durable_artifacts=$(grep '^Artifacts: ' "$agent_log" | tail -n 1 | cut -d' ' -f2- || true)
+        local copied_artifacts="" agent_result=""
         if [[ -n "$durable_artifacts" && -d "$durable_artifacts" ]]; then
-            cp -a "$durable_artifacts" "${LOG_DIR}/${cve_id}_${mode}_artifacts"
+            copied_artifacts="${LOG_DIR}/${cve_id}_${mode}_artifacts"
+            mkdir -p "$copied_artifacts"
+            cp -a "${durable_artifacts}/." "$copied_artifacts/"
+            copy_agent_candidate "$copied_artifacts" "$cve_id" "$mode"
+            if [[ -f "${copied_artifacts}/result.json" ]]; then
+                agent_result="${copied_artifacts}/result.json"
+            fi
         fi
-        if [[ "$agent_exit" -eq 0 ]]; then
+        local durable_result=false
+        if [[ -n "$agent_result" ]] && \
+                python3 "$RESULT_SCHEMA_TOOL" artifact-fields "$agent_result" > /dev/null 2>&1; then
+            durable_result=true
+        fi
+        if [[ "$durable_result" == true ]]; then
+            # A release security gate can return nonzero after the workflow and
+            # build completed. Preserve its comparison and let run_loop classify
+            # the authoritative durable outcome.
+            local agent_diff_output
+            agent_diff_output=$(compare_patches_detailed "$cve_id" "$LOG_DIR" "meta") || true
+            local a_patches a_files
+            a_patches=$(echo "$agent_diff_output" | grep "^DIFF_PATCHES:" | cut -d: -f2 || echo "-")
+            a_files=$(echo "$agent_diff_output" | grep "^DIFF_FILES:" | cut -d: -f2 || echo "-")
+            CVE_CORRECTOR_RESULT="${exit_code}:agent:${a_patches}:${a_files}:${agent_result}"
+            echo "$agent_diff_output" >> "$agent_log"
+        elif [[ "$agent_exit" -eq 0 ]]; then
             # Compare agent-generated patches against originals
             local agent_diff_output
             agent_diff_output=$(compare_patches_detailed "$cve_id" "$LOG_DIR" "meta") || true
-            local a_changes a_patches a_files
-            a_changes=$(echo "$agent_diff_output" | grep "^DIFF_CHANGES:" | cut -d: -f2 || echo "agent")
+            local a_patches a_files
             a_patches=$(echo "$agent_diff_output" | grep "^DIFF_PATCHES:" | cut -d: -f2 || echo "-")
             a_files=$(echo "$agent_diff_output" | grep "^DIFF_FILES:" | cut -d: -f2 || echo "-")
             CVE_CORRECTOR_RESULT="0:agent:${a_patches}:${a_files}"
@@ -126,7 +178,7 @@ run_loop() {
     local mode="$1" extra_flags="$2" cve_list="$3" failed_recipes="$4"
     local results_file="${LOG_DIR}/results_${mode}.csv"
     local summary_file="${LOG_DIR}/summary_${mode}.txt"
-    local total success=0 fail=0 skip=0 identical=0 resumed=0
+    local total success=0 review=0 fail=0 skip=0 identical=0 resumed=0
     total=$(echo "$cve_list" | wc -l)
 
     log "=== Run: $mode ==="
@@ -157,6 +209,8 @@ run_loop() {
                 case "$status" in
                     SUCCESS|IDENTICAL|AGENT_RESOLVED|ALREADY_APPLIED) success=$((success + 1))
                         [[ "$status" == "IDENTICAL" || "$status" == "ALREADY_APPLIED" ]] && identical=$((identical + 1)) ;;
+                    SECURITY_REVIEW_REQUIRED|WORKFLOW_COMPLETED_UNVERIFIED)
+                        review=$((review + 1)) ;;
                     SKIP*) skip=$((skip + 1)) ;;
                     FAIL*) fail=$((fail + 1)) ;;
                 esac
@@ -208,11 +262,12 @@ run_loop() {
         # (e.g. devtool finish deleting patches, broken bbappends)
         reset_oe_tree >> "${LOG_DIR}/${cve_id}_${mode}_reset.log" 2>&1 || log "  WARNING: OE tree reset failed"
 
-        local exit_code diff_changes diff_patches diff_files
+        local exit_code diff_changes diff_patches diff_files durable_result
         exit_code=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f1)
         diff_changes=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f2)
         diff_patches=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f3)
         diff_files=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f4)
+        durable_result=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f5-)
         duration=$(( $(date +%s) - start_time ))
 
         local exit_name
@@ -234,48 +289,71 @@ run_loop() {
             *) exit_name="UNKNOWN_${exit_code}" ;;
         esac
 
-        local status
-        case $exit_code in
-            0)
-                success=$((success + 1))
-                if [[ "$diff_changes" == "agent" ]]; then
-                    status="AGENT_RESOLVED"
-                    echo "✓ AGENT_RESOLVED (${duration}s) [✓$success ✗$fail ⊘$skip]"
-                elif [[ "$diff_changes" == "0" ]]; then
-                    status="IDENTICAL"; identical=$((identical + 1))
-                    echo "✓ IDENTICAL (${duration}s) [✓$success ✗$fail ⊘$skip]"
-                else
-                    status="SUCCESS"
-                    echo "✓ $diff_changes changes (${duration}s) [✓$success ✗$fail ⊘$skip]"
-                fi ;;
-            4) status="FAIL_BUILD_ERROR"; fail=$((fail + 1))
-                echo "✗ BUILD_ERROR (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            6) status="SKIP"; skip=$((skip + 1))
-                echo "⊘ skipped (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            8) status="SKIP_PTEST_PREEXISTING"; skip=$((skip + 1))
-                echo "⊘ pre-existing ptest failure (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            10) status="SKIP_BUILD_PREEXISTING"; skip=$((skip + 1))
-                echo "⊘ pre-existing build failure (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            11) status="ALREADY_APPLIED"; success=$((success + 1)); identical=$((identical + 1))
-                echo "✓ ALREADY_APPLIED (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            12) status="SKIP_NOT_APPLICABLE"; skip=$((skip + 1))
-                echo "⊘ not applicable (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-            *) status="FAIL_${exit_name}"; fail=$((fail + 1))
-                echo "✗ $exit_name (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
-        esac
-
-        local -a schema_args=(fields "$status")
-        if [[ "$mode" == "full" && "$exit_code" -eq 0 ]]; then
-            schema_args+=(--build-evidence)
+        local status schema_fields=""
+        if [[ -n "$durable_result" && -f "$durable_result" ]]; then
+            schema_fields=$(python3 "$RESULT_SCHEMA_TOOL" artifact-fields "$durable_result")
+            local summary_state result_bucket
+            summary_state=$(echo "$schema_fields" | cut -d, -f8)
+            read -r status result_bucket < <(classify_agent_summary "$summary_state")
+            exit_name="$summary_state"
+            case "$result_bucket" in
+                success)
+                    success=$((success + 1))
+                    echo "✓ $status (${duration}s) [✓$success !$review ✗$fail ⊘$skip]" ;;
+                review)
+                    review=$((review + 1))
+                    echo "! $status (${duration}s) [✓$success !$review ✗$fail ⊘$skip]" ;;
+                skip)
+                    skip=$((skip + 1))
+                    echo "⊘ $status (${duration}s) [✓$success !$review ✗$fail ⊘$skip]" ;;
+                fail)
+                    fail=$((fail + 1))
+                    echo "✗ $summary_state (${duration}s) [✓$success !$review ✗$fail ⊘$skip]" ;;
+            esac
+        else
+            case $exit_code in
+                0)
+                    success=$((success + 1))
+                    if [[ "$diff_changes" == "agent" ]]; then
+                        status="AGENT_RESOLVED"
+                        echo "✓ AGENT_RESOLVED (${duration}s) [✓$success ✗$fail ⊘$skip]"
+                    elif [[ "$diff_changes" == "0" ]]; then
+                        status="IDENTICAL"; identical=$((identical + 1))
+                        echo "✓ IDENTICAL (${duration}s) [✓$success ✗$fail ⊘$skip]"
+                    else
+                        status="SUCCESS"
+                        echo "✓ $diff_changes changes (${duration}s) [✓$success ✗$fail ⊘$skip]"
+                    fi ;;
+                4) status="FAIL_BUILD_ERROR"; fail=$((fail + 1))
+                    echo "✗ BUILD_ERROR (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                6) status="SKIP"; skip=$((skip + 1))
+                    echo "⊘ skipped (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                8) status="SKIP_PTEST_PREEXISTING"; skip=$((skip + 1))
+                    echo "⊘ pre-existing ptest failure (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                10) status="SKIP_BUILD_PREEXISTING"; skip=$((skip + 1))
+                    echo "⊘ pre-existing build failure (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                11) status="ALREADY_APPLIED"; success=$((success + 1)); identical=$((identical + 1))
+                    echo "✓ ALREADY_APPLIED (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                12) status="SKIP_NOT_APPLICABLE"; skip=$((skip + 1))
+                    echo "⊘ not applicable (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+                *) status="FAIL_${exit_name}"; fail=$((fail + 1))
+                    echo "✗ $exit_name (${duration}s) [✓$success ✗$fail ⊘$skip]" ;;
+            esac
         fi
-        [[ "$status" == FAIL* ]] && schema_args+=(--failure-code "$exit_name")
-        local schema_fields
-        schema_fields=$(python3 "$RESULT_SCHEMA_TOOL" "${schema_args[@]}")
+
+        if [[ -z "$schema_fields" ]]; then
+            local -a schema_args=(fields "$status")
+            if [[ "$mode" == "full" && "$exit_code" -eq 0 ]]; then
+                schema_args+=(--build-evidence)
+            fi
+            [[ "$status" == FAIL* ]] && schema_args+=(--failure-code "$exit_name")
+            schema_fields=$(python3 "$RESULT_SCHEMA_TOOL" "${schema_args[@]}")
+        fi
         echo "$cve_id,$recipe,$status,$exit_name,$diff_changes,$diff_patches,$diff_files,$duration,$schema_fields" >> "$results_file"
-        (( current % 10 == 0 )) && log "  Progress: $current/$total | ✓$success (${identical} identical) ✗$fail ⊘$skip"
+        (( current % 10 == 0 )) && log "  Progress: $current/$total | ✓$success (${identical} identical) !$review ✗$fail ⊘$skip"
     done <<< "$cve_list"
 
-    local pct_success=0 testable=$((success + fail))
+    local pct_success=0 testable=$((success + review + fail))
     (( testable > 0 )) && pct_success=$(( success * 100 / testable ))
 
     cat > "$summary_file" <<EOF
@@ -290,6 +368,7 @@ Resumed:        $resumed
 Success:        $success
   Identical:    $identical
   With changes: $((success - identical))
+Review needed:  $review
 Failed:         $fail
 Skipped:        $skip
 Testable:       $testable
