@@ -2,10 +2,12 @@
 # CVE Agent Model Benchmark
 
 Runs `cve-agent` across a fixed roster of CVEs and a selection of models,
-then (optionally) an AI judge pass on the diffs that came out
-moderately/majorly different from the human reference backport, or that
-partially overlap it (judged on the shared files only). Produces
-`agent_results.csv`, `judge_results.csv`, and (via
+then (optionally) an AI judge pass on the diffs that came out at least
+minor different from the human reference backport — minor through major, and
+partial overlaps judged on the shared files only — to get a verdict on
+whether the divergence is meaningfully different or just stylistic.
+`identical` diffs skip the judge (there is nothing to ask about a zero-line
+diff). Produces `agent_results.csv`, `judge_results.csv`, and (via
 `generate_benchmark_report.py`) a markdown summary.
 
 ## Prerequisites
@@ -172,7 +174,7 @@ cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines
 - `credits` — parsed from cve-agent's kiro-cli output (`cve_agent.metrics.parse_kiro_credits`); empty if unavailable
 - `duration_s` — wall-clock seconds measured by the script
 - `commands` — tool-call count from the captured log (`bench_lib.count_tool_calls`)
-- `diff_bucket` — `identical` / `minor` / `moderate` / `major` / `partial` / `file-mismatch`, same line thresholds as `tests/integration/generate_differences_report.py`. `partial` means the generated and reference patch sets overlap but aren't identical filesets (some files shared, some missing/extra); the judge then evaluates only the shared files (`bench_lib.scope_diff_to_common_files`). `file-mismatch` is reserved for fully disjoint filesets, which stay unjudged.
+- `diff_bucket` — `identical` / `minor` / `moderate` / `major` / `partial` / `file-mismatch`, same line thresholds as `tests/integration/generate_differences_report.py`. `partial` means the generated and reference patch sets overlap but aren't identical filesets (some files shared, some missing/extra); the judge then evaluates only the shared files (`bench_lib.scope_diff_to_common_files`). `identical` and `file-mismatch` stay unjudged — `identical` because a zero-line diff needs no wording judgment, `file-mismatch` because disjoint filesets leave no shared-file diff to hand the judge at all. Every other bucket, including `minor`, gets a verdict.
 - `diff_lines` — changed-line count from `compare_patches_detailed`. For a `partial` row this is scoped to the shared files only (counted over `bench_lib.scope_diff_to_common_files`), matching what the judge evaluates; for all other buckets it is the whole-patch divergence.
 
 ### `judge_results.csv`

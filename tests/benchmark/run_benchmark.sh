@@ -766,7 +766,7 @@ for row in filter_for_judging(agent_rows, judge_rows):
             # scoped diff is empty: the only divergence is which files were
             # touched, which the wording judge can't assess. Record that as a
             # distinct 'structural-only' verdict (no judge call) rather than
-            # leaving the row unjudged — so the report doesn't conflate it with
+            # leaving the row unjudged -- so the report doesn't conflate it with
             # a genuinely pending row, and a resume won't re-scope it.
             #
             # judge_diff also drops comment-only changes and answers

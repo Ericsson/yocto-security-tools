@@ -588,20 +588,18 @@ def _common_file_count(differences_text: str) -> int:
 
 # --- Judge phase (phase 2) ---------------------------------------------------
 
-# Buckets that are considered a "meaningful enough divergence to ask the
-# judge about" — mirrors generate_differences_report.py's thresholds
-# (moderate = 11-50 diff lines, major = 50+). identical/minor/file-mismatch
-# are excluded: identical/minor are self-evidently close to the reference,
-# and a file-mismatch is a structural difference no wording judgment helps
-# with.
 # Buckets worth asking the judge about. ``moderate`` (11-50 diff lines) and
 # ``major`` (50+) are whole-patch line divergences. ``partial`` is a fileset
 # overlap where the shared files still differ — judged on the intersection
 # alone (see scope_diff_to_common_files), not the one-sided missing/extra
-# files. ``identical``/``minor`` are self-evidently close to the reference,
-# and a pure ``file-mismatch`` (disjoint filesets) is a structural difference
-# no wording judgment helps with, so both stay excluded.
-JUDGEABLE_BUCKETS = ('moderate', 'major', 'partial')
+# files. ``minor`` is also sent to the judge (a deliberate choice to get a
+# verdict even on a small divergence, rather than assuming small == stylistic).
+# ``identical`` is excluded: a zero-line diff is self-evidently a match, so
+# there is nothing for a wording judgment to add. A pure ``file-mismatch``
+# (disjoint filesets) is excluded for a different reason: there is no
+# shared-file diff text to hand the judge at all.
+JUDGEABLE_BUCKETS = ('minor', 'moderate', 'major', 'partial')
+
 
 _JUDGMENT_RE = re.compile(r'\b(MEANINGFUL|STYLISTIC)\b', re.IGNORECASE)
 

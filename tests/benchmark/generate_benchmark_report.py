@@ -6,8 +6,9 @@
 Reads agent_results.csv and judge_results.csv from a results directory,
 joins them on (cve_id, model), and produces markdown with a per-model
 summary, a per-tier bucket distribution, and a meaningful-vs-stylistic split
-for the judged (moderate/major/partial) subset. Bucket names/thresholds mirror
-tests/integration/generate_differences_report.py rather than restating them.
+for the judged (minor/moderate/major/partial) subset. Bucket names/thresholds
+mirror tests/integration/generate_differences_report.py rather than restating
+them.
 """
 
 from __future__ import annotations
@@ -121,10 +122,10 @@ def generate_report(results_dir: Path) -> str:
         )
     lines.append("")
 
-    # --- Meaningful vs stylistic split (judged moderate/major/partial subset) ---
+    # --- Meaningful vs stylistic split (judged minor/moderate/major/partial subset) ---
     judged_subset = [row for row in agent_rows if row.get("diff_bucket") in JUDGEABLE_BUCKETS]
 
-    lines.append("## Meaningful vs Stylistic (Judged Moderate/Major/Partial Diffs)")
+    lines.append("## Meaningful vs Stylistic (Judged Minor/Moderate/Major/Partial Diffs)")
     lines.append("")
     lines.append(
         "_Structural-only: a `partial` fileset overlap whose shared files were "
