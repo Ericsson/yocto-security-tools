@@ -24,6 +24,7 @@ from .corrector import validate_recipe_name
 from .openai_deadline import RuntimeTimeoutError, SessionDeadline
 from .openai_git_tools import (
     MAX_GIT_PATHS,
+    MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
     NATIVE_TOOL_CONTRACTS,
     GitToolRuntime,
     native_subprocess_environment,
@@ -581,6 +582,13 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         if any(not isinstance(secret, str) for secret in secrets):
             raise ValueError("protected secrets must be strings")
         self._protected_secrets = tuple(secret for secret in secrets if secret)
+        from .handoff import current_validated_handoff
+        handoff = current_validated_handoff()
+        self._declared_generated_paths = set(
+            () if handoff is None else handoff.known_generated_paths)
+        self._baseline_status_paths = self._current_status_paths(
+            "terminal baseline Git status")
+        self._build_generated_paths: set[str] = set()
         self._validated_generation: Optional[int] = None
         self._terminal_status: Optional[str] = None
         self._terminal_reason = ""
@@ -811,6 +819,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         status_result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(status_result, "provider fallback status")
         status = self._parse_status(status_result.stdout)
@@ -910,17 +919,57 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(result, "terminal Git status")
         status = self._parse_status(result.stdout)
-        dirty = {
-            key: status[key]
-            for key in ("staged", "unstaged", "untracked", "deleted", "conflicted")
-            if status[key]
-        }
+        current_paths: set[str] = set()
+        for key in ("staged", "unstaged", "untracked", "deleted", "conflicted"):
+            value = status[key]
+            if not isinstance(value, list):
+                raise ToolOperationalError("terminal Git status is malformed")
+            current_paths.update(path for path in value if isinstance(path, str))
+        if self._validated_generation == self.mutation_generation:
+            self._build_generated_paths.update(
+                current_paths
+                - set().union(*self._baseline_status_paths.values())
+                - set(self.policy.allowed_files))
+        tolerated = (
+            (set().union(*self._baseline_status_paths.values())
+             - set(self.policy.allowed_files))
+            | self._declared_generated_paths
+            | self._build_generated_paths
+        )
+        dirty: dict[str, object] = {}
+        for key in ("staged", "unstaged", "untracked", "deleted", "conflicted"):
+            value = status[key]
+            if not isinstance(value, list):
+                raise ToolOperationalError("terminal Git status is malformed")
+            remaining = sorted(
+                path for path in value
+                if isinstance(path, str) and path not in tolerated)
+            if remaining:
+                dirty[key] = remaining
         if dirty:
             raise TerminalInvariantError(
                 "terminal outcome requires a clean staged and working state", dirty)
+
+    def _current_status_paths(self, label: str) -> dict[str, set[str]]:
+        result = self._executor.run(
+            "status",
+            ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
+        )
+        self._require_complete(result, label)
+        status = self._parse_status(result.stdout)
+        paths: dict[str, set[str]] = {}
+        for key in ("staged", "unstaged", "untracked", "deleted", "conflicted"):
+            value = status[key]
+            if not isinstance(value, list) or not all(
+                    isinstance(path, str) for path in value):
+                raise ToolOperationalError(f"{label} is malformed")
+            paths[key] = set(value)
+        return paths
 
     def _terminal_text(self, value: str, label: str,
                        allow_empty: bool = False) -> str:

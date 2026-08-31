@@ -595,6 +595,66 @@ def test_amend_after_successful_build_records_built_source_without_staling_it(
     assert _git(repo, "show", "HEAD:a.c").stdout == "portable upstream\n"
 
 
+def test_post_build_tracked_source_hardlink_can_be_amended_and_finished(
+        host_repository, tmp_path):
+    repo, agent = host_repository
+    (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _git(repo, "commit", "-m", "selected fix")
+    runtime = _runtime(repo, agent)
+    assert runtime.dispatch("write_file", {
+        "path": "a.c", "content": "portable fix\n", "mode": "replace_only",
+    }).success
+    assert runtime.dispatch("build_recipe", {}).success
+    packaged = tmp_path / "packaged-source.c"
+    packaged.write_text("portable fix\n", encoding="utf-8")
+    (repo / "a.c").unlink()
+    os.link(packaged, repo / "a.c")
+
+    amended = runtime.dispatch("git_amend", {
+        "paths": ["a.c"], "message_mode": "no_edit"})
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "built hardlinked source",
+        "summary": "portable fix"})
+
+    assert amended.success
+    assert finished.success
+    assert packaged.read_text(encoding="utf-8") == "portable fix\n"
+
+
+def test_finish_tolerates_baseline_and_successful_build_outputs(host_repository):
+    repo, agent = host_repository
+    (repo / "PKG-INFO").write_text("baseline generated\n", encoding="utf-8")
+
+    class GeneratingBuildRunner(FakeBuildRunner):
+        def run(self, recipe: str) -> BuildCommandResult:
+            for index in range(300):
+                (repo / f"go-cache-{index:03}.tmp").write_text(
+                    "build output\n", encoding="utf-8")
+            return super().run(recipe)
+
+    runtime = _runtime(repo, agent, build_runner=GeneratingBuildRunner(agent))
+    assert runtime.dispatch("build_recipe", {}).success
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "generated files are build state",
+        "summary": "recipe builds"})
+
+    assert finished.success
+
+
+def test_finish_still_rejects_uncommitted_allowed_file_after_build(host_repository):
+    repo, agent = host_repository
+    runtime = _runtime(repo, agent, allowed={"a.c", "new-source.c"})
+    assert runtime.dispatch("build_recipe", {}).success
+    (repo / "new-source.c").write_text("uncommitted fix\n", encoding="utf-8")
+
+    finished = runtime.dispatch("finish", {
+        "status": "done", "reason": "claim", "summary": "claim"})
+
+    assert not finished.success
+    assert finished.payload["untracked"] == ["new-source.c"]
+
+
 def test_edit_amend_build_finish_succeeds(host_repository):
     repo, agent = host_repository
     (repo / "a.c").write_text("selected fix\n", encoding="utf-8")

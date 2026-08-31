@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from cve_agent.knowledge import KnowledgeBase
 from cve_agent.openai_deadline import SessionDeadline
 from cve_agent.openai_loop import JSONLTranscript
 from cve_agent.orchestrator import process_single_cve
+from cve_agent.session import _capture_final_repository_artifacts
 
 
 def _events(path: Path) -> list[dict[str, object]]:
@@ -245,3 +247,39 @@ def test_final_secret_scan_fails_without_echoing_secret(tmp_path):
     events = _events(run.transcript_path)
     assert any(
         event.get("error_code") == "artifact_secret_detected" for event in events)
+
+
+def test_final_repository_artifacts_retain_failed_candidate_and_untracked_source(
+        tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo, check=True)
+    (repo / "source.c").write_text("vulnerable\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.c"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    subprocess.run(["git", "tag", "original-version"], cwd=repo, check=True)
+    root = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True).stdout.strip()
+    (repo / "source.c").write_text("backported fix\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.c"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "candidate"], cwd=repo, check=True)
+    (repo / "test-fix.c").write_text("uncommitted model test\n", encoding="utf-8")
+    run = RunArtifacts.create(
+        "CVE-2026-0001", "openai", None, "model", root=tmp_path / "artifacts")
+
+    _capture_final_repository_artifacts(
+        run, repo, root, {"source.c", "test-fix.c"})
+
+    assert "backported fix" in (run.path / "final.patch").read_text()
+    assert "uncommitted model test" in (run.path / "final.patch").read_text()
+    assert "Subject: [PATCH] candidate" in (
+        run.path / "final-commits.patch").read_text()
+    assert "test-fix.c" in (run.path / "final-status.txt").read_text()
+    run.finalize({"status": "failed"})

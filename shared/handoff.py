@@ -237,6 +237,60 @@ def capture_handoff_state(workspace: Path) -> CapturedHandoffState:
     )
 
 
+_SOURCE_ROOT_PREFIXES = ("src/", "lib/", "source/")
+
+
+def _reference_path_variants(path: str) -> tuple[tuple[str, str], ...]:
+    """Return deterministic source-root translations for an upstream path."""
+    variants: list[tuple[str, str]] = []
+    parts = path.split("/")
+    if len(parts) > 2 and parts[0] == "subprojects":
+        prefix = "/".join(parts[:2]) + "/"
+        variants.append((prefix, "/".join(parts[2:])))
+    for prefix in _SOURCE_ROOT_PREFIXES:
+        if path.startswith(prefix):
+            variants.append((prefix, path[len(prefix):]))
+    return tuple(variants)
+
+
+def _workspace_reference_paths(
+    workspace: Path, paths: list[str],
+) -> tuple[str, ...]:
+    """Map upstream-root paths onto an extracted tracked source root."""
+    tracked = {
+        path for path in _git(workspace, "ls-files", "-z").split("\0") if path
+    }
+    evidenced_prefixes: set[str] = set()
+    for path in paths:
+        if path in tracked:
+            continue
+        for prefix, candidate in _reference_path_variants(path):
+            if candidate in tracked:
+                evidenced_prefixes.add(prefix)
+                break
+
+    mapped: set[str] = set()
+    for path in paths:
+        if path in tracked:
+            mapped.add(path)
+            continue
+        variants = _reference_path_variants(path)
+        tracked_variant = next(
+            (candidate for _, candidate in variants if candidate in tracked),
+            None,
+        )
+        if tracked_variant is not None:
+            mapped.add(tracked_variant)
+            continue
+        evidenced_variant = next(
+            (candidate for prefix, candidate in variants
+             if prefix in evidenced_prefixes),
+            None,
+        )
+        mapped.add(evidenced_variant or path)
+    return tuple(sorted(mapped))
+
+
 def reference_change_paths(
     workspace: Path, selected_commit: str, mainline_parent: int | None,
 ) -> tuple[tuple[str, ...], str | None]:
@@ -273,7 +327,7 @@ def reference_change_paths(
             raise HandoffError("HANDOFF_REFERENCE_DIFF_INVALID", "malformed name status")
         paths.extend(tokens[index:index + count])
         index += count
-    normalized = tuple(sorted(set(paths)))
+    normalized = _workspace_reference_paths(workspace, paths)
     if not normalized:
         raise HandoffError("HANDOFF_EMPTY_ALLOWED_SCOPE", "reference change is empty")
     return normalized, selected_parent
