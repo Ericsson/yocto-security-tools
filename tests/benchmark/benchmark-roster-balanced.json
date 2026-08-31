@@ -1,0 +1,162 @@
+{
+  "CVE-2024-24856": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 0,
+    "recipe": "acpica",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2024-32487": {
+    "conflict_markers": 2,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "less",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2024-37535": {
+    "conflict_markers": 0,
+    "diff_lines": 48,
+    "exit_code": 0,
+    "recipe": "vte",
+    "series_len": 2,
+    "tier": "medium"
+  },
+  "CVE-2024-47615": {
+    "conflict_markers": 0,
+    "diff_lines": 44,
+    "exit_code": 0,
+    "recipe": "gstreamer1.0-plugins-base",
+    "series_len": 2,
+    "tier": "medium"
+  },
+  "CVE-2024-5569": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 0,
+    "recipe": "python3-zipp",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2024-6345": {
+    "conflict_markers": 2,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "python3-setuptools",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2024-8006": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 0,
+    "recipe": "libpcap",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2025-1153": {
+    "conflict_markers": 45,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "binutils",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2025-11687": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 0,
+    "recipe": "gi-docgen",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2025-32051": {
+    "conflict_markers": 0,
+    "diff_lines": 10,
+    "exit_code": 0,
+    "recipe": "libsoup",
+    "series_len": 2,
+    "tier": "medium"
+  },
+  "CVE-2025-46805": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 0,
+    "recipe": "screen",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2025-46836": {
+    "conflict_markers": 0,
+    "diff_lines": 4,
+    "exit_code": 0,
+    "recipe": "net-tools",
+    "series_len": 1,
+    "tier": "easy"
+  },
+  "CVE-2025-47183": {
+    "conflict_markers": 1,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "gstreamer1.0-plugins-good",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2025-47203": {
+    "conflict_markers": 7,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "dropbear",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2025-68121": {
+    "conflict_markers": 0,
+    "diff_lines": 129,
+    "exit_code": 0,
+    "recipe": "go-runtime",
+    "series_len": 1,
+    "tier": "medium"
+  },
+  "CVE-2026-0990": {
+    "conflict_markers": 0,
+    "diff_lines": 32,
+    "exit_code": 0,
+    "recipe": "libxml2",
+    "series_len": 3,
+    "tier": "medium"
+  },
+  "CVE-2026-23865": {
+    "conflict_markers": 0,
+    "diff_lines": 19,
+    "exit_code": 0,
+    "recipe": "freetype",
+    "series_len": 2,
+    "tier": "medium"
+  },
+  "CVE-2026-26158": {
+    "conflict_markers": 3,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "busybox",
+    "series_len": 2,
+    "tier": "hard"
+  },
+  "CVE-2026-27135": {
+    "conflict_markers": 0,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "nghttp2",
+    "series_len": 1,
+    "tier": "hard"
+  },
+  "CVE-2026-39881": {
+    "conflict_markers": 20,
+    "diff_lines": 0,
+    "exit_code": 1,
+    "recipe": "vim-tiny",
+    "series_len": 1,
+    "tier": "hard"
+  }
+}
