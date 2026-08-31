@@ -330,11 +330,10 @@ def select_cases(ordered_cases: list[dict], indices: list[int]) -> list[dict]:
 MODELS: dict[str, dict] = {
     'claude-opus-5': {'multiplier': 2.20, 'tier': 'default'},
     'claude-sonnet-5': {'multiplier': 1.30, 'tier': 'default'},
-    'claude-sonnet-4.8': {'multiplier': 1.30, 'tier': 'default'},
+    'claude-sonnet-4.6': {'multiplier': 1.30, 'tier': 'default'},
     'claude-opus-4.8': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.7': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.6': {'multiplier': 2.20, 'tier': 'full'},
-    'claude-sonnet-4.6': {'multiplier': 1.30, 'tier': 'full'},
     'claude-opus-4.5': {'multiplier': 2.20, 'tier': 'full'},
     'claude-sonnet-4.5': {'multiplier': 1.30, 'tier': 'full'},
     'claude-sonnet-4': {'multiplier': 1.30, 'tier': 'full'},

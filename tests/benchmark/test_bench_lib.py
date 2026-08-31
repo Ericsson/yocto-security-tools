@@ -389,7 +389,7 @@ class TestResolveModels:
         models = resolve_models('default')
         names = {m['name'] for m in models}
         assert names == {
-            'claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-4.8',
+            'claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-4.6',
             'claude-haiku-4.5', 'qwen3-coder-next',
         }
         assert all(m['tier'] == 'default' for m in models)
