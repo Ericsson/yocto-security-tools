@@ -37,37 +37,42 @@ export BUILDTOOLS_ENV=/path/to/environment-setup-x86_64-pokysdk-linux
 
 ## Running
 
-Three committed rosters ship, none regenerated, so every run tests the exact
-same CVEs regardless of environment or when it's run:
+Four committed rosters ship, none regenerated, so every run tests the exact
+same CVEs regardless of environment or when it's run. Three hold CVEs that
+**need resolution** — a recoverable exit (conflict/ptest/build) that actually
+triggers `cve-agent`'s AI — tiered by conflict/file complexity. The fourth
+holds CVEs whose cherry-pick applies **cleanly** (no conflict at all), which
+is a different kind of case and is scored separately (see
+[Clean-apply roster](#clean-apply-roster-5-cves)).
 
 | `--roster` | File | CVEs | Composition |
 |---|---|---|---|
-| `default` | `benchmark-roster.json` | 7 | 1 medium, 6 hard |
-| `balanced` | `benchmark-roster-balanced.json` | 20 | 6 easy, 6 medium, 8 hard |
-| `extended` | `benchmark-roster-extended.json` | 40 | 6 easy, 10 medium, 24 hard |
+| `default` | `benchmark-roster.json` | 6 | 3 easy, 1 medium, 2 hard |
+| `balanced` | `benchmark-roster-balanced.json` | 8 | 3 easy, 2 medium, 3 hard |
+| `extended` | `benchmark-roster-extended.json` | 22 | 10 easy, 2 medium, 10 hard |
+| `clean-apply` | `benchmark-roster-clean-apply.json` | 5 | n/a — no tier, see below |
 
-They are **nested** — `default` ⊂ `balanced` ⊂ `extended`, with shared entries
-carrying identical recorded stats — so results from any of them stay directly
-comparable, including with previous `default` runs. Cost rises with size
-(roughly 2.9x and 5.7x the default), which is why the larger two are opt-in;
-see [Run cost by roster](#run-cost-by-roster) before starting one.
-
-`balanced` is the one to reach for when the default roster is too narrow to
-draw conclusions from but a 40-CVE run is too expensive: it is the only roster
-with an even tier split, so it measures conflict resolution and clean-apply
-regressions in comparable proportion.
+`default`/`balanced`/`extended` are **nested** — `default` ⊂ `balanced` ⊂
+`extended`, with shared entries carrying identical recorded stats — so results
+from any of them stay directly comparable. `clean-apply` is **not** nested in
+the others: it is a separate, independent measurement, not a "lower
+difficulty" version of the same one. Cost rises with size for the resolution
+rosters; see [Run cost by roster](#run-cost-by-roster) before starting one.
 
 See [Roster files](#roster-files) below for what is in each and how to change them.
 
 ```bash
-# Runs the default model set through cve-agent against the default (7-CVE)
-# roster, then judges.
+# Runs the default model set through cve-agent against the default (6-CVE)
+# resolution roster, then judges.
 ./run_benchmark.sh
 
-# The same, against the 20-CVE balanced roster (~2.9x the cost) or the 40-CVE
-# extended one (~5.7x):
+# The same, against the 8-CVE balanced roster or the 22-CVE extended one:
 ./run_benchmark.sh --roster balanced
 ./run_benchmark.sh --roster extended
+
+# Against the separate 5-CVE clean-apply roster (mandatory-analysis phase,
+# not conflict resolution -- see "Clean-apply roster" below):
+./run_benchmark.sh --roster clean-apply
 
 # Preview the plan (row counts, cost-weight) without touching git/OE state
 # or invoking cve-agent/the judge:
@@ -76,10 +81,12 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 
 # Re-verify a roster's cached stats against the current OE-Core state
 # (re-probes with cve-corrector, no AI cost). Does NOT add, remove, or
-# reorder roster CVEs -- only refreshes their recorded exit_code/diff_lines/
-# conflict_markers/tier in the selected roster file:
+# reorder roster CVEs -- only refreshes their recorded exit_code/
+# conflict_markers/files_involved/tier (or, for clean-apply,
+# exit_code/diff_lines/series_len) in the selected roster file:
 ./run_benchmark.sh --retier
 ./run_benchmark.sh --roster extended --retier
+./run_benchmark.sh --roster clean-apply --retier
 
 # A specific model selection:
 ./run_benchmark.sh --models claude-opus-5,claude-sonnet-4.8
@@ -91,7 +98,7 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 ./run_benchmark.sh --list-cases
 ./run_benchmark.sh --run-case 3                          # just case 3
 ./run_benchmark.sh --run-case 1 2 3                      # the first three cases
-./run_benchmark.sh --roster balanced --run-case 13 14 15
+./run_benchmark.sh --roster balanced --run-case 5 6 7
 
 # Skip the judge phase entirely (no prompt, no cost, nothing runs):
 ./run_benchmark.sh --skip-judge
@@ -104,10 +111,10 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 
 | Flag | Effect |
 |------|--------|
-| `--roster <default\|balanced\|extended\|path>` | Which committed roster to run (default: `default`, 7 CVEs; `balanced` is 20, `extended` is 40, and they nest). A path selects an arbitrary roster JSON. The chosen roster is logged at startup so a run's provenance is recorded. |
-| `--retier` | Re-probes the selected roster's CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in that roster file in place. Never changes which CVEs are in the roster. Preserves the author-supplied `recipe` and `series_len`. |
+| `--roster <default\|balanced\|extended\|clean-apply\|path>` | Which committed roster to run (default: `default`, 6 CVEs; `balanced` is 8, `extended` is 22, and the three nest. `clean-apply` is separate, see [Clean-apply roster](#clean-apply-roster-5-cves)). A path selects an arbitrary roster JSON. The chosen roster is logged at startup so a run's provenance is recorded. |
+| `--retier` | Re-probes the selected roster's CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in that roster file in place. Never changes which CVEs are in the roster. Only accepts a recoverable exit for the three resolution rosters (a clean or unrecoverable exit leaves the cached entry unchanged and warns), and only a clean exit for `clean-apply` (any conflict leaves it unchanged and warns) — see [Roster files](#roster-files). |
 | `--models <default\|full\|comma-list>` | Model selection for phase 1 (default: `default`) |
-| `--list-cases` | List the roster CVEs as numbered cases (in run order: easy→medium→hard, alphabetical within a tier) and exit, without running anything. |
+| `--list-cases` | List the roster CVEs as numbered cases (in run order: easy→medium→hard, alphabetical within a tier; `clean-apply` has no tiers, so its cases are just alphabetical) and exit, without running anything. |
 | `--run-case <N...>` | Run only the given 1-based case number(s) from `--list-cases` (space-separated, e.g. `--run-case 1 2 3`). Scopes the agent run, the cost estimate, and `--retier`; the judge phase follows whatever was run. |
 | `--dry-run` | Print the planned run (rows, cost-weight) without invoking cve-agent, without running the judge, and without prompting for confirmation |
 | `--skip-judge` | Phase 2 (the judge pass) does not run at all |
@@ -190,270 +197,247 @@ only the judge ignores them.
 
 ### Roster files
 
+Resolution rosters (`default`/`balanced`/`extended`) schema:
+
 ```json
 {
   "CVE-2024-XXXXX": {
     "tier": "easy",
     "recipe": "busybox",
-    "exit_code": 0,
-    "diff_lines": 3,
-    "series_len": 1,
-    "conflict_markers": 0
+    "exit_code": 1,
+    "conflict_markers": 3,
+    "files_involved": 1
   }
 }
 ```
 
-Three roster files are committed, all in this schema and all selected with
-`--roster`:
+`tier` is derived from `conflict_markers` and `files_involved` by
+`bench_lib.score_tier` — see [How tiering works](#how-tiering-works) below.
+`exit_code` is always a recoverable exit (1 conflict, 3 ptest, 4 build; in
+practice every entry mined so far is 1). There is no `diff_lines` or
+`series_len` here: a conflict has not been resolved yet, so there is no
+generated patch to diff against the reference, and the fix's commit count has
+no bearing on how hard the *conflict* is.
 
-- `tests/benchmark/benchmark-roster.json` — the default, 7 CVEs.
-- `tests/benchmark/benchmark-roster-balanced.json` — 20 CVEs, even tier split.
-- `tests/benchmark/benchmark-roster-extended.json` — 40 CVEs, the full pool.
+Three files are committed in this schema, all selected with `--roster`:
+
+- `tests/benchmark/benchmark-roster.json` — the default, 6 CVEs.
+- `tests/benchmark/benchmark-roster-balanced.json` — 8 CVEs.
+- `tests/benchmark/benchmark-roster-extended.json` — 22 CVEs, the full pool
+  of CVEs mined so far that need resolution.
 
 They nest: `default` ⊂ `balanced` ⊂ `extended`. Each is the entire, fixed
 candidate pool for a run. Every benchmark run reads exactly the CVEs in the
 selected file; there is no regenerable cache or candidate probing involved in
 normal use.
 
-Every entry's `tier`/`exit_code`/`diff_lines`/`series_len`/`conflict_markers`
-is real measured data, not an estimate: captured from a live `cve-corrector`
-probe against openembedded-core (scarthgap), plus the historical bulk run in
-`tests/integration/test-results/bulk_20260626_081658/`. Refresh with
-`--retier`, which re-probes without any AI cost and writes back to whichever
-roster `--roster` selected. Note that `--retier` rewrites the file with
-`json.dump(sort_keys=True)`, so the entries come back alphabetized regardless
-of how they were ordered before.
+Every entry's `tier`/`exit_code`/`conflict_markers`/`files_involved` is real
+measured data, not an estimate: captured from a live `cve-corrector` probe
+against openembedded-core (scarthgap). Refresh with `--retier`, which
+re-probes without any AI cost and writes back to whichever roster `--roster`
+selected — but **only accepts a recoverable exit** (1/3/4). If a CVE no longer
+reproduces a conflict (the corrector now exits 0) or fails for an unrelated
+reason (a metadata/checkout/git error), `--retier` leaves that entry's cached
+stats untouched and prints a warning instead of overwriting real data with a
+non-signal; drop or replace that CVE by hand once you see the warning (see
+[Changing a roster](#changing-a-roster)). Note that `--retier` rewrites the
+file with `json.dump(sort_keys=True)`, so the entries come back alphabetized
+regardless of how they were ordered before.
 
-`conflict_markers` (count of git's `CONFLICT (content):` marker from the
-probe log; `0` for a clean or non-content-conflict failure, e.g. a merge
-commit the corrector's cherry-pick strategy can't handle) is a rough
-difficulty signal used when a roster is assembled, to spread the `hard`
-entries across the real complexity range instead of picking several CVEs that
-all happen to be similarly easy or all similarly brutal.
+`tests/benchmark/test_benchmark_roster.py` validates **all three** resolution
+files: schema completeness, tier agreement with `score_tier`, that every exit
+code is recoverable, the nesting chain, and that shared entries carry
+identical stats in every file that contains them.
 
-`tests/benchmark/test_benchmark_roster.py` validates **all three** files:
-schema completeness, tier agreement with `score_tier`, zero markers on clean
-entries, the nesting chain, and that shared entries carry identical stats in
-every file that contains them.
+#### How tiering works
 
-#### Default roster (7 CVEs)
+```python
+EASY_MAX_MARKERS = 3
+MEDIUM_MAX_MARKERS = 10
+HARD_MIN_FILES = 4
+```
 
-The cheap, established roster — 1 medium, 6 hard — used by
-`bench_20260828_145923` and every earlier run. Keep it for quick model
-comparisons and for continuity with historical results.
+`conflict_markers` is the count of git's own `CONFLICT (content):` marker
+lines from the probe log (`bench_lib.count_conflict_markers`) — one per
+conflicting *hunk*, so a single badly-diverged file can rack up several on its
+own. `files_involved` is the count of *distinct* files named in those same
+lines (`bench_lib.count_conflicted_files`) — the complementary "how much of
+the tree is touched" signal. `score_tier` combines them:
 
-| CVE | Tier | Recipe | `conflict_markers` | Why |
+1. `files_involved >= HARD_MIN_FILES` → `hard`, regardless of marker count. A
+   conflict spread across many files is a structurally harder resolution even
+   if each file's individual conflict is small.
+2. `conflict_markers > MEDIUM_MAX_MARKERS` → `hard`.
+3. `conflict_markers > EASY_MAX_MARKERS` → `medium`.
+4. Otherwise → `easy`.
+
+Thresholds were picked from the 22-CVE pool's real distribution at
+calibration time (markers ranged 0–45, roughly terciled at 3 and 10) rather
+than guessed; see `bench_lib.py`'s module comment above `score_tier` if you
+retune them. `0`/`0` (no marker, no file) is a **structural** failure — the
+corrector hit a non-content error (e.g. an empty cherry-pick with "nothing to
+commit," or a merge-commit strategy failure) rather than a text conflict —
+and currently scores `easy` for lack of a better signal; see
+`CVE-2025-24857` in the extended roster.
+
+#### Default roster (6 CVEs)
+
+The cheap roster for quick model comparisons: 3 `easy`, 1 `medium`, 2 `hard`.
+
+| Tier | CVE | Recipe | `conflict_markers` | `files_involved` |
 |---|---|---|---|---|
-| `CVE-2026-0990` | medium | libxml2 | – | Clean, 3-commit dependent series |
-| `CVE-2024-6345` | hard | python3-setuptools | 2 | Structural failure (merge commit, not a content conflict) — low end |
-| `CVE-2024-32487` | hard | less | 2 | Single-file genuine conflict — low-mid |
-| `CVE-2025-47183` | hard | gstreamer1.0-plugins-good | 1 | Moderate conflict |
-| `CVE-2025-47203` | hard | dropbear | 7 | Moderate-high conflict |
-| `CVE-2026-26158` | hard | busybox | 3 | 2-commit dependent series (shared fix with CVE-2026-26157) + genuine conflict, plus a post-apply ptest failure — cheap to rebuild |
-| `CVE-2025-1153` | hard | binutils | 45 | Sprawling, multi-file conflict — high end |
+| easy | `CVE-2024-32487` | less | 2 | 1 |
+| easy | `CVE-2024-6345` | python3-setuptools | 2 | 2 |
+| medium | `CVE-2025-50181` | python3-urllib3 | 4 | 2 |
+| hard | `CVE-2025-47203` | dropbear | 7 | 5 |
+| hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
+| hard | `CVE-2025-1153` | binutils | 45 | 28 |
 
-#### Balanced roster (20 CVEs)
+#### Balanced roster (8 CVEs)
 
-6 `easy`, 6 `medium`, 8 `hard` across 20 distinct recipes — no recipe repeats.
-A superset of the default roster and a subset of the extended one, so it slots
-into the same comparison. This is the roster to use when the default 7 are too
-few to conclude anything from (a one-run swing there is 14 percentage points)
-but 40 CVEs is more budget than the question deserves.
+3 `easy`, 2 `medium`, 3 `hard` — the closest even split the real 22-CVE pool
+supports (only 2 CVEs in the whole pool measure `medium`; both are included
+here). A superset of the default roster and a subset of the extended one.
 
-The even split is the point: the `hard` entries measure conflict resolution,
-while the 6 `easy` entries measure that a model does not *break* a cherry-pick
-that already applies cleanly — a regression the default roster cannot detect at
-all, since it contains no easy entries.
+| Tier | CVE | Recipe | `conflict_markers` | `files_involved` |
+|---|---|---|---|---|
+| easy | `CVE-2024-32487` | less | 2 | 1 |
+| easy | `CVE-2024-6345` | python3-setuptools | 2 | 2 |
+| easy | `CVE-2026-26158` | busybox | 3 | 2 |
+| medium | `CVE-2025-50181` | python3-urllib3 | 4 | 2 |
+| medium | `CVE-2026-27459` | python3-pyopenssl | 6 | 3 |
+| hard | `CVE-2025-47203` | dropbear | 7 | 5 |
+| hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
+| hard | `CVE-2025-1153` | binutils | 45 | 28 |
 
-| Tier | CVE | Recipe | `conflict_markers` |
-|---|---|---|---|
-| easy | `CVE-2024-24856` | acpica | – |
-| easy | `CVE-2024-5569` | python3-zipp | – |
-| easy | `CVE-2024-8006` | libpcap | – |
-| easy | `CVE-2025-11687` | gi-docgen | – |
-| easy | `CVE-2025-46805` | screen | – |
-| easy | `CVE-2025-46836` | net-tools | – |
-| medium | `CVE-2024-37535` | vte | – |
-| medium | `CVE-2024-47615` | gstreamer1.0-plugins-base | – |
-| medium | `CVE-2025-32051` | libsoup | – |
-| medium | `CVE-2025-68121` | go-runtime | – |
-| medium | `CVE-2026-0990` | libxml2 | – |
-| medium | `CVE-2026-23865` | freetype | – |
-| hard | `CVE-2026-27135` | nghttp2 | 0 |
-| hard | `CVE-2025-47183` | gstreamer1.0-plugins-good | 1 |
-| hard | `CVE-2024-32487` | less | 2 |
-| hard | `CVE-2024-6345` | python3-setuptools | 2 |
-| hard | `CVE-2026-26158` | busybox | 3 |
-| hard | `CVE-2025-47203` | dropbear | 7 |
-| hard | `CVE-2026-39881` | vim-tiny | 20 |
-| hard | `CVE-2025-1153` | binutils | 45 |
+#### Extended roster (22 CVEs)
 
-Composition notes:
+10 `easy`, 2 `medium`, 10 `hard` — every CVE mined so far that reproduces a
+recoverable exit against openembedded-core (scarthgap). A superset of the
+balanced roster.
 
-- The 8 `hard` entries are the default roster's 6 plus two picked to fill gaps
-  the default set leaves: `CVE-2026-27135` is a 0-marker *structural* failure
-  (a distinct failure mode from a content clash), and `CVE-2026-39881` fills
-  the empty 8–40 marker band. Markers now run 0, 1, 2, 2, 3, 7, 20, 45.
-- 5 of the 6 `medium` entries are dependent commit series (`series_len` 2–3);
-  `CVE-2025-68121` is the exception, medium because of a 129-line diff, so the
-  tier is not testing only one mechanism.
-- The 6 `easy` entries are every easy entry the extended roster contains.
+| Tier | CVE | Recipe | `conflict_markers` | `files_involved` |
+|---|---|---|---|---|
+| easy | `CVE-2024-32487` | less | 2 | 1 |
+| easy | `CVE-2024-39689` | python3-certifi | 2 | 1 |
+| easy | `CVE-2024-52532` | libsoup-2.4 | 3 | 1 |
+| easy | `CVE-2024-6345` | python3-setuptools | 2 | 2 |
+| easy | `CVE-2024-7537` | ofono | 2 | 1 |
+| easy | `CVE-2025-24857` | u-boot-tools | 0 | 0 |
+| easy | `CVE-2025-47183` | gstreamer1.0-plugins-good | 1 | 1 |
+| easy | `CVE-2026-21441` | python3-urllib3 | 3 | 1 |
+| easy | `CVE-2026-24049` | python3-wheel | 2 | 2 |
+| easy | `CVE-2026-26158` | busybox | 3 | 2 |
+| medium | `CVE-2025-50181` | python3-urllib3 | 4 | 2 |
+| medium | `CVE-2026-27459` | python3-pyopenssl | 6 | 3 |
+| hard | `CVE-2025-47273` | python3-setuptools | 6 | 5 |
+| hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
+| hard | `CVE-2025-47203` | dropbear | 7 | 5 |
+| hard | `CVE-2025-4674` | go-runtime | 12 | 5 |
+| hard | `CVE-2026-39881` | vim-tiny | 12 | 4 |
+| hard | `CVE-2026-26007` | python3-cryptography | 16 | 13 |
+| hard | `CVE-2025-64505` | libpng | 20 | 18 |
+| hard | `CVE-2024-6387` | openssh | 23 | 14 |
+| hard | `CVE-2025-1176` | binutils | 33 | 22 |
+| hard | `CVE-2025-1153` | binutils | 45 | 28 |
 
-#### Extended roster (40 CVEs)
-
-24 `hard`, 10 `medium`, 6 `easy` across 35 distinct recipes, and a superset of
-the default roster. Composition, and the reasoning behind it:
-
-- **24 hard** (`exit_code != 0`, so `cve-agent` actually invokes the AI).
-  This is the only tier where models differentiate: in
-  `bench_20260828_145923` every failed run and every `meaningful` judge
-  verdict landed on a hard entry. They are spread deliberately across the
-  real conflict-complexity range — `conflict_markers` of
-  0, 0, 0, 0, 3, 3, 3, 3, 3, 4, 5, 6, 7, 9, 10, 10, 12, 20, 21, 29, 34, 38,
-  39, 52 — so the roster is not several CVEs that all happen to be similarly
-  easy or all similarly brutal. The four 0-marker entries are *structural*
-  failures (e.g. a merge commit the cherry-pick strategy cannot handle),
-  which is a genuinely different failure mode from a content clash.
-- **10 medium** — every medium candidate the source data contained. This is
-  the scarcest tier because it needs a clean apply that is still non-trivial:
-  9 of the 10 are dependent commit series (`series_len` 2–3) and one is a
-  129-line single-commit diff.
-- **6 easy** — a control group. They measure that a model does not *break* a
-  cherry-pick that already applies cleanly, which no hard entry can test.
-
-| Tier | CVE | Recipe | `conflict_markers` |
-|---|---|---|---|
-| easy | `CVE-2024-24856` | acpica | – |
-| easy | `CVE-2024-5569` | python3-zipp | – |
-| easy | `CVE-2024-8006` | libpcap | – |
-| easy | `CVE-2025-11687` | gi-docgen | – |
-| easy | `CVE-2025-46805` | screen | – |
-| easy | `CVE-2025-46836` | net-tools | – |
-| medium | `CVE-2024-12087` | rsync | – |
-| medium | `CVE-2024-37535` | vte | – |
-| medium | `CVE-2024-47615` | gstreamer1.0-plugins-base | – |
-| medium | `CVE-2025-3887` | gstreamer1.0-plugins-bad | – |
-| medium | `CVE-2025-32051` | libsoup | – |
-| medium | `CVE-2025-65018` | libpng | – |
-| medium | `CVE-2025-68121` | go-runtime | – |
-| medium | `CVE-2025-9301` | cmake | – |
-| medium | `CVE-2026-0990` | libxml2 | – |
-| medium | `CVE-2026-23865` | freetype | – |
-| hard | `CVE-2024-6345` | python3-setuptools | 0 |
-| hard | `CVE-2025-24857` | u-boot-tools | 0 |
-| hard | `CVE-2025-6052` | glib-2.0 | 0 |
-| hard | `CVE-2026-27135` | nghttp2 | 0 |
-| hard | `CVE-2024-32487` | less | 3 |
-| hard | `CVE-2024-39689` | python3-certifi | 3 |
-| hard | `CVE-2024-52532` | libsoup-2.4 | 3 |
-| hard | `CVE-2024-7537` | ofono | 3 |
-| hard | `CVE-2026-26158` | busybox | 3 |
-| hard | `CVE-2026-24049` | python3-wheel | 4 |
-| hard | `CVE-2026-21441` | python3-urllib3 | 5 |
-| hard | `CVE-2025-47183` | gstreamer1.0-plugins-good | 6 |
-| hard | `CVE-2025-50181` | python3-urllib3 | 7 |
-| hard | `CVE-2026-25068` | alsa-lib | 9 |
-| hard | `CVE-2025-47273` | python3-setuptools | 10 |
-| hard | `CVE-2026-27459` | python3-pyopenssl | 10 |
-| hard | `CVE-2025-47203` | dropbear | 12 |
-| hard | `CVE-2026-39881` | vim-tiny | 20 |
-| hard | `CVE-2025-4674` | go-runtime | 21 |
-| hard | `CVE-2026-26007` | python3-cryptography | 29 |
-| hard | `CVE-2025-1176` | binutils | 34 |
-| hard | `CVE-2025-64505` | libpng | 38 |
-| hard | `CVE-2024-6387` | openssh | 39 |
-| hard | `CVE-2025-1153` | binutils | 52 |
-
-(`conflict_markers` is meaningless for a clean run, so `--retier` records it
-as `0` for every `easy`/`medium` entry; shown as `–` above.)
-
-**Selection rules.** Candidates were mined from the historical bulk run in
-`tests/integration/test-results/bulk_20260626_081658/` (289 CVEs, 235 of them
-non-skipped), and every field is measured from that run's logs rather than
-estimated. A candidate had to pass all of:
-
-1. **Mirror resolves** — the probe log contains `Found mirror:`. Directory-name
-   guessing against `$MIRROR_DIR` is unreliable, since mirror names don't
-   always match recipe names (`gst-plugins-good`, not
-   `gstreamer1.0-plugins-good`).
-2. **Not a mirror gap** — `bench_lib.is_mirror_gap_only` is false. A cherry-pick
-   that fails only because the mirror lacks the commit fails identically for
-   every model and measures nothing.
-3. **Agent-recoverable failure**, for hard entries — the corrector failed with
-   a recoverable exit code (1 conflict, 3 ptest, 4 build). A
-   `DEVTOOL_ERROR`/`PATCH_ERROR`/`METADATA_ERROR` failure is unrecoverable, so
-   `cve-agent` gives up without ever consulting the model.
-4. **At most 2 CVEs per recipe**, so no single recipe biases the result. Only
-   5 recipes appear twice (binutils, go-runtime, libpng, python3-setuptools,
-   python3-urllib3); the other 30 appear once.
-5. **At most 20 credits** per CVE in the source run. Not binding on this data
-   — the most expensive candidate in the whole pool was `CVE-2024-6387` at
-   12.40 credits — but it is the rule to apply when adding entries, so one
-   pathological CVE cannot dominate a run's cost.
-6. **Cheapest first within a complexity bin**, using the source run's measured
-   duration, so the roster does not stack slow recipes needlessly.
-
-The mining method was validated against the default 7-CVE roster: it
-reproduced the recorded `recipe` and `exit_code` for all 6 of its entries
-present in the bulk run, and its `conflict_markers` (3 / 52 / 6 / 12 / 0) match
-the values this README documented for them before the default roster's last
-`--retier`. The default roster's marker counts differ slightly because they
-come from a later probe against a newer OE-Core — which is expected, and is
-exactly what `--retier` is for. The two rosters intentionally keep the shared
-entries byte-identical across all three files, so refresh them together.
+`python3-setuptools` and `binutils` each appear twice (a 2-per-recipe cap
+still holds); every other recipe appears once.
 
 **Refresh before trusting the numbers.** These values describe OE-Core as of
-the source run. Run `./run_benchmark.sh --retier` (no AI cost) to re-probe them
-against your current checkout before reading much into the tiers. `--retier`
-recomputes `exit_code`/`diff_lines`/`conflict_markers`/`tier` but preserves the
-author-supplied `recipe` and `series_len`, and never changes which CVEs are in
-the roster.
+the last `--retier`. Run `./run_benchmark.sh --retier` (no AI cost) to
+re-probe them against your current checkout before reading much into the
+tiers.
 
-**Changing a roster.** Edit the relevant JSON file directly. To pick new
-candidates with real data instead of guessing, use `bench_lib.score_tier` /
-`is_mirror_gap_only` / `count_conflict_markers` against either a fresh probe
-log (`setup_cve_branch` + `run_cve_corrector` from `test_common.sh`, as
-`--retier` does) or an existing historical bulk-run log
-(`tests/integration/test-results/bulk_*/`), and apply the six rules above.
-`tests/benchmark/test_benchmark_roster.py` enforces the mechanical parts —
-schema, tier agreement with `score_tier`, zero markers on clean runs, the
-2-per-recipe cap, the hard tier still spanning 0 to ≥30 markers, and the
-nesting chain (`default` ⊆ `balanced` ⊆ `extended`) with identical stats on
-shared entries. If you add a CVE to a smaller roster, add it to every larger
-one too, or the nesting test will fail.
+#### Changing a roster
+
+Edit the relevant JSON file directly, or run `--retier` and act on its
+warnings: a CVE that no longer conflicts should move to the
+[clean-apply roster](#clean-apply-roster-5-cves) instead (or be dropped if you
+already have enough clean-apply coverage); a CVE with an unrelated failure
+should be replaced. To pick a new candidate with real data instead of
+guessing, probe it with `setup_cve_branch` + `run_cve_corrector` from
+`test_common.sh` (as `--retier` does), confirm the exit code is recoverable,
+then score it with `bench_lib.count_conflict_markers` /
+`count_conflicted_files` / `score_tier`. If you add a CVE to a smaller roster,
+add it to every larger one too, or the nesting test in
+`test_benchmark_roster.py` will fail.
+
+### Clean-apply roster (5 CVEs)
+
+```json
+{
+  "CVE-2024-XXXXX": {
+    "phase": "clean_apply",
+    "recipe": "acpica",
+    "exit_code": 0,
+    "diff_lines": 3,
+    "series_len": 1
+  }
+}
+```
+
+`tests/benchmark/benchmark-roster-clean-apply.json` holds CVEs whose
+cherry-pick applies **with no conflict at all** (`exit_code == 0`). This is a
+deliberately different schema from the three resolution rosters above: it has
+`phase: "clean_apply"` instead of `tier`, because `score_tier`'s
+conflict/file-complexity measurement has nothing to size when there is no
+conflict — and it keeps `diff_lines`/`series_len`, which the resolution
+rosters dropped, because they *do* mean something once a clean patch actually
+exists to diff against the reference.
+
+**Why a clean apply is worth benchmarking at all.** `cve-agent`'s exit-0 path
+does not enter the conflict-resolution loop — `EXIT_SUCCESS` is routed to a
+*mandatory analysis phase* instead (`_handle_clean_apply` in
+`cve_agent/orchestrator.py`), where the model reviews the already-applied
+patch and must approve it, edit it, conclude it is not applicable, or
+escalate. That tests a different failure mode than conflict resolution: not
+"can the model fix a conflict" but "can the model recognize a correct result
+and leave it alone," or catch a cherry-pick that applied cleanly but is
+subtly wrong for this recipe version. A model that edits everything it is
+shown scores badly here even though the underlying merge needed no help.
+Mixing these CVEs into the resolution rosters under `tier: easy`/`medium`
+would conflate that distinct behavior with genuine (if small) conflict
+resolution, which is why this roster is kept separate.
+
+| CVE | Recipe | `series_len` | `diff_lines` |
+|---|---|---|---|
+| `CVE-2024-24856` | acpica | 1 | 0 |
+| `CVE-2024-5569` | python3-zipp | 1 | 2 |
+| `CVE-2025-11687` | gi-docgen | 1 | 0 |
+| `CVE-2025-46805` | screen | 1 | 10 |
+| `CVE-2025-46836` | net-tools | 2 | 4 |
+
+Run it the same way as the others: `./run_benchmark.sh --roster clean-apply`,
+`--retier` to refresh, `--list-cases`/`--run-case` to slice it. `--retier`
+only accepts a clean exit here — a CVE that now conflicts leaves its cached
+entry unchanged and warns, mirroring the resolution rosters' symmetric
+restriction. `tests/benchmark/test_benchmark_roster.py` validates its schema
+separately from the resolution rosters (no `tier` field, `phase` always
+`"clean_apply"`, `exit_code` always `0`), and confirms it shares no CVE with
+the extended resolution roster.
 
 #### Run cost by roster
 
-Cost tracks the **hard** entry count, not the CVE count: only hard entries
-reach `cve-agent`'s AI at all, since easy and medium ones are resolved by
-`cve-corrector` alone. That makes the balanced roster unusually good value —
-2.9x the runs of the default roster for roughly 1.35x the credits.
+Every entry in the three resolution rosters reaches `cve-agent`'s AI (a
+recoverable exit always enters the resolution loop), so cost tracks CVE count
+directly there. The clean-apply roster's mandatory-analysis phase also calls
+the AI, but for a single review turn rather than an open-ended
+conflict-resolution loop, so it is typically cheaper per CVE.
 
-| | default (7) | balanced (20) | extended (40) |
-|---|---|---|---|
-| Hard entries (AI-consuming) | 6 | 8 | 24 |
-| Agent invocations, 5 models | 35 | 100 | 200 |
-| Credits, per sonnet-class model | ~16 | ~21 | ~63 |
-| Credits, whole default model set | ~63 | **~85** | **~254** |
-| Wall clock, sequential, 5 models | ~11 h | **~15 h** | **~44 h** |
-
-Credit estimates scale the source run's measured mean of 2.62 credits per hard
-entry by each model's `MODELS` multiplier. Wall clock combines each roster's
-measured corrector durations with the benchmark's own observed ~645 s mean per
-agent run. Both are estimates from prior runs, **not** predictions. For
-reference, the completed 7-CVE, 5-model run `bench_20260828_145923` actually
-spent 95.75 credits against its ~63 estimate, because its roster is 6/7 hard
-and two models burned credits on retries before failing — so treat these as
-lower bounds.
+| | default (6) | balanced (8) | extended (22) | clean-apply (5) |
+|---|---|---|---|---|
+| AI-consuming entries | 6 | 8 | 22 | 5 |
+| Agent invocations, 5 models | 30 | 40 | 110 | 25 |
 
 Use `--run-case` to work through a roster in affordable slices rather than
 committing to a full run, and `--models` to narrow the model set:
 
 ```bash
-./run_benchmark.sh --roster balanced --list-cases          # 20 numbered cases
-./run_benchmark.sh --roster balanced --run-case 1 2 3 4 5 6    # the 6 easy ones
+./run_benchmark.sh --roster extended --list-cases          # 22 numbered cases
+./run_benchmark.sh --roster extended --run-case 1 2 3 4 5 6 7 8 9 10  # the 10 easy ones
 ./run_benchmark.sh --roster extended --models claude-opus-5,claude-sonnet-4.8 \
-    --run-case 17 18 19
+    --run-case 13 14
 ```
 
 ## Report
@@ -470,9 +454,10 @@ moderate/major/partial subset.
 ## Files
 
 - `run_benchmark.sh` — main entry point (`--retier`, phase 1, phase 2)
-- `bench_lib.py` — pure-Python helpers (tiering score, mirror-gap/conflict-marker detection, cost weight, tool-call counting, judge call, CSV filtering)
+- `bench_lib.py` — pure-Python helpers (conflict/file-complexity tiering, mirror-gap/conflict-marker/conflicted-file detection, cost weight, tool-call counting, judge call, CSV filtering)
 - `generate_benchmark_report.py` — markdown report generator
-- `benchmark-roster.json` — the default committed roster, 7 CVEs (see [Roster files](#roster-files) above)
-- `benchmark-roster-balanced.json` — the balanced committed roster, 20 CVEs (6/6/8)
-- `benchmark-roster-extended.json` — the extended committed roster, 40 CVEs (the full pool)
-- `test_benchmark_roster.py` — integrity tests for all three roster files
+- `benchmark-roster.json` — the default committed resolution roster, 6 CVEs (see [Roster files](#roster-files) above)
+- `benchmark-roster-balanced.json` — the balanced committed resolution roster, 8 CVEs (3/2/3)
+- `benchmark-roster-extended.json` — the extended committed resolution roster, 22 CVEs (the full mined pool)
+- `benchmark-roster-clean-apply.json` — the separate clean-apply roster, 5 CVEs (see [Clean-apply roster](#clean-apply-roster-5-cves))
+- `test_benchmark_roster.py` — integrity tests for all four roster files

@@ -103,7 +103,13 @@ def generate_report(results_dir: Path) -> str:
     sep = "|------|" + "|".join("-" * (len(b) + 2) for b in DIFF_BUCKETS) + "|"
     lines.append(header)
     lines.append(sep)
-    for tier in ("easy", "medium", "hard"):
+    # Known resolution tiers first (score_tier's order), then any other
+    # value actually present -- e.g. "clean_apply" from a run against
+    # benchmark-roster-clean-apply.json, which has no tier/score_tier at
+    # all. Iterating only the fixed three would silently drop those rows.
+    known_tiers = ("easy", "medium", "hard")
+    other_tiers = sorted(t for t in by_tier if t not in known_tiers)
+    for tier in (*known_tiers, *other_tiers):
         rows = by_tier.get(tier, [])
         counts = {b: 0 for b in DIFF_BUCKETS}
         for row in rows:

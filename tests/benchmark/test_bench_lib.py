@@ -6,12 +6,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.benchmark.bench_lib import (
+    EASY_MAX_MARKERS,
+    HARD_MIN_FILES,
     JUDGE_REASON_MAX_CHARS,
-    MEDIUM_DIFF_LINES_THRESHOLD,
+    MEDIUM_MAX_MARKERS,
     MINOR_DIFF_LINES_THRESHOLD,
     MODELS,
+    MODERATE_DIFF_LINES_THRESHOLD,
     classify_diff_bucket,
     count_conflict_markers,
+    count_conflicted_files,
     count_diff_changed_lines,
     count_tool_calls,
     filter_for_judging,
@@ -33,22 +37,37 @@ from tests.benchmark.bench_lib import (
 
 
 class TestScoreTier:
-    def test_nonzero_exit_is_hard(self):
-        assert score_tier(1, 0, 1) == 'hard'
-        assert score_tier(4, 5, 1) == 'hard'
+    def test_easy_low_markers_one_file(self):
+        assert score_tier(1, 0, 0) == 'easy'
+        assert score_tier(1, EASY_MAX_MARKERS, 1) == 'easy'
 
-    def test_clean_small_single_commit_is_easy(self):
-        assert score_tier(0, MEDIUM_DIFF_LINES_THRESHOLD, 1) == 'easy'
-        assert score_tier(0, 0, 1) == 'easy'
+    def test_medium_marker_count(self):
+        assert score_tier(1, EASY_MAX_MARKERS + 1, 1) == 'medium'
+        assert score_tier(1, MEDIUM_MAX_MARKERS, 2) == 'medium'
 
-    def test_clean_large_diff_is_medium(self):
-        assert score_tier(0, MEDIUM_DIFF_LINES_THRESHOLD + 1, 1) == 'medium'
+    def test_hard_marker_count(self):
+        assert score_tier(1, MEDIUM_MAX_MARKERS + 1, 1) == 'hard'
 
-    def test_clean_series_is_medium(self):
-        assert score_tier(0, 0, 2) == 'medium'
+    def test_hard_files_involved_overrides_low_markers(self):
+        """Many files touched is hard even with few markers per file."""
+        assert score_tier(1, EASY_MAX_MARKERS, HARD_MIN_FILES) == 'hard'
+        assert score_tier(1, 1, HARD_MIN_FILES) == 'hard'
 
-    def test_clean_large_diff_and_series_is_medium(self):
-        assert score_tier(0, 500, 5) == 'medium'
+    def test_files_just_under_threshold_does_not_force_hard(self):
+        assert score_tier(1, EASY_MAX_MARKERS, HARD_MIN_FILES - 1) == 'easy'
+
+    @pytest.mark.parametrize("exit_code", [0, 2, 5, 6, 7, 8, 9, 10, 11, 12, 16])
+    def test_non_recoverable_exit_raises(self, exit_code):
+        """Clean (0) and unrecoverable exits have nothing to tier here --
+        clean apply belongs in the clean-apply roster (no conflict to size);
+        an unrecoverable exit means the corrector bailed before reaching a
+        conflict."""
+        with pytest.raises(ValueError, match="recoverable exit"):
+            score_tier(exit_code, 0, 0)
+
+    @pytest.mark.parametrize("exit_code", [1, 3, 4])
+    def test_recoverable_exits_accepted(self, exit_code):
+        score_tier(exit_code, 0, 0)  # must not raise
 
 
 class TestIsMirrorGapOnly:
@@ -115,6 +134,57 @@ class TestCountConflictMarkers:
 
     def test_empty_log_is_zero(self):
         assert count_conflict_markers('') == 0
+
+
+class TestCountConflictedFiles:
+    def test_counts_distinct_files_not_markers(self):
+        """A single file can have several conflicting hunks (several marker
+        lines) but must only count once here -- the complement to
+        count_conflict_markers, which counts every marker."""
+        log_text = (
+            "CONFLICT (content): Merge conflict in a.c\n"
+            "CONFLICT (content): Merge conflict in b.c\n"
+            "CONFLICT (content): Merge conflict in a.c\n"
+        )
+        assert count_conflicted_files(log_text) == 2
+        assert count_conflict_markers(log_text) == 3
+
+    def test_real_multi_file_conflict_shape(self):
+        # Shape from CVE-2025-1153's binutils conflict (5 files, real log).
+        log_text = (
+            "CONFLICT (content): Merge conflict in ld/emultempl/vms.em\n"
+            "CONFLICT (content): Merge conflict in ld/ldexp.c\n"
+            "CONFLICT (content): Merge conflict in ld/ldlang.c\n"
+            "CONFLICT (content): Merge conflict in ld/ldmain.c\n"
+            "CONFLICT (content): Merge conflict in ld/ldmisc.c\n"
+        )
+        assert count_conflicted_files(log_text) == 5
+
+    def test_no_markers_is_zero(self):
+        assert count_conflicted_files("clean run, no conflicts\n") == 0
+
+    def test_empty_log_is_zero(self):
+        assert count_conflicted_files('') == 0
+
+    def test_structural_failure_with_no_content_conflict_is_zero(self):
+        """A non-content failure (e.g. merge-commit strategy failure, or an
+        empty-cherry-pick 'nothing to commit') has no file to name."""
+        log_text = (
+            "The previous cherry-pick is now empty, possibly due to "
+            "conflict resolution.\n"
+            "error: no cherry-pick or revert in progress\n"
+        )
+        assert count_conflicted_files(log_text) == 0
+
+    def test_conflict_modify_delete_is_not_a_content_conflict(self):
+        """A modify/delete conflict line is a different git message shape and
+        must not be mistaken for CONFLICT (content)."""
+        log_text = (
+            "CONFLICT (modify/delete): foo.c deleted in HEAD and modified "
+            "in abc123.\n"
+        )
+        assert count_conflicted_files(log_text) == 0
+        assert count_conflict_markers(log_text) == 0
 
 
 class TestIsAgentEnvFailure:
@@ -203,6 +273,20 @@ class TestOrderedRosterCases:
         cases = ordered_roster_cases(_ROSTER)
         assert [c["case"] for c in cases] == list(range(1, len(cases) + 1))
 
+    def test_clean_apply_phase_used_as_tier_fallback(self):
+        """The clean-apply roster's schema has `phase: "clean_apply"` instead
+        of `tier` (see README "Clean-apply roster") -- it must still list
+        correctly, keyed on that value, rather than crash or vanish."""
+        roster = {
+            "CVE-2025-0001": {"phase": "clean_apply", "recipe": "acpica"},
+            "CVE-2025-0002": {"phase": "clean_apply", "recipe": "screen"},
+        }
+        cases = ordered_roster_cases(roster)
+        assert len(cases) == 2
+        assert {c["tier"] for c in cases} == {"clean_apply"}
+        assert [c["cve_id"] for c in cases] == [
+            "CVE-2025-0001", "CVE-2025-0002"]  # alphabetical within the phase
+
 
 class TestSelectCases:
     def test_selects_in_canonical_order_regardless_of_arg_order(self):
@@ -287,11 +371,11 @@ class TestClassifyDiffBucket:
         assert classify_diff_bucket(text) == 'moderate'
 
     def test_at_medium_threshold_is_moderate(self):
-        text = f'Differences: {MEDIUM_DIFF_LINES_THRESHOLD} lines\n'
+        text = f'Differences: {MODERATE_DIFF_LINES_THRESHOLD} lines\n'
         assert classify_diff_bucket(text) == 'moderate'
 
     def test_just_above_medium_threshold_is_major(self):
-        text = f'Differences: {MEDIUM_DIFF_LINES_THRESHOLD + 1} lines\n'
+        text = f'Differences: {MODERATE_DIFF_LINES_THRESHOLD + 1} lines\n'
         assert classify_diff_bucket(text) == 'major'
 
     def test_no_differences_line_defaults_to_minor(self):

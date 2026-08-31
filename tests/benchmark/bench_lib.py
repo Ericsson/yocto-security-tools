@@ -18,36 +18,69 @@ from cve_agent.metrics import parse_kiro_credits, strip_ansi
 
 # --- Tiering ---------------------------------------------------------------
 
-# A backport whose diff is bigger than this (in changed lines, e.g. from
-# `git diff --stat`) is no longer a "quick read" for a reviewer — bump it to
-# 'medium'. Tune here; nothing else in this module depends on the exact value.
-MEDIUM_DIFF_LINES_THRESHOLD = 50
+# score_tier() thresholds on conflict_markers (one per conflicting hunk) and
+# files_involved (distinct files with at least one conflict). Calibrated
+# against the 24 CVEs across the three committed rosters that actually need
+# resolution (all exit_code == EXIT_CONFLICT at calibration time): markers
+# ranged 0-45, roughly terciled at 3 and 10. 'hard' additionally fires on
+# files_involved alone, since a conflict spread across many files is a
+# different (and typically harder) shape of problem than the same marker
+# count concentrated in one file. Tune here; nothing else in this module
+# depends on the exact values.
+EASY_MAX_MARKERS = 3
+MEDIUM_MAX_MARKERS = 10
+HARD_MIN_FILES = 4
 
 
-def score_tier(exit_code: int, diff_lines: int, series_len: int) -> str:
-    """Classify a CVE backport run into a difficulty tier.
+def score_tier(exit_code: int, conflict_markers: int,
+               files_involved: int) -> str:
+    """Classify a CVE that needs resolution by conflict/file complexity.
+
+    Only meaningful for a recoverable exit (see
+    ``cve_agent.RECOVERABLE_EXITS`` — ``EXIT_CONFLICT``, ``EXIT_PTEST_ERROR``,
+    ``EXIT_BUILD_ERROR``): a clean exit (``0``) has no conflict to size, and
+    is not a resolution case at all — see the ``clean-apply`` roster instead
+    of tiering it here. An unrecoverable exit (metadata/checkout/git errors)
+    is also out of scope: the corrector bailed before reaching a conflict, so
+    there is nothing here to measure.
 
     Flat rules, evaluated in order — no weighted formula:
 
-    1. ``exit_code != 0`` (the corrector/agent hit a conflict or other
-       non-clean exit) -> ``'hard'``.
-    2. Clean exit (``exit_code == 0``) but either the diff is larger than
-       :data:`MEDIUM_DIFF_LINES_THRESHOLD` lines or the fix is a commit
-       series (``series_len > 1``) -> ``'medium'``.
-    3. Otherwise (clean, small, single-commit) -> ``'easy'``.
+    1. ``files_involved >= HARD_MIN_FILES`` -> ``'hard'``, regardless of
+       marker count. Touching many files is a structurally harder resolution
+       even if each file's conflict is small.
+    2. ``conflict_markers > MEDIUM_MAX_MARKERS`` -> ``'hard'``.
+    3. ``conflict_markers > EASY_MAX_MARKERS`` -> ``'medium'``.
+    4. Otherwise -> ``'easy'``.
 
     Args:
-        exit_code: cve-corrector/cve-agent exit code for the run.
-        diff_lines: Number of changed lines in the resulting patch.
-        series_len: Number of commits in the fix's dependent chain (1 for a
-            single-commit fix).
+        exit_code: cve-corrector/cve-agent exit code for the run. Must be a
+            recoverable exit; a caller with a clean or unrecoverable exit
+            should not be calling this at all (see above).
+        conflict_markers: Number of ``CONFLICT (content):`` marker lines from
+            the run's log (:func:`count_conflict_markers`).
+        files_involved: Number of distinct files with at least one conflict
+            marker (:func:`count_conflicted_files`).
 
     Returns:
         One of ``'easy'``, ``'medium'``, ``'hard'``.
+
+    Raises:
+        ValueError: if ``exit_code`` is not a recoverable exit.
     """
-    if exit_code != 0:
+    from cve_agent import RECOVERABLE_EXITS
+    if exit_code not in RECOVERABLE_EXITS:
+        raise ValueError(
+            f"score_tier is only for a recoverable exit "
+            f"({sorted(RECOVERABLE_EXITS)}); got {exit_code}. A clean exit "
+            f"(0) belongs in the clean-apply roster, not tiered here; an "
+            f"unrecoverable exit means the corrector bailed before reaching "
+            f"a conflict and has nothing to tier.")
+    if files_involved >= HARD_MIN_FILES:
         return 'hard'
-    if diff_lines > MEDIUM_DIFF_LINES_THRESHOLD or series_len > 1:
+    if conflict_markers > MEDIUM_MAX_MARKERS:
+        return 'hard'
+    if conflict_markers > EASY_MAX_MARKERS:
         return 'medium'
     return 'easy'
 
@@ -62,6 +95,34 @@ def score_tier(exit_code: int, diff_lines: int, series_len: int) -> str:
 # prints git's own "CONFLICT (content):" marker.
 _MIRROR_GAP_RE = re.compile(r'bad object|unknown revision or path not in the working tree')
 _CONTENT_CONFLICT_RE = re.compile(r'CONFLICT \(content\)')
+# git's own conflict line names the file: "CONFLICT (content): Merge
+# conflict in <path>". Captures the path so distinct files can be counted
+# separately from the marker count (one conflict marker per *hunk*, so a
+# single badly-diverged file can rack up several markers on its own —
+# files_involved is the complementary "how much of the tree is touched"
+# signal score_tier needs alongside conflict_markers).
+_CONTENT_CONFLICT_FILE_RE = re.compile(
+    r'CONFLICT \(content\): Merge conflict in (\S+)')
+
+
+def count_conflicted_files(log_text: str) -> int:
+    """Count distinct files with a content conflict in a corrector/agent log.
+
+    Complements :func:`count_conflict_markers`: a marker is recorded once per
+    conflicting hunk, so one badly-diverged file can produce several markers
+    on its own, while this counts how many separate files were touched by any
+    conflict at all. :func:`score_tier` uses both, since a conflict spread
+    across many files is a different (and typically harder) kind of problem
+    than the same marker count concentrated in one file.
+
+    Args:
+        log_text: Full text of the corrector/agent log for one run.
+
+    Returns:
+        Number of distinct file paths named in a ``CONFLICT (content):``
+        line. ``0`` for a marker-free log.
+    """
+    return len(set(_CONTENT_CONFLICT_FILE_RE.findall(log_text)))
 
 
 def is_mirror_gap_only(log_text: str) -> bool:
@@ -196,28 +257,40 @@ def ordered_roster_cases(roster: dict) -> list[dict]:
     so an unexpected tier value still yields a stable, complete listing rather
     than silently dropping a CVE. The ``_comment`` meta key is ignored.
 
+    The clean-apply roster's schema has no ``tier`` key at all (it uses
+    ``phase: "clean_apply"`` instead — see README "Clean-apply roster"); its
+    entries fall into the ``extra_tiers`` bucket via ``info.get('phase')``,
+    keyed on the literal string ``'clean_apply'``, so listing that roster
+    still works through this same function.
+
     Args:
         roster: Parsed ``benchmark-roster.json`` mapping ``cve_id`` -> info
-            dict (each info has at least ``tier`` and ``recipe``).
+            dict (each info has at least ``tier`` or ``phase``, and
+            ``recipe``).
 
     Returns:
         A list of ``{'case': int, 'cve_id': str, 'tier': str, 'recipe': str}``
-        dicts, ordered as above and numbered from 1.
+        dicts, ordered as above and numbered from 1. ``tier`` is the entry's
+        ``phase`` when it has no ``tier`` key (clean-apply roster).
     """
     entries = {k: v for k, v in roster.items() if k != '_comment'}
-    present_tiers = {info.get('tier') for info in entries.values()}
+
+    def _tier(info: dict) -> str | None:
+        return info.get('tier') or info.get('phase')
+
+    present_tiers = {_tier(info) for info in entries.values()}
     extra_tiers = sorted(t for t in present_tiers
                          if t not in TIER_ORDER and t is not None)
 
     ordered: list[tuple[str, dict]] = []
     for tier in (*TIER_ORDER, *extra_tiers):
         for cve in sorted(c for c, info in entries.items()
-                          if info.get('tier') == tier):
+                          if _tier(info) == tier):
             ordered.append((cve, entries[cve]))
 
     return [
         {'case': i, 'cve_id': cve,
-         'tier': info.get('tier', ''), 'recipe': info.get('recipe', '')}
+         'tier': _tier(info) or '', 'recipe': info.get('recipe', '')}
         for i, (cve, info) in enumerate(ordered, 1)
     ]
 
@@ -423,6 +496,10 @@ def _sum_csv_column(csv_path: str | Path, column: str) -> float:
 # categories so both reports agree on what counts as "minor" vs "moderate"
 # vs "major".
 MINOR_DIFF_LINES_THRESHOLD = 10
+# A judge-diff bucket boundary, unrelated to score_tier's conflict/file
+# thresholds above -- this one sizes an already-clean model-vs-reference
+# diff, not conflict complexity.
+MODERATE_DIFF_LINES_THRESHOLD = 50
 
 
 def classify_diff_bucket(differences_text: str | None) -> str:
@@ -441,7 +518,7 @@ def classify_diff_bucket(differences_text: str | None) -> str:
         least one file (a judgeable overlap — see
         :func:`scope_diff_to_common_files`). ``'identical'`` if the patches are
         equivalent. Otherwise ``'minor'`` (<= :data:`MINOR_DIFF_LINES_THRESHOLD`
-        lines), ``'moderate'`` (<= :data:`MEDIUM_DIFF_LINES_THRESHOLD` lines),
+        lines), ``'moderate'`` (<= :data:`MODERATE_DIFF_LINES_THRESHOLD` lines),
         or ``'major'``.
     """
     if not differences_text:
@@ -465,7 +542,7 @@ def classify_diff_bucket(differences_text: str | None) -> str:
     n = int(match.group(1)) if match else 0
     if n <= MINOR_DIFF_LINES_THRESHOLD:
         return 'minor'
-    if n <= MEDIUM_DIFF_LINES_THRESHOLD:
+    if n <= MODERATE_DIFF_LINES_THRESHOLD:
         return 'moderate'
     return 'major'
 

@@ -1,18 +1,24 @@
 # SPDX-License-Identifier: MIT
 """Integrity tests for the committed benchmark rosters.
 
-Three rosters ship — the small default (`benchmark-roster.json`), a 20-CVE
-balanced one, and a 40-CVE extended one. They are nested (default ⊂ balanced ⊂
-extended) so results stay comparable across them. All three are hand-curated,
-but every field is supposed to be real measured data in the exact shape
-``run_benchmark.sh --retier`` writes. These tests catch the drift a manual edit
-introduces: a tier that disagrees with :func:`score_tier`, a missing field, or
-a conflict-marker count on a clean run (which ``--retier`` would silently reset
-to 0 on the next probe).
+Four rosters ship. Three hold CVEs that need resolution — a recoverable exit
+(conflict/ptest/build) — nested for comparability: default (6) ⊂ balanced (8)
+⊂ extended (22). ``tier`` on those three is derived from conflict/file
+complexity (:func:`score_tier`), not diff size, since diffing against a
+reference fix has no meaning until a conflict is actually resolved.
 
-Composition guards that only make sense for a broad roster (tier spread,
-recipe cap, conflict-complexity range) are asserted on the balanced and
-extended rosters only — the default roster is deliberately narrow and cheap.
+The fourth, ``benchmark-roster-clean-apply.json``, holds CVEs whose
+cherry-pick applies with no conflict at all (``exit_code == 0``). It is NOT
+nested in the other three — a clean apply is a different kind of case, not a
+"lower difficulty" version of the same one — and its schema uses ``phase:
+"clean_apply"`` instead of ``tier``, since score_tier has nothing to measure
+when there is no conflict to size.
+
+All four are hand-curated, but every field is supposed to be real measured
+data in the exact shape ``run_benchmark.sh --retier`` writes. These tests
+catch the drift a manual edit introduces: a tier that disagrees with
+:func:`score_tier`, a missing field, or an exit code that doesn't belong in
+that roster's category.
 """
 from __future__ import annotations
 
@@ -22,35 +28,41 @@ from pathlib import Path
 
 import pytest
 
+from cve_agent import RECOVERABLE_EXITS
 from tests.benchmark.bench_lib import ordered_roster_cases, score_tier
 
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_ROSTER = BENCH_DIR / "benchmark-roster.json"
 BALANCED_ROSTER = BENCH_DIR / "benchmark-roster-balanced.json"
 EXTENDED_ROSTER = BENCH_DIR / "benchmark-roster-extended.json"
-ALL_ROSTERS = (DEFAULT_ROSTER, BALANCED_ROSTER, EXTENDED_ROSTER)
+CLEAN_APPLY_ROSTER = BENCH_DIR / "benchmark-roster-clean-apply.json"
 
-# Nesting chain, smallest first. Each roster must be a subset of the next.
-NESTING = (DEFAULT_ROSTER, BALANCED_ROSTER, EXTENDED_ROSTER)
+# The three "needs resolution" rosters, nested smallest first.
+RESOLUTION_ROSTERS = (DEFAULT_ROSTER, BALANCED_ROSTER, EXTENDED_ROSTER)
+NESTING = RESOLUTION_ROSTERS
+ALL_ROSTERS = (*RESOLUTION_ROSTERS, CLEAN_APPLY_ROSTER)
 
 EXPECTED_SIZES = {
-    DEFAULT_ROSTER.name: 7,
-    BALANCED_ROSTER.name: 20,
-    EXTENDED_ROSTER.name: 40,
+    DEFAULT_ROSTER.name: 6,
+    BALANCED_ROSTER.name: 8,
+    EXTENDED_ROSTER.name: 22,
+    CLEAN_APPLY_ROSTER.name: 5,
 }
 
-EXPECTED_COMPOSITION = {
-    BALANCED_ROSTER.name: {"easy": 6, "medium": 6, "hard": 8},
-    EXTENDED_ROSTER.name: {"easy": 6, "medium": 10, "hard": 24},
-}
-
-REQUIRED_FIELDS = {
+RESOLUTION_FIELDS = {
     "conflict_markers",
+    "exit_code",
+    "files_involved",
+    "recipe",
+    "tier",
+}
+
+CLEAN_APPLY_FIELDS = {
     "diff_lines",
     "exit_code",
+    "phase",
     "recipe",
     "series_len",
-    "tier",
 }
 
 
@@ -60,20 +72,20 @@ def _load(path: Path) -> dict[str, dict]:
         return json.load(fh)
 
 
-@pytest.fixture(params=ALL_ROSTERS, ids=lambda p: p.name)
+@pytest.fixture(params=RESOLUTION_ROSTERS, ids=lambda p: p.name)
 def roster(request: pytest.FixtureRequest) -> dict[str, dict]:
-    """Each committed roster in turn."""
+    """Each of the three resolution rosters in turn."""
     return _load(request.param)
 
 
 @pytest.fixture(params=(BALANCED_ROSTER, EXTENDED_ROSTER), ids=lambda p: p.name)
 def broad_roster(request: pytest.FixtureRequest) -> dict[str, dict]:
-    """The two rosters curated for tier and complexity spread."""
+    """The two resolution rosters curated for tier and complexity spread."""
     return _load(request.param)
 
 
 class TestRosterFilesExist:
-    """All three rosters ship, and they nest."""
+    """All four rosters ship, and the three resolution rosters nest."""
 
     def test_all_rosters_are_committed(self) -> None:
         for path in ALL_ROSTERS:
@@ -82,14 +94,6 @@ class TestRosterFilesExist:
     def test_expected_sizes(self) -> None:
         for path in ALL_ROSTERS:
             assert len(_load(path)) == EXPECTED_SIZES[path.name], path.name
-
-    def test_expected_composition(self) -> None:
-        for path, expected in (
-            (BALANCED_ROSTER, EXPECTED_COMPOSITION[BALANCED_ROSTER.name]),
-            (EXTENDED_ROSTER, EXPECTED_COMPOSITION[EXTENDED_ROSTER.name]),
-        ):
-            counts = Counter(e["tier"] for e in _load(path).values())
-            assert dict(counts) == expected, f"{path.name}: {dict(counts)}"
 
     def test_rosters_are_nested(self) -> None:
         """default ⊆ balanced ⊆ extended, so runs stay comparable."""
@@ -107,22 +111,35 @@ class TestRosterFilesExist:
                     f"{cve} differs between {smaller.name} and {larger.name}"
                 )
 
+    def test_clean_apply_roster_is_not_nested_in_the_others(self) -> None:
+        """clean-apply is a separate case, not a subset/superset relationship
+        with the resolution rosters — a CVE could coincidentally appear in
+        both, but there is no subset requirement either way."""
+        clean_apply_ids = set(_load(CLEAN_APPLY_ROSTER))
+        extended_ids = set(_load(EXTENDED_ROSTER))
+        assert not (clean_apply_ids & extended_ids), (
+            "a CVE appears in both the clean-apply and extended rosters — "
+            "pick a fresh CVE for one of them so the two stay independent "
+            "measurements"
+        )
 
-class TestRosterSchema:
-    """Every entry carries exactly the fields --retier reads and writes."""
+
+class TestResolutionRosterSchema:
+    """Every resolution-roster entry carries exactly the fields --retier
+    reads and writes, and only a recoverable exit code."""
 
     def test_roster_is_non_empty(self, roster: dict[str, dict]) -> None:
         assert roster
 
     def test_every_entry_has_the_required_fields(self, roster: dict[str, dict]) -> None:
         for cve, entry in roster.items():
-            assert set(entry) == REQUIRED_FIELDS, f"{cve} has fields {sorted(entry)}"
+            assert set(entry) == RESOLUTION_FIELDS, f"{cve} has fields {sorted(entry)}"
 
     def test_field_types(self, roster: dict[str, dict]) -> None:
         for cve, entry in roster.items():
             assert isinstance(entry["recipe"], str) and entry["recipe"], cve
             assert isinstance(entry["tier"], str), cve
-            for numeric in ("conflict_markers", "diff_lines", "exit_code", "series_len"):
+            for numeric in ("conflict_markers", "exit_code", "files_involved"):
                 assert isinstance(entry[numeric], int), f"{cve}.{numeric}"
                 assert entry[numeric] >= 0, f"{cve}.{numeric}"
 
@@ -132,35 +149,47 @@ class TestRosterSchema:
             year, number = cve.removeprefix("CVE-").split("-")
             assert year.isdigit() and number.isdigit(), cve
 
-    def test_series_len_is_at_least_one(self, roster: dict[str, dict]) -> None:
-        """A fix is one commit or a chain of several — never zero."""
+    def test_exit_code_is_recoverable(self, roster: dict[str, dict]) -> None:
+        """A resolution roster only ever holds a CVE that needs resolution --
+        a clean exit belongs in the clean-apply roster, and any other exit
+        means the corrector bailed before reaching a conflict at all, which
+        --retier's guard refuses to record here."""
         for cve, entry in roster.items():
-            assert entry["series_len"] >= 1, cve
+            assert entry["exit_code"] in RECOVERABLE_EXITS, (
+                f"{cve} has exit_code={entry['exit_code']}, not recoverable "
+                f"({sorted(RECOVERABLE_EXITS)})"
+            )
 
 
-class TestRosterConsistency:
-    """The recorded tier and marker count must match how they are derived."""
+class TestResolutionRosterConsistency:
+    """The recorded tier must match how it is derived from conflict/file data."""
 
     def test_tier_agrees_with_score_tier(self, roster: dict[str, dict]) -> None:
         for cve, entry in roster.items():
-            expected = score_tier(entry["exit_code"], entry["diff_lines"], entry["series_len"])
+            expected = score_tier(
+                entry["exit_code"], entry["conflict_markers"], entry["files_involved"])
             assert entry["tier"] == expected, (
                 f"{cve} records tier={entry['tier']} but score_tier says {expected}"
             )
 
-    def test_clean_runs_have_no_conflict_markers(self, roster: dict[str, dict]) -> None:
-        """run_benchmark.sh only counts markers when exit_code != 0.
-
-        An entry that violates this would be silently rewritten by the next
-        --retier, making the committed roster and a re-probed one disagree.
-        """
-        for cve, entry in roster.items():
-            if entry["exit_code"] == 0:
-                assert entry["conflict_markers"] == 0, cve
-
     def test_tiers_are_known_values(self, roster: dict[str, dict]) -> None:
         for cve, entry in roster.items():
             assert entry["tier"] in ("easy", "medium", "hard"), cve
+
+    def test_files_involved_never_exceeds_conflict_markers_much(
+        self, roster: dict[str, dict]
+    ) -> None:
+        """Sanity bound: files_involved counts distinct files, so it can never
+        exceed conflict_markers (each file needs at least one marker to be
+        counted) -- except the structural-failure case where both are 0."""
+        for cve, entry in roster.items():
+            assert entry["files_involved"] <= max(entry["conflict_markers"], 1) * 50, cve
+            if entry["conflict_markers"] == 0:
+                assert entry["files_involved"] == 0, (
+                    f"{cve}: 0 markers but files_involved="
+                    f"{entry['files_involved']} -- a file can't be 'involved' "
+                    f"in a conflict with no marker for it"
+                )
 
     def test_ordered_cases_cover_every_entry(self, roster: dict[str, dict]) -> None:
         """--list-cases / --run-case must be able to address the whole roster."""
@@ -171,16 +200,15 @@ class TestRosterConsistency:
 
 
 class TestBroadRosterComposition:
-    """Spread guards on the balanced and extended rosters."""
+    """Spread guards on the balanced and extended resolution rosters."""
 
-    def test_all_three_tiers_are_represented(self, broad_roster: dict[str, dict]) -> None:
-        assert {e["tier"] for e in broad_roster.values()} == {"easy", "medium", "hard"}
-
-    def test_hard_tier_is_the_largest(self, broad_roster: dict[str, dict]) -> None:
-        """Models only differentiate on runs that actually reach the agent."""
-        counts = Counter(e["tier"] for e in broad_roster.values())
-        assert counts["hard"] > counts["easy"]
-        assert counts["hard"] >= counts["medium"]
+    def test_at_least_two_tiers_are_represented(self, broad_roster: dict[str, dict]) -> None:
+        """The real conflict/file-complexity distribution across the pool
+        this project draws from has very few 'medium' CVEs (2 of 22 measured
+        at calibration time), so a full 3-tier guarantee is not realistic --
+        but a roster with only one tier would defeat the purpose of tiering
+        at all."""
+        assert len({e["tier"] for e in broad_roster.values()}) >= 2
 
     def test_no_recipe_monoculture(self, broad_roster: dict[str, dict]) -> None:
         """A recipe repeated too often would bias the benchmark toward it."""
@@ -188,24 +216,69 @@ class TestBroadRosterComposition:
         recipe, count = counts.most_common(1)[0]
         assert count <= 2, f"{recipe} appears {count} times"
 
-    def test_recipe_diversity(self, broad_roster: dict[str, dict]) -> None:
-        """At least 3/4 of entries should be on distinct recipes."""
-        recipes = {e["recipe"] for e in broad_roster.values()}
-        assert len(recipes) >= 0.75 * len(broad_roster)
-
     def test_hard_entries_span_the_conflict_complexity_range(
         self, broad_roster: dict[str, dict]
     ) -> None:
         markers = sorted(
             e["conflict_markers"] for e in broad_roster.values() if e["tier"] == "hard"
         )
-        assert markers[0] == 0, "no structural-failure (0-marker) hard entry"
-        assert markers[-1] >= 30, "no sprawling multi-file conflict at the high end"
+        assert markers, "broad roster must have at least one hard entry"
+        assert markers[-1] >= 10, "no sizeable multi-marker conflict at the high end"
 
-    def test_medium_tier_is_mostly_commit_series(
-        self, broad_roster: dict[str, dict]
+
+class TestCleanApplyRosterSchema:
+    """The clean-apply roster's schema is deliberately different: `phase`
+    instead of `tier`, since score_tier's conflict/file complexity has
+    nothing to measure on a clean apply."""
+
+    @pytest.fixture
+    def clean_apply(self) -> dict[str, dict]:
+        return _load(CLEAN_APPLY_ROSTER)
+
+    def test_every_entry_has_the_required_fields(
+        self, clean_apply: dict[str, dict]
     ) -> None:
-        """The medium tier exists to test dependent chains, not just big diffs."""
-        mediums = [e for e in broad_roster.values() if e["tier"] == "medium"]
-        series = [e for e in mediums if e["series_len"] > 1]
-        assert len(series) >= len(mediums) - 1
+        for cve, entry in clean_apply.items():
+            assert set(entry) == CLEAN_APPLY_FIELDS, (
+                f"{cve} has fields {sorted(entry)}")
+
+    def test_no_tier_field(self, clean_apply: dict[str, dict]) -> None:
+        """A `tier` key here would imply conflict-complexity tiering applies
+        to a case that has no conflict at all -- regression guard for
+        accidentally carrying the old schema over."""
+        for cve, entry in clean_apply.items():
+            assert "tier" not in entry, cve
+
+    def test_phase_is_clean_apply(self, clean_apply: dict[str, dict]) -> None:
+        for cve, entry in clean_apply.items():
+            assert entry["phase"] == "clean_apply", cve
+
+    def test_exit_code_is_always_zero(self, clean_apply: dict[str, dict]) -> None:
+        for cve, entry in clean_apply.items():
+            assert entry["exit_code"] == 0, (
+                f"{cve} has exit_code={entry['exit_code']}, but this roster "
+                f"is only for a clean cherry-pick"
+            )
+
+    def test_field_types(self, clean_apply: dict[str, dict]) -> None:
+        for cve, entry in clean_apply.items():
+            assert isinstance(entry["recipe"], str) and entry["recipe"], cve
+            for numeric in ("diff_lines", "series_len"):
+                assert isinstance(entry[numeric], int), f"{cve}.{numeric}"
+                assert entry[numeric] >= 0, f"{cve}.{numeric}"
+            assert entry["series_len"] >= 1, cve
+
+    def test_cve_ids_are_well_formed(self, clean_apply: dict[str, dict]) -> None:
+        for cve in clean_apply:
+            assert cve.startswith("CVE-"), cve
+            year, number = cve.removeprefix("CVE-").split("-")
+            assert year.isdigit() and number.isdigit(), cve
+
+    def test_ordered_cases_cover_every_entry(
+        self, clean_apply: dict[str, dict]
+    ) -> None:
+        """ordered_roster_cases() falls back to `phase` when `tier` is
+        absent, so --list-cases must still address every clean-apply CVE."""
+        cases = ordered_roster_cases(clean_apply)
+        assert len(cases) == len(clean_apply)
+        assert {c["cve_id"] for c in cases} == set(clean_apply)

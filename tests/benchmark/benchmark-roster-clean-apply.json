@@ -1,0 +1,37 @@
+{
+  "CVE-2024-24856": {
+    "diff_lines": 0,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "acpica",
+    "series_len": 1
+  },
+  "CVE-2024-5569": {
+    "diff_lines": 2,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "python3-zipp",
+    "series_len": 1
+  },
+  "CVE-2025-11687": {
+    "diff_lines": 0,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "gi-docgen",
+    "series_len": 1
+  },
+  "CVE-2025-46805": {
+    "diff_lines": 10,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "screen",
+    "series_len": 1
+  },
+  "CVE-2025-46836": {
+    "diff_lines": 4,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "net-tools",
+    "series_len": 2
+  }
+}
