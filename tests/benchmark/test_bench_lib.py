@@ -305,10 +305,15 @@ class TestResolveModels:
         models = resolve_models('default')
         names = {m['name'] for m in models}
         assert names == {
-            'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4.5',
-            'minimax-m2.5', 'qwen3-coder-next',
+            'claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-4.8',
+            'claude-haiku-4.5', 'qwen3-coder-next',
         }
         assert all(m['tier'] == 'default' for m in models)
+
+    def test_minimax_is_not_in_the_default_set(self):
+        """Poor credits-per-usable-backport; selectable by name, not by default."""
+        assert MODELS['minimax-m2.5']['tier'] == 'full'
+        assert 'minimax-m2.5' not in {m['name'] for m in resolve_models('default')}
 
     def test_full_returns_all_models(self):
         models = resolve_models('full')

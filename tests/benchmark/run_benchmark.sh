@@ -14,7 +14,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CVE_METADATA="${REPO_ROOT}/tests/integration/test-cve-metadata-agent.json"
-ROSTER_FILE="${SCRIPT_DIR}/benchmark-roster.json"
+
+# Three committed rosters (see README "Roster files"), nested so their results
+# stay comparable: default (7) subset balanced (20) subset extended (40).
+# The default is the small, cheap one; the larger two are opt-in via --roster
+# because they cost roughly 2.9x and 5.7x as much to run.
+ROSTER_DEFAULT="${SCRIPT_DIR}/benchmark-roster.json"
+ROSTER_BALANCED="${SCRIPT_DIR}/benchmark-roster-balanced.json"
+ROSTER_EXTENDED="${SCRIPT_DIR}/benchmark-roster-extended.json"
+ROSTER_FILE="$ROSTER_DEFAULT"
+ROSTER_NAME="default"
 
 # So every inline `python3 -c "from tests.benchmark.bench_lib import ..."`
 # call below can just import directly, without each one repeating its own
@@ -80,14 +89,26 @@ usage() {
     cat <<'EOF'
 Usage: run_benchmark.sh [options]
 
-The benchmark always runs the fixed 7-CVE roster in benchmark-roster.json
-(1 medium, 6 hard) -- committed, not regenerated, so every run tests
-the exact same CVEs. See tests/benchmark/README.md to change the roster.
+The benchmark runs a fixed, committed roster -- never regenerated, so every
+run tests the exact same CVEs. Three rosters are available:
 
-  --retier            Re-probe the 8 roster CVEs with cve-corrector only (no
-                       AI cost) and refresh their recorded exit_code/
-                       diff_lines/conflict_markers/tier in benchmark-roster.json.
-                       Does NOT add, remove, or reorder roster CVEs.
+  default   benchmark-roster.json           7 CVEs  (1 medium, 6 hard)
+  balanced  benchmark-roster-balanced.json 20 CVEs  (6 easy, 6 medium, 8 hard)
+  extended  benchmark-roster-extended.json 40 CVEs  (6 easy, 10 medium, 24 hard)
+
+They are nested -- default is a subset of balanced, which is a subset of
+extended -- so results stay comparable across them. See
+tests/benchmark/README.md for what is in each and how to change them.
+
+  --roster <sel>      "default" (default), "balanced", "extended", or a path
+                       to a roster JSON file. Relative to the default roster,
+                       balanced is ~2.9x the runs and extended ~5.7x -- see
+                       the README section "Run cost by roster" first.
+  --retier            Re-probe the selected roster's CVEs with cve-corrector
+                       only (no AI cost) and refresh their recorded exit_code/
+                       diff_lines/conflict_markers/tier in that roster file.
+                       Does NOT add, remove, or reorder roster CVEs, and
+                       preserves the author-supplied recipe and series_len.
   --models <sel>      "default" (default), "full", or a comma-separated list
                        of model names
   --list-cases        List the roster CVEs as numbered cases (in run order)
@@ -108,7 +129,21 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --retier) RETIER=true ;;
-        --full) die "--full was removed: the benchmark now always runs the fixed 7-CVE roster (see --help)" ;;
+        --full) die "--full was removed: the benchmark runs a fixed roster (see --roster and --help)" ;;
+        --roster)
+            shift
+            [[ $# -gt 0 ]] || die "--roster requires an argument (default|balanced|extended|<path>)"
+            case "$1" in
+                default)  ROSTER_FILE="$ROSTER_DEFAULT";  ROSTER_NAME="default" ;;
+                balanced) ROSTER_FILE="$ROSTER_BALANCED"; ROSTER_NAME="balanced" ;;
+                extended) ROSTER_FILE="$ROSTER_EXTENDED"; ROSTER_NAME="extended" ;;
+                *)
+                    [[ -f "$1" ]] || \
+                        die "--roster: not one of default|balanced|extended, and not a file: $1"
+                    ROSTER_FILE="$1"; ROSTER_NAME="$(basename "$1")"
+                    ;;
+            esac
+            ;;
         --dry-run) DRY_RUN=true ;;
         --skip-judge) SKIP_JUDGE=true ;;
         --models)
@@ -141,6 +176,14 @@ done
 
 [[ -f "$CVE_METADATA" ]] || die "CVE metadata fixture not found: $CVE_METADATA"
 [[ -f "$ROSTER_FILE" ]] || die "Fixed roster not found: $ROSTER_FILE"
+
+# State it up front: the two rosters differ by 5.7x in cost, so a run whose
+# log does not say which one it used is not interpretable after the fact.
+log "Roster: ${ROSTER_NAME} ($(basename "$ROSTER_FILE"), $(python3 -c "
+import json, sys
+with open('${ROSTER_FILE}') as f:
+    print(len(json.load(f)))
+") CVEs)"
 
 # ── Case listing / selection (--list-cases / --run-case) ─────────────────────
 # Case numbers are the roster CVEs enumerated in run order (easy->medium->hard,

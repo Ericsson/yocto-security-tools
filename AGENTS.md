@@ -40,7 +40,9 @@
     └── benchmark/                # cve-agent model benchmark (see its own README.md)
         ├── run_benchmark.sh      # Orchestrator: fixed CVE roster x models, then AI judge
         ├── bench_lib.py          # Pure-Python helpers (tiering, cost weight, judge call)
-        └── benchmark-roster.json # Committed, fixed 8-CVE roster (not regenerated)
+        ├── benchmark-roster.json # Committed default roster, 7 CVEs (not regenerated)
+        ├── benchmark-roster-balanced.json  # Committed 20-CVE roster, 6/6/8 (--roster balanced)
+        └── benchmark-roster-extended.json  # Committed 40-CVE superset (--roster extended)
 ```
 
 ## Key Abstractions

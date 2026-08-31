@@ -257,6 +257,7 @@ def select_cases(ordered_cases: list[dict], indices: list[int]) -> list[dict]:
 MODELS: dict[str, dict] = {
     'claude-opus-5': {'multiplier': 2.20, 'tier': 'default'},
     'claude-sonnet-5': {'multiplier': 1.30, 'tier': 'default'},
+    'claude-sonnet-4.8': {'multiplier': 1.30, 'tier': 'default'},
     'claude-opus-4.8': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.7': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.6': {'multiplier': 2.20, 'tier': 'full'},
@@ -265,7 +266,12 @@ MODELS: dict[str, dict] = {
     'claude-sonnet-4.5': {'multiplier': 1.30, 'tier': 'full'},
     'claude-sonnet-4': {'multiplier': 1.30, 'tier': 'full'},
     'claude-haiku-4.5': {'multiplier': 0.40, 'tier': 'default'},
-    'minimax-m2.5': {'multiplier': 0.25, 'tier': 'default'},
+    # minimax-m2.5 is deliberately not in the default set: in
+    # bench_20260828_145923 it cost 21.12 credits per reference-equivalent
+    # backport (2x claude-opus-5) while resolving only 1 of 7 roster CVEs, so
+    # it buys the least information per credit of any model measured. Still
+    # selectable by name via --models for a follow-up comparison.
+    'minimax-m2.5': {'multiplier': 0.25, 'tier': 'full'},
     'minimax-m2.1': {'multiplier': 0.15, 'tier': 'full'},
     'qwen3-coder-next': {'multiplier': 0.05, 'tier': 'default'},
 }
