@@ -2,19 +2,29 @@
 # SPDX-License-Identifier: MIT
 """Pure-Python helpers for the CVE agent model benchmark.
 
-No I/O beyond reading the CSV/JSON paths passed in by the caller (no network,
-no subprocess, no writes). Flat, documented threshold constants are used
-instead of a weighted-score formula so difficulty tiers stay easy to eyeball
-and retune.
+No network or writes. Reads are limited to caller-supplied CSV/JSON paths and
+bounded cve-agent telemetry paths emitted in a captured run log. Flat,
+documented threshold constants are used instead of a weighted-score formula
+so difficulty tiers stay easy to eyeball and retune.
 """
 from __future__ import annotations
 
 import csv
+import json
+import os
 import re
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from cve_agent.metrics import parse_kiro_credits, strip_ansi
+from cve_agent.result import (
+    BuildStatus,
+    ResultOutcome,
+    ResultSchemaError,
+    WorkflowStatus,
+)
 
 # --- Tiering ---------------------------------------------------------------
 
@@ -219,21 +229,198 @@ def is_agent_env_failure(log_text: str) -> bool:
 # tool_preamble, are the *permission-config* names — the printed marker uses
 # the shorter shell/read/write names instead).
 _TOOL_CALL_RE = re.compile(r"\(using tool: [^)]*\)")
+_MAX_TELEMETRY_BYTES = 1024 * 1024
+_MAX_ARTIFACT_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 
 
-def count_tool_calls(transcript: str) -> int:
-    """Count tool invocations in a captured kiro-cli transcript.
+@dataclass(frozen=True)
+class BenchmarkArtifactExpectation:
+    """Host-known identity which one exact cve-agent artifact must match."""
+
+    cve_id: str
+    backend: str
+    backend_profile: str | None
+    model: str
+
+
+def _read_regular_file(path: Path, maximum_bytes: int, owner: int) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner
+                or info.st_nlink != 1 or info.st_size > maximum_bytes):
+            raise OSError("unsafe benchmark artifact")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 64 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        value = b"".join(chunks)
+        if len(value) > maximum_bytes:
+            raise OSError("oversized benchmark artifact")
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def _artifact_json(artifact_dir: Path, filename: str, owner: int) -> dict | None:
+    """Read one bounded regular JSON file from an already selected run."""
+    try:
+        raw = _read_regular_file(
+            artifact_dir / filename, _MAX_TELEMETRY_BYTES, owner)
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _validated_artifact_owner(
+    artifact_dir: Path,
+    expected: BenchmarkArtifactExpectation,
+) -> int | None:
+    """Validate directory provenance and bind its manifest to the host request."""
+    if not artifact_dir.is_absolute():
+        return None
+    try:
+        info = artifact_dir.lstat()
+    except OSError:
+        return None
+    if (not stat.S_ISDIR(info.st_mode) or artifact_dir.is_symlink()
+            or info.st_uid != os.getuid()):
+        return None
+    manifest = _artifact_json(artifact_dir, "run-manifest.json", info.st_uid)
+    if manifest is None:
+        return None
+    required = {
+        "schema_version": 1,
+        "run_id": artifact_dir.name,
+        "cve_id": expected.cve_id,
+        "backend": expected.backend,
+        "backend_profile": expected.backend_profile,
+        "model": expected.model,
+    }
+    if any(manifest.get(key) != value for key, value in required.items()):
+        return None
+    return info.st_uid
+
+
+def _artifact_tool_calls(
+    artifact_dir: Path,
+    expected: BenchmarkArtifactExpectation,
+) -> int | None:
+    """Read the aggregate tool count from one host-selected artifact.
+
+    Older native runs rewrote ``telemetry.json`` after every resolution
+    session, so its counter can describe only the final retry.  The durable
+    JSONL transcript spans the complete CVE run.  Use the larger valid count
+    so telemetry-only artifacts remain supported while multi-session runs do
+    not lose their earlier tool calls.
+    """
+    if expected.backend != "openai":
+        return None
+    owner = _validated_artifact_owner(artifact_dir, expected)
+    if owner is None:
+        return None
+    telemetry_count: int | None = None
+    data = _artifact_json(artifact_dir, "telemetry.json", owner)
+    if data is not None and data.get("schema_version") == 1:
+        counters = data.get("counters")
+        value = counters.get("tool_calls") if isinstance(counters, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            telemetry_count = value
+    transcript_count: int | None = None
+    try:
+        raw = _read_regular_file(
+            artifact_dir / "agent-transcript.jsonl",
+            _MAX_ARTIFACT_TRANSCRIPT_BYTES,
+            owner,
+        )
+        lines = raw.decode("utf-8").splitlines()
+    except (OSError, UnicodeError):
+        lines = []
+    if lines:
+        count = 0
+        valid = False
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("schema_version") != 1:
+                continue
+            valid = True
+            if event.get("event") == "tool_call_requested":
+                count += 1
+        if valid:
+            transcript_count = count
+    valid_counts = [
+        count for count in (telemetry_count, transcript_count)
+        if count is not None
+    ]
+    return max(valid_counts) if valid_counts else None
+
+
+def benchmark_artifact_outcome(
+    artifact_dir: Path,
+    expected: BenchmarkArtifactExpectation,
+) -> tuple[str, bool] | None:
+    """Return the durable summary and whether its patch may be compared.
+
+    The cve-agent command can return a non-zero release-gate status after the
+    trusted workflow and build completed. The benchmark preserves that review
+    status while still comparing the generated candidate. Raw process status
+    remains authoritative when no valid durable result exists.
+    """
+    owner = _validated_artifact_owner(artifact_dir, expected)
+    if owner is None:
+        return None
+    data = _artifact_json(artifact_dir, "result.json", owner)
+    if data is None:
+        return None
+    if data.get("cve_id") != expected.cve_id:
+        return None
+    recorded_dir = data.get("artifact_dir")
+    if recorded_dir != str(artifact_dir):
+        return None
+    try:
+        outcome = ResultOutcome.from_dict(data)
+    except ResultSchemaError:
+        return None
+    comparable = (
+        outcome.workflow_status is WorkflowStatus.COMPLETED
+        and outcome.build_status is BuildStatus.PASSED
+    )
+    return outcome.summary_state, comparable
+
+
+def count_tool_calls(
+    transcript: str,
+    artifact_dir: Path | None = None,
+    expected: BenchmarkArtifactExpectation | None = None,
+) -> int:
+    """Count tool invocations in a captured agent transcript.
 
     Args:
-        transcript: Captured combined stdout/stderr of a `kiro-cli chat`
-            session (may contain ANSI colour codes).
+        transcript: Captured combined stdout/stderr of a cve-agent run.
+        artifact_dir: Exact out-of-band directory selected by the host runner.
+        expected: Identity which the directory's host-written manifest must match.
 
     Returns:
-        The number of ``(using tool: ...)`` markers found, after stripping
-        ANSI escape sequences. ``0`` for an empty or marker-free transcript.
+        The aggregate native artifact count when available, otherwise the
+        number of ``(using tool: ...)`` markers after stripping ANSI escape
+        sequences. ``0`` for an empty or marker-free transcript.
     """
     if not transcript:
         return 0
+    if artifact_dir is not None and expected is not None:
+        artifact_count = _artifact_tool_calls(artifact_dir, expected)
+        if artifact_count is not None:
+            return artifact_count
     clean = strip_ansi(transcript)
     return len(_TOOL_CALL_RE.findall(clean))
 
@@ -1024,13 +1211,14 @@ def filter_for_judging(agent_rows: list[dict],
     ]
 
 
-def judge_diff(diff_text: str,
-                model: str = 'claude-opus-4.8') -> tuple[str, str, float | None]:
+def judge_diff(diff_text: str, model: str = 'claude-opus-4.8',
+               backend: str = 'kiro') -> tuple[str, str, float | None]:
     """Ask a fixed judge model whether a diff is meaningful or stylistic-only.
 
-    Invokes a one-shot, non-interactive ``kiro-cli chat`` call with a compact
-    classification prompt. No agent config is needed — a bare model
-    classification prompt works without ``--agent``.
+    Invokes either a one-shot, non-interactive ``kiro-cli chat`` call or one
+    bounded Chat Completions request through a native ``openai[-<profile>]``
+    selector. The default remains Kiro so existing benchmark runs are
+    unchanged.
 
     Comment-only changes are removed from the diff before it is sent (see
     :func:`strip_comment_only_changes`): a reworded or dropped comment is not
@@ -1044,6 +1232,9 @@ def judge_diff(diff_text: str,
             hardcoded) so callers/tests can pass a different or mocked model;
             the benchmark's own fixed judge model is ``claude-opus-4.8``,
             deliberately not part of the roster being benchmarked.
+        backend: ``kiro`` (the default), ``openai``, or a named native OpenAI
+            selector such as ``openai-qwen3.8-l40s``. A named OpenAI profile
+            supplies its model when *model* is empty.
 
     Returns:
         A ``(judgment, reason, judge_credits)`` tuple. ``judgment`` is
@@ -1078,16 +1269,62 @@ def judge_diff(diff_text: str,
         "drove your decision.\n\n"
         f"--- DIFF ---\n{code_diff}\n--- END DIFF ---"
     )
-    result = subprocess.run(
-        ['kiro-cli', 'chat', '--model', model, '--no-interactive', prompt],
-        capture_output=True, text=True, check=False,
-    )
-    output = strip_ansi(result.stdout or '')
+    if backend == 'kiro':
+        if not model:
+            raise ValueError("the Kiro judge requires a model")
+        result = subprocess.run(
+            ['kiro-cli', 'chat', '--model', model, '--no-interactive', prompt],
+            capture_output=True, text=True, check=False,
+        )
+        output = strip_ansi(result.stdout or '')
+        credits = parse_kiro_credits(output)
+    else:
+        output, credits = _run_openai_judge(prompt, backend, model)
     match = _JUDGMENT_RE.search(output)
     judgment = match.group(1).lower() if match else 'meaningful'
     reason = _extract_judge_reason(output, match.end() if match else 0)
-    credits = parse_kiro_credits(output)
     return judgment, reason, credits
+
+
+def _run_openai_judge(prompt: str, backend: str,
+                      model: str) -> tuple[str, float | None]:
+    """Run one source-free native OpenAI judge request.
+
+    This intentionally bypasses the repository agent loop: the judge receives
+    only the already-scoped diff and has no tools or workspace authority.
+    """
+    from cve_agent.backend import resolve_backend_selector
+    from cve_agent.openai_backend import OpenAIConfig
+    from cve_agent.openai_client import OpenAIChatCompletionsClient
+    from cve_agent.openai_deadline import SessionDeadline
+    from cve_agent.openai_profile import load_openai_profile
+    from cve_agent.openai_provider import ProviderCapabilities
+
+    selection = resolve_backend_selector(backend)
+    if selection.backend != 'openai':
+        raise ValueError(
+            "judge backend must be 'kiro', 'openai', or 'openai-<profile>'")
+    profile = (
+        load_openai_profile(selection.profile)
+        if selection.profile is not None else None
+    )
+    config = OpenAIConfig.from_sources(
+        {'model': model or None, 'openai_max_output_tokens': 2048},
+        profile_openai=None if profile is None else profile.openai,
+        profile_chat=None if profile is None else profile.chat,
+    )
+    capabilities = (
+        ProviderCapabilities() if profile is None else profile.capabilities)
+    timeout = 5 + 3 * (config.connect_timeout + config.request_timeout)
+    client = OpenAIChatCompletionsClient(
+        config,
+        SessionDeadline.from_timeout(timeout),
+        capabilities=capabilities,
+    )
+    response = client.complete([{'role': 'user', 'content': prompt}], [])
+    if response.tool_calls:
+        raise RuntimeError("OpenAI judge returned an unexpected tool call")
+    return response.content or '', None
 
 
 def _extract_judge_reason(output: str, verdict_end: int) -> str:

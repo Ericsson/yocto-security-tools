@@ -93,6 +93,14 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 # A specific model selection:
 ./run_benchmark.sh --models claude-opus-5,claude-sonnet-4.6
 
+# Run one native OpenAI profile while retaining the default Kiro judge:
+./run_openai_benchmark.sh --backend openai-qwen3.8-l40s
+
+# Use a separately configured native OpenAI profile as the judge too:
+./run_openai_benchmark.sh \
+    --backend openai-qwen3.8-l40s \
+    --judge-backend openai-deepseek-v4-flash
+
 # List the roster CVEs as numbered cases (in run order), then run only some
 # of them -- handy to avoid an expensive recipe (e.g. skip glib/binutils), to
 # re-run a single case, or to work through a larger roster in affordable
@@ -116,11 +124,16 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 | `--roster <default\|balanced\|extended\|clean-apply\|path>` | Which committed roster to run (default: `default`, 6 CVEs; `balanced` is 8, `extended` is 20, and the three nest. `clean-apply` is separate, see [Clean-apply roster](#clean-apply-roster-6-cves)). A path selects an arbitrary roster JSON. The chosen roster is logged at startup so a run's provenance is recorded. |
 | `--retier` | Re-probes the selected roster's CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in that roster file in place. Never changes which CVEs are in the roster. Only accepts a recoverable exit for the three resolution rosters (a clean or unrecoverable exit leaves the cached entry unchanged and warns), and only a clean exit for `clean-apply` (any conflict leaves it unchanged and warns) — see [Roster files](#roster-files). |
 | `--models <default\|full\|comma-list>` | Model selection for phase 1 (default: `default`) |
+| `--backend <selector>` | Agent backend; `run_benchmark.sh` defaults to `kiro`, while `run_openai_benchmark.sh` defaults to `openai` |
+| `--model <model>` | Run one model, optionally overriding a named OpenAI profile's configured model; mutually exclusive with `--models` |
+| `--session-timeout <seconds>` | Per-agent-session budget. The generic runner uses the cve-agent default when omitted; the OpenAI wrapper defaults to 1,800 seconds and honors `OPENAI_BENCHMARK_SESSION_TIMEOUT` |
+| `--judge-backend <selector>` | `kiro` (default), `openai`, or a named `openai-<profile>` |
+| `--judge-model <model>` | Judge model; defaults to `claude-opus-4.8` for Kiro and may be omitted for a named OpenAI profile |
 | `--list-cases` | List the roster CVEs as numbered cases (in run order: easy→medium→hard, alphabetical within a tier; `clean-apply` has no tiers, so its cases are just alphabetical) and exit, without running anything. |
 | `--run-case <N...>` | Run only the given 1-based case number(s) from `--list-cases` (space-separated, e.g. `--run-case 1 2 3`). Scopes the agent run, the cost estimate, and `--retier`; the judge phase follows whatever was run. |
 | `--dry-run` | Print the planned run (rows, cost-weight) without invoking cve-agent, without running the judge, and without prompting for confirmation |
 | `--skip-judge` | Phase 2 (the judge pass) does not run at all |
-| `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present |
+| `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present. Resume is rejected if the roster, metadata, resolved agent configuration, or resolved judge configuration differs from the directory's immutable `run-manifest.json`. |
 
 `--full` was removed along with dynamic per-tier candidate selection — each
 roster is a fixed set of CVEs, so there is no "per tier count" left to inflate.
@@ -160,6 +173,11 @@ overwrites another's:
 - `<cve>_<model>_differences.txt` — the human-readable comparison report
 - `<cve>_<model>_differences_diff.patch` — the per-file unified diff the judge reads
 - `generated_<cve>_<model>_<file>.patch` — the patch(es) the model generated, archived before the OE tree is reset
+- `agent-artifacts/<cve>_<model>.<id>/` — the unique host-selected cve-agent
+  data root. Durable status and telemetry are read only from the exact run
+  beneath this root; `Artifacts:` lines in model-controlled output are ignored.
+- `run-manifest.json` — immutable roster/metadata digests and resolved agent and
+  judge identities used to reject incompatible resumes
 
 (`compare_patches_detailed` writes the first two per-CVE; the benchmark renames
 them per-model right after reading the bucket/diff_lines.)
@@ -170,7 +188,10 @@ them per-model right after reading the bucket/diff_lines.)
 cve_id,tier,model,exit_status,outcome,skip_reason,credits,duration_s,commands,diff_bucket,diff_lines
 ```
 
-- `exit_status` — `0` for a clean cve-agent run, `TIMEOUT`, or the raw exit code
+- `exit_status` — `0` for a security-verified cve-agent run, `TIMEOUT`, the raw
+  exit code when no durable result exists, or a durable summary such as
+  `WORKFLOW_COMPLETED_UNVERIFIED` when a release gate returns nonzero after
+  producing a built candidate
 - `outcome` — cve-agent's **own** verdict (`cve_agent.ResultStatus`), read from the run log by `bench_lib.parse_agent_outcome`: `conflict_resolved`, `success`, `skipped`, `escalated`, or `failed`. Empty when the log has no verdict line (timeout, kill, environment failure). **Read this rather than `exit_status`** — the exit code collapses four meaningfully different results into two:
   - `skipped` exits **0** but produced no patch at all. See `skip_reason` for why; only some of these are the model's own claim.
   - `escalated` exits **14** but is the *intended* result when the fix cannot be made within the allowed file scope — the model declined to guess and asked for a human.
@@ -186,7 +207,10 @@ cve_id,tier,model,exit_status,outcome,skip_reason,credits,duration_s,commands,di
   The corrector's exit code wins over the printed AI wording, because the already-applied path prints the same "Agent concluded ... is not applicable" line; trusting that string alone misreports a mechanical skip as a model judgement.
 - `credits` — parsed from cve-agent's kiro-cli output (`cve_agent.metrics.parse_kiro_credits`); empty if unavailable
 - `duration_s` — wall-clock seconds measured by the script
-- `commands` — tool-call count from the captured log (`bench_lib.count_tool_calls`)
+- `commands` — tool-call count from cve-agent's durable telemetry when
+  available, with Kiro's captured console markers as a compatibility fallback.
+  A clean corrector-only apply legitimately records `0` because no model was
+  needed; its candidate is still preserved and compared.
 - `diff_bucket` — `identical` / `minor` / `moderate` / `major` / `partial` / `file-mismatch`, same line thresholds as `tests/integration/generate_differences_report.py`. `partial` means the generated and reference patch sets overlap but aren't identical filesets (some files shared, some missing/extra); the judge then evaluates only the shared files (`bench_lib.scope_diff_to_common_files`). `identical` and `file-mismatch` stay unjudged — `identical` because a zero-line diff needs no wording judgment, `file-mismatch` because disjoint filesets leave no shared-file diff to hand the judge at all. Every other bucket, including `minor`, gets a verdict.
 - `diff_lines` — changed-line count from `compare_patches_detailed`. For a `partial` row this is scoped to the shared files only (counted over `bench_lib.scope_diff_to_common_files`), matching what the judge evaluates; for all other buckets it is the whole-patch divergence.
 
@@ -196,7 +220,12 @@ cve_id,tier,model,exit_status,outcome,skip_reason,credits,duration_s,commands,di
 cve_id,model,judgment,reason,judge_credits,scope
 ```
 
-- `judgment` — `meaningful` or `stylistic`, from the fixed judge model (`claude-opus-4.8`, deliberately not part of the benchmarked roster); or one of two verdicts recorded without a judge call: `structural-only` for a `partial` overlap whose shared files were identical, and `comment-only` when every remaining changed line was a comment (see the report note)
+- `judgment` — `meaningful` or `stylistic`, from the configured judge (Kiro
+  `claude-opus-4.8` by default, deliberately not part of the benchmarked
+  roster); or one of two verdicts recorded without a judge call:
+  `structural-only` for a `partial` overlap whose shared files were identical,
+  and `comment-only` when every remaining changed line was a comment (see the
+  report note)
 - `reason` — the judge's own one-or-two-sentence justification, flattened to a single line and capped at `bench_lib.JUDGE_REASON_MAX_CHARS`. Free-form prose, so rows are written with `csv.writer` and must be read with a CSV parser rather than `cut -d,`
 - `judge_credits` — credits spent on that one judge call; empty if unavailable (and always empty for `structural-only` and `comment-only`, which make no call)
 - `scope` — `full` when the verdict covers the whole patch (moderate/major rows), or `partial` when it covers only the shared files of a partial overlap
@@ -491,6 +520,8 @@ those never involved the model's opinion.
 ## Files
 
 - `run_benchmark.sh` — main entry point (`--retier`, phase 1, phase 2)
+- `run_openai_benchmark.sh` — single-model native OpenAI entry point with a
+  configurable judge and Kiro as the default judge
 - `bench_lib.py` — pure-Python helpers (conflict/file-complexity tiering, mirror-gap/conflict-marker/conflicted-file detection, cost weight, tool-call counting, judge call, CSV filtering)
 - `generate_benchmark_report.py` — markdown report generator
 - `benchmark-roster.json` — the default committed resolution roster, 6 CVEs (see [Roster files](#roster-files) above)
@@ -498,3 +529,4 @@ those never involved the model's opinion.
 - `benchmark-roster-extended.json` — the extended committed resolution roster, 20 CVEs (the full mined pool)
 - `benchmark-roster-clean-apply.json` — the separate clean-apply roster, 6 CVEs (see [Clean-apply roster](#clean-apply-roster-6-cves))
 - `test_benchmark_roster.py` — integrity tests for all four roster files
+- `test_run_openai_benchmark.py` — offline contracts for the native entry point

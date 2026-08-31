@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for tests.benchmark.generate_benchmark_report."""
+import json
 from pathlib import Path
 
 from tests.benchmark.generate_benchmark_report import generate_report
@@ -149,6 +150,21 @@ class TestGenerateReport:
         _write_judge_csv(tmp_path, [])
         report = generate_report(tmp_path)
         assert "claude-opus-4.8" in report
+
+    def test_resolved_judge_identity_comes_from_manifest(self, tmp_path):
+        _write_agent_csv(tmp_path, ["CVE-1,easy,model-a,0,1.0,10,3,identical,0"])
+        _write_judge_csv(tmp_path, [])
+        (tmp_path / "run-manifest.json").write_text(json.dumps({
+            "judge": {
+                "selector": "openai-private-judge",
+                "model": "resolved-judge-model",
+            },
+        }), encoding="utf-8")
+
+        report = generate_report(tmp_path)
+
+        assert "openai-private-judge / resolved-judge-model" in report
+        assert "claude-opus-4.8" not in report
 
     def test_per_model_outcome_table_separates_skipped_from_resolved(self, tmp_path):
         """A not-applicable verdict must not be tallied as a resolved backport.

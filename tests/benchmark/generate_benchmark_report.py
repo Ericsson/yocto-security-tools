@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -56,6 +57,21 @@ def _to_float(value: str) -> float | None:
         return None
 
 
+def _judge_identity(results_dir: Path) -> str:
+    """Render the resolved judge recorded by the immutable run manifest."""
+    path = results_dir / "run-manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        judge = manifest["judge"]
+        selector = judge["selector"]
+        model = judge["model"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+        return JUDGE_MODEL_NOTE
+    if not isinstance(selector, str) or not isinstance(model, str):
+        return JUDGE_MODEL_NOTE
+    return f"{selector} / {model}"
+
+
 def generate_report(results_dir: Path) -> str:
     """Generate the full benchmark report as markdown text."""
     agent_csv = results_dir / "agent_results.csv"
@@ -72,7 +88,8 @@ def generate_report(results_dir: Path) -> str:
     lines.append(f"**Results directory:** `{results_dir}`")
     lines.append("")
     lines.append(
-        f"Judge model (fixed, non-roster): `{JUDGE_MODEL_NOTE}` — used only "
+        f"Judge backend/model (fixed, non-roster): `{_judge_identity(results_dir)}` "
+        "— used only "
         "to classify moderate/major diffs as meaningful or stylistic; it "
         "is never one of the models being benchmarked."
     )
