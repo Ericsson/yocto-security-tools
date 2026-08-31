@@ -15,13 +15,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CVE_METADATA="${REPO_ROOT}/tests/integration/test-cve-metadata-agent.json"
 
-# Three committed rosters (see README "Roster files"), nested so their results
-# stay comparable: default (7) subset balanced (20) subset extended (40).
-# The default is the small, cheap one; the larger two are opt-in via --roster
-# because they cost roughly 2.9x and 5.7x as much to run.
+# Four committed rosters (see README "Roster files"), nested so their results
+# stay comparable: default (6) subset balanced (8) subset extended (24) --
+# all CVEs that need resolution (a recoverable exit: conflict/ptest/build).
+# clean-apply (5) is separate and NOT nested in the others: it holds CVEs
+# whose cherry-pick applies with no conflict, which score_tier's easy/medium/
+# hard has no meaning for. The default is the small, cheap one; the larger
+# two are opt-in via --roster because they cost roughly 2.9x and 5.7x as much
+# to run.
 ROSTER_DEFAULT="${SCRIPT_DIR}/benchmark-roster.json"
 ROSTER_BALANCED="${SCRIPT_DIR}/benchmark-roster-balanced.json"
 ROSTER_EXTENDED="${SCRIPT_DIR}/benchmark-roster-extended.json"
+ROSTER_CLEAN_APPLY="${SCRIPT_DIR}/benchmark-roster-clean-apply.json"
 ROSTER_FILE="$ROSTER_DEFAULT"
 ROSTER_NAME="default"
 
@@ -90,20 +95,27 @@ usage() {
 Usage: run_benchmark.sh [options]
 
 The benchmark runs a fixed, committed roster -- never regenerated, so every
-run tests the exact same CVEs. Three rosters are available:
+run tests the exact same CVEs. Four rosters are available: three hold CVEs
+that need resolution (a recoverable exit), nested and tiered by conflict/file
+complexity; the fourth holds CVEs whose cherry-pick applies with no conflict
+at all, scored separately (see README "Clean-apply roster").
 
-  default   benchmark-roster.json           7 CVEs  (1 medium, 6 hard)
-  balanced  benchmark-roster-balanced.json 20 CVEs  (6 easy, 6 medium, 8 hard)
-  extended  benchmark-roster-extended.json 40 CVEs  (6 easy, 10 medium, 24 hard)
+  default      benchmark-roster.json             6 CVEs  (3 easy, 1 medium, 2 hard)
+  balanced     benchmark-roster-balanced.json     8 CVEs  (3 easy, 2 medium, 3 hard)
+  extended     benchmark-roster-extended.json    22 CVEs  (10 easy, 2 medium, 10 hard)
+  clean-apply  benchmark-roster-clean-apply.json  5 CVEs  (no tier -- clean cherry-picks)
 
 They are nested -- default is a subset of balanced, which is a subset of
 extended -- so results stay comparable across them. See
 tests/benchmark/README.md for what is in each and how to change them.
 
-  --roster <sel>      "default" (default), "balanced", "extended", or a path
-                       to a roster JSON file. Relative to the default roster,
-                       balanced is ~2.9x the runs and extended ~5.7x -- see
-                       the README section "Run cost by roster" first.
+  --roster <sel>      "default" (default), "balanced", "extended",
+                       "clean-apply", or a path to a roster JSON file.
+                       Relative to the default roster, balanced is ~2.9x the
+                       runs and extended ~5.7x -- see the README section "Run
+                       cost by roster" first. "clean-apply" is a separate
+                       5-CVE roster of clean cherry-picks (no tier field);
+                       see the README section "Clean-apply roster".
   --retier            Re-probe the selected roster's CVEs with cve-corrector
                        only (no AI cost) and refresh their recorded exit_code/
                        diff_lines/conflict_markers/tier in that roster file.
@@ -132,14 +144,15 @@ while [[ $# -gt 0 ]]; do
         --full) die "--full was removed: the benchmark runs a fixed roster (see --roster and --help)" ;;
         --roster)
             shift
-            [[ $# -gt 0 ]] || die "--roster requires an argument (default|balanced|extended|<path>)"
+            [[ $# -gt 0 ]] || die "--roster requires an argument (default|balanced|extended|clean-apply|<path>)"
             case "$1" in
                 default)  ROSTER_FILE="$ROSTER_DEFAULT";  ROSTER_NAME="default" ;;
                 balanced) ROSTER_FILE="$ROSTER_BALANCED"; ROSTER_NAME="balanced" ;;
                 extended) ROSTER_FILE="$ROSTER_EXTENDED"; ROSTER_NAME="extended" ;;
+                clean-apply) ROSTER_FILE="$ROSTER_CLEAN_APPLY"; ROSTER_NAME="clean-apply" ;;
                 *)
                     [[ -f "$1" ]] || \
-                        die "--roster: not one of default|balanced|extended, and not a file: $1"
+                        die "--roster: not one of default|balanced|extended|clean-apply, and not a file: $1"
                     ROSTER_FILE="$1"; ROSTER_NAME="$(basename "$1")"
                     ;;
             esac
@@ -275,10 +288,17 @@ fi
 
 
 # ── Fixed roster: re-verify (optional) then read ────────────────────────────
-# The 7 CVEs in benchmark-roster.json are the entire candidate pool -- always
-# the same CVEs, every run. --retier re-probes them with cve-corrector only
-# (no AI cost) to refresh their recorded stats; it never changes which CVEs
-# are in the roster.
+# The CVEs in the selected resolution roster (default/balanced/extended) are
+# the entire candidate pool -- always the same CVEs, every run. --retier
+# re-probes them with cve-corrector only (no AI cost) to refresh their
+# recorded stats; it never changes which CVEs are in the roster.
+#
+# Restricted to CVEs that need resolution: a recoverable exit (1/3/4 --
+# conflict/ptest/build) is the only outcome retier_roster() will accept for
+# these three files. A clean exit (0) or an unrecoverable exit (metadata
+# lookup failure, checkout error, etc.) leaves the cached stats unchanged and
+# warns instead of overwriting tier/exit_code -- see retier_clean_apply_roster()
+# below for the roster that DOES want a clean exit.
 retier_roster() {
     log "=== Re-verifying the fixed roster (no AI, cve-corrector only) ==="
     source_build_env
@@ -301,14 +321,114 @@ print('\n'.join(data.keys()))
         [[ -z "$cve_id" ]] && continue
         is_selected_cve "$cve_id" || continue
         i=$((i + 1))
-        local recipe series_len
-        read -r recipe series_len <<< "$(python3 -c "
+        local recipe
+        recipe=$(python3 -c "
 import json
 with open('${ROSTER_FILE}') as f:
     data = json.load(f)
-entry = data['${cve_id}']
-print(entry['recipe'], entry['series_len'])
+print(data['${cve_id}']['recipe'])
+")
+
+        local log_file="${RESULTS_DIR}/retier_${cve_id}.log"
+        log "[$i/$count] $cve_id ($recipe) ..."
+        setup_cve_branch "$cve_id" "$log_file" "retier"
+
+        if [[ "$SETUP_CVE_STATUS" != "OK" ]]; then
+            log "  WARNING: setup failed ($SETUP_CVE_STATUS) -- leaving cached stats for $cve_id unchanged"
+            reset_oe_tree >> "$log_file" 2>&1
+            continue
+        fi
+
+        run_cve_corrector "$cve_id" "$log_file" "--skip-build --skip-ptest"
+        local exit_code
+        exit_code=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f1)
+
+        local is_recoverable
+        is_recoverable=$(python3 -c "
+from cve_agent import RECOVERABLE_EXITS
+print(${exit_code} in RECOVERABLE_EXITS)
+")
+        if [[ "$is_recoverable" != "True" ]]; then
+            log "  WARNING: exit=$exit_code is not a recoverable exit (need resolution: conflict/ptest/build) -- leaving cached stats for $cve_id unchanged. A clean exit belongs in the clean-apply roster (--roster clean-apply), not here; any other exit means the corrector bailed before reaching a conflict."
+            reset_oe_tree >> "$log_file" 2>&1
+            continue
+        fi
+
+        local conflict_markers files_involved mirror_gap_only
+        read -r mirror_gap_only conflict_markers files_involved <<< "$(python3 -c "
+from tests.benchmark.bench_lib import (
+    count_conflict_markers, count_conflicted_files, is_mirror_gap_only)
+with open('${log_file}') as f:
+    text = f.read()
+print(is_mirror_gap_only(text), count_conflict_markers(text),
+      count_conflicted_files(text))
 ")"
+
+        local tier
+        tier=$(python3 -c "
+from tests.benchmark.bench_lib import score_tier
+print(score_tier(${exit_code}, ${conflict_markers}, ${files_involved}))
+")
+        log "  exit=$exit_code conflict_markers=$conflict_markers files_involved=$files_involved mirror_gap_only=$mirror_gap_only -> tier=$tier"
+        if [[ "$mirror_gap_only" == "True" ]]; then
+            log "  WARNING: $cve_id now fails with a mirror gap, not a genuine conflict -- stats updated, but consider swapping it out of the fixed roster (see README)"
+        fi
+
+        python3 -c "
+import json
+path = '${ROSTER_FILE}'
+with open(path) as f:
+    data = json.load(f)
+data['${cve_id}'] = {
+    'tier': '${tier}', 'recipe': '${recipe}', 'exit_code': ${exit_code},
+    'conflict_markers': ${conflict_markers}, 'files_involved': ${files_involved},
+}
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+    f.write('\n')
+"
+        reset_oe_tree >> "$log_file" 2>&1
+    done <<< "$cve_ids"
+    log "Refreshed stats for $count roster CVE(s) in $ROSTER_FILE"
+}
+
+# ── Clean-apply roster: re-verify (optional) ────────────────────────────────
+# Companion to retier_roster() for the opposite case: benchmark-roster-
+# clean-apply.json holds CVEs whose cherry-pick applies with NO conflict
+# (exit_code == 0). It has no tier/score_tier -- schema uses `phase:
+# "clean_apply"` instead, since easy/medium/hard measures conflict
+# complexity, which a clean apply has none of by definition. Only accepts
+# exit_code == 0; any other outcome leaves the cached entry unchanged and
+# warns, mirroring retier_roster()'s symmetric restriction.
+retier_clean_apply_roster() {
+    log "=== Re-verifying the clean-apply roster (no AI, cve-corrector only) ==="
+    source_build_env
+
+    local cve_ids
+    cve_ids=$(python3 -c "
+import json
+with open('${ROSTER_FILE}') as f:
+    data = json.load(f)
+data.pop('_comment', None)
+print('\n'.join(data.keys()))
+")
+
+    local i=0 count
+    count=$(echo "$cve_ids" | while IFS= read -r c; do
+        [[ -z "$c" ]] && continue
+        is_selected_cve "$c" && echo "$c"
+    done | wc -l)
+    while IFS= read -r cve_id; do
+        [[ -z "$cve_id" ]] && continue
+        is_selected_cve "$cve_id" || continue
+        i=$((i + 1))
+        local recipe
+        recipe=$(python3 -c "
+import json
+with open('${ROSTER_FILE}') as f:
+    data = json.load(f)
+print(data['${cve_id}']['recipe'])
+")
 
         local log_file="${RESULTS_DIR}/retier_${cve_id}.log"
         log "[$i/$count] $cve_id ($recipe) ..."
@@ -326,25 +446,20 @@ print(entry['recipe'], entry['series_len'])
         diff_lines=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f2)
         [[ "$diff_lines" =~ ^[0-9]+$ ]] || diff_lines=0
 
-        local conflict_markers=0 mirror_gap_only=False
         if [[ "$exit_code" != "0" ]]; then
-            read -r mirror_gap_only conflict_markers <<< "$(python3 -c "
-from tests.benchmark.bench_lib import count_conflict_markers, is_mirror_gap_only
-with open('${log_file}') as f:
-    text = f.read()
-print(is_mirror_gap_only(text), count_conflict_markers(text))
-")"
+            log "  WARNING: exit=$exit_code is not a clean apply -- leaving cached stats for $cve_id unchanged. This roster is only for CVEs whose cherry-pick applies with no conflict; a non-zero exit belongs in one of the resolution rosters (default/balanced/extended) instead."
+            reset_oe_tree >> "$log_file" 2>&1
+            continue
         fi
 
-        local tier
-        tier=$(python3 -c "
-from tests.benchmark.bench_lib import score_tier
-print(score_tier(${exit_code}, ${diff_lines}, ${series_len}))
+        local series_len
+        series_len=$(python3 -c "
+import json
+with open('${ROSTER_FILE}') as f:
+    data = json.load(f)
+print(data['${cve_id}']['series_len'])
 ")
-        log "  exit=$exit_code diff_lines=$diff_lines series_len=$series_len conflict_markers=$conflict_markers mirror_gap_only=$mirror_gap_only -> tier=$tier"
-        if [[ "$mirror_gap_only" == "True" ]]; then
-            log "  WARNING: $cve_id now fails with a mirror gap, not a genuine conflict/success -- stats updated, but consider swapping it out of the fixed roster (see README)"
-        fi
+        log "  exit=$exit_code diff_lines=$diff_lines series_len=$series_len -> phase=clean_apply"
 
         python3 -c "
 import json
@@ -352,9 +467,8 @@ path = '${ROSTER_FILE}'
 with open(path) as f:
     data = json.load(f)
 data['${cve_id}'] = {
-    'tier': '${tier}', 'recipe': '${recipe}', 'exit_code': ${exit_code},
+    'phase': 'clean_apply', 'recipe': '${recipe}', 'exit_code': ${exit_code},
     'diff_lines': ${diff_lines}, 'series_len': ${series_len},
-    'conflict_markers': ${conflict_markers},
 }
 with open(path, 'w') as f:
     json.dump(data, f, indent=2, sort_keys=True)
@@ -362,10 +476,16 @@ with open(path, 'w') as f:
 "
         reset_oe_tree >> "$log_file" 2>&1
     done <<< "$cve_ids"
-    log "Refreshed stats for $count roster CVE(s) in $ROSTER_FILE"
+    log "Refreshed stats for $count clean-apply roster CVE(s) in $ROSTER_FILE"
 }
 
-[[ "$RETIER" == true ]] && retier_roster
+if [[ "$RETIER" == true ]]; then
+    if [[ "$ROSTER_NAME" == "clean-apply" ]]; then
+        retier_clean_apply_roster
+    else
+        retier_roster
+    fi
+fi
 
 cves_for_tier() {
     local tier="$1"
@@ -374,13 +494,25 @@ import json
 with open('${ROSTER_FILE}') as f:
     data = json.load(f)
 data.pop('_comment', None)
-for cve in sorted(cve for cve, info in data.items() if info['tier'] == '${tier}'):
+for cve in sorted(cve for cve, info in data.items()
+                  if info.get('tier') == '${tier}' or info.get('phase') == '${tier}'):
     print(cve)
 "
 }
 
+# clean-apply's schema uses `phase: "clean_apply"` instead of `tier` (see
+# README "Clean-apply roster") -- cves_for_tier() checks both keys above, and
+# this picks which single-value list the outer loop iterates so the rest of
+# the phase-1/phase-2 machinery (built around iterating "tiers") needs no
+# further special-casing.
+if [[ "$ROSTER_NAME" == "clean-apply" ]]; then
+    ROSTER_TIERS=("clean_apply")
+else
+    ROSTER_TIERS=("easy" "medium" "hard")
+fi
+
 TOTAL_PLANNED=0
-for tier in easy medium hard; do
+for tier in "${ROSTER_TIERS[@]}"; do
     while IFS= read -r cve_id; do
         [[ -z "$cve_id" ]] && continue
         is_selected_cve "$cve_id" && TOTAL_PLANNED=$((TOTAL_PLANNED + 1))
@@ -435,7 +567,7 @@ for m in resolve_models('${MODELS_SELECTOR}'):
     print(m['name'])
 ")
 
-    for tier in easy medium hard; do
+    for tier in "${ROSTER_TIERS[@]}"; do
         while IFS= read -r cve_id; do
             [[ -z "$cve_id" ]] && continue
             is_selected_cve "$cve_id" || continue
