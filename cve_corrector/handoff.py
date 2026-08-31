@@ -46,6 +46,13 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
     allowed = tuple(sorted(set(allowed) | set(captured.conflicted_paths)))
     declared = set(allowed)
     out_of_scope = tuple(sorted(set(captured.tracked_paths) - declared))
+    reference_hashes = [state.commit_hash]
+    if state.series_state is not None:
+        commits = state.series_state.get("commits")
+        if isinstance(commits, list) and all(isinstance(item, str) for item in commits):
+            reference_hashes = list(dict.fromkeys(commits))
+    reference_commits = tuple(
+        git_object(workspace, f"{commit}^{{commit}}") for commit in reference_hashes)
     manifest = RepositoryHandoff(
         schema_version=HANDOFF_SCHEMA_VERSION,
         cve=state.cve_id,
@@ -54,7 +61,7 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
         current_head=captured.head,
         baseline_tree=git_object(workspace, "original-version^{tree}"),
         current_tree=captured.tree,
-        reference_commits=(git_object(workspace, f"{state.commit_hash}^{{commit}}"),),
+        reference_commits=reference_commits,
         selected_commit=git_object(workspace, f"{state.commit_hash}^{{commit}}"),
         mainline_parent=state.mainline_parent,
         selected_parent=selected_parent,

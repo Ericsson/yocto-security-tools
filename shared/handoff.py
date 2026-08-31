@@ -111,8 +111,11 @@ class RepositoryHandoff:
             raise HandoffError("HANDOFF_INVALID_OBJECT", "invalid reference identity")
         if not self.allowed_paths:
             raise HandoffError("HANDOFF_EMPTY_ALLOWED_SCOPE", "allowed path set is empty")
+        if (len(self.reference_commits) > MAX_HANDOFF_PATHS
+                or len(set(self.reference_commits)) != len(self.reference_commits)):
+            raise HandoffError("HANDOFF_SCHEMA_INVALID", "invalid reference series")
         for values in (
-            self.reference_commits, self.conflicted_paths, self.allowed_paths,
+            self.conflicted_paths, self.allowed_paths,
             self.known_generated_paths, self.tracked_out_of_scope_paths,
         ):
             if len(values) > MAX_HANDOFF_PATHS:

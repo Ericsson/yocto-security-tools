@@ -4,6 +4,7 @@
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,6 +38,7 @@ from cve_corrector.ui import (
     print_edit_instructions,
 )
 from cve_corrector.workflow import (
+    WorkflowConfig,
     _clean_and_reset_sstate,
     _handle_failed_series,
     _handle_no_clean_apply,
@@ -45,6 +47,7 @@ from cve_corrector.workflow import (
     _run_build_step,
     _run_ptest_step,
     continue_from_conflict,
+    initialize_cve_workflow,
     save_progress,
     save_workflow_state,
 )
@@ -921,6 +924,42 @@ class TestCleanAndResetSstate:
             ['bitbake', '-c', 'cleansstate', 'busybox']
 
 
+def test_initialize_records_prepatch_build_side_effects_in_state(tmp_path):
+    workspace = tmp_path / "build" / "workspace" / "sources" / "busybox"
+    workspace.mkdir(parents=True)
+    commit = "a" * 40
+    cve_data = {
+        "CVE-2026-1234": {
+            "name": "busybox", "hashes": [commit], "hash_details": [],
+        },
+    }
+    config = WorkflowConfig(
+        mirror_path=None, mirror_dir=None, meta_layer=None,
+        skip_build=False, clean=False, skip_ptest=True, edit_mode=False,
+        skip_cve_applicability=True,
+    )
+    capture = MagicMock(return_value={"already-dirty", "config.guess", "configure"})
+    empty = SimpleNamespace(stdout="", returncode=0)
+    with patch("cve_corrector.workflow.check_cve_status", return_value=None), \
+            patch("cve_corrector.workflow.check_cve_patch_in_src_uri",
+                  return_value=None), \
+            patch("cve_corrector.workflow.setup_devtool_workspace",
+                  return_value=(workspace, "1.0")), \
+            patch("cve_corrector.workflow.setup_upstream_remote", return_value=None), \
+            patch("cve_corrector.workflow.prepare_cve_branch",
+                  return_value=(True, [])), \
+            patch("cve_corrector.workflow.run_cmd_capture", return_value=empty), \
+            patch("cve_corrector.workflow._clean_and_reset_sstate"), \
+            patch("cve_corrector.workflow.run_cmd", return_value=0), \
+            patch("cve_corrector.workflow._capture_tracked_paths", capture), \
+            patch("cve_corrector.workflow.apply_single_commits",
+                  return_value=(True, commit)):
+        state = initialize_cve_workflow(cve_data, "CVE-2026-1234", config)
+
+    assert state.known_generated_paths == [
+        "already-dirty", "config.guess", "configure"]
+
+
 class TestRunBuildStep:
     @patch("cve_corrector.workflow.run_cmd", return_value=0)
     @patch("cve_corrector.workflow.run_cmd_capture")
@@ -950,6 +989,16 @@ class TestRunBuildStep:
     def test_skip(self, tmp_path):
         state = _state(tmp_path, skip_build=True)
         _run_build_step(state)  # no crash
+
+    def test_success_accumulates_tracked_build_outputs(self, tmp_path):
+        state = _state(
+            tmp_path, skip_build=False, known_generated_paths=["preflight-generated"])
+        with patch("cve_corrector.workflow._clean_and_reset_sstate"), \
+                patch("cve_corrector.workflow.run_cmd", return_value=0), \
+                patch("cve_corrector.workflow._capture_tracked_paths",
+                      side_effect=[{"existing"}, {"existing", "configure"}]):
+            _run_build_step(state)
+        assert state.known_generated_paths == ["configure", "preflight-generated"]
 
     @patch("cve_corrector.workflow.save_progress")
     @patch("cve_corrector.workflow.run_cmd")

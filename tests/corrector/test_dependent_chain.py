@@ -58,16 +58,20 @@ class TestApplySeriesRequireAll:
         assert best['remaining_commits'] == CHAIN[1:]
         assert best['commits'] == CHAIN
 
-    def test_conflict_on_first_commit_without_require_all_unchanged(
+    def test_conflict_on_first_commit_preserves_pr_series(
             self, tmp_path, monkeypatch):
-        """Candidate (PR) series keep their existing fallback behaviour."""
+        """A PR series is also an ordered fix and must not degrade to one commit."""
         self._fake_git(monkeypatch, tmp_path, CHAIN[0])
         series = [{'pull_url': 'https://github.com/o/r/pull/1',
                    'commits': CHAIN}]
 
         success, last, best = apply_series(tmp_path, series)
 
-        assert (success, last, best) == (False, None, None)
+        assert success is False
+        assert last is None
+        assert best is not None
+        assert best['commits'] == CHAIN
+        assert best['failed_at'] == CHAIN[0]
 
     def test_partial_progress_still_reported(self, tmp_path, monkeypatch):
         """A chain failing mid-way reports what was applied."""

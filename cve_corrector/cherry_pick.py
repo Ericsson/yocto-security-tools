@@ -174,20 +174,17 @@ def apply_series(workspace_path: Path,
     Args:
         workspace_path: Path to the git repository.
         series: Series dicts with ``commits`` (and optional ``pull_url``).
-        require_all: When True the commits form a caller-declared dependent
-            chain, so conflict state is reported even if nothing applied.
+        require_all: Retained for CLI compatibility. Every declared series is
+            an ordered fix unit and reports conflict state even at commit one.
 
     Returns:
         Tuple of (success, last_commit_hash, best_partial_series)
     """
     logger.info("Found %s commit series", len(series))
     best_series = None
-    # A required chain must always surface conflict state, even when the very
-    # first commit conflicts and zero commits were applied — otherwise the
-    # caller falls back to applying a single commit, silently leaving the CVE
-    # only partially fixed. Candidate series keep the original ">0 applied"
-    # bar so their existing fallback behaviour is unchanged.
-    max_applied = -1 if require_all else 0
+    # A series must always surface conflict state, even when its first commit
+    # conflicts. Falling back to one commit silently creates a partial fix.
+    max_applied = -1
 
     for idx, pr_series in enumerate(series, 1):
         pull_url = pr_series.get('pull_url', '')
