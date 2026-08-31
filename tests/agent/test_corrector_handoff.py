@@ -13,13 +13,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cve_agent import AgentConfig, FailureClass
+from cve_agent.backend import SessionResult
 from cve_agent.handoff import (
     activate_validated_handoff,
     deactivate_validated_handoff,
     validate_repository_handoff,
 )
 from cve_agent.knowledge import KnowledgeBase
-from cve_agent.openai_git_tools import GitToolRuntime
+from cve_agent.openai_git_tools import ChangedPath, GitToolRuntime
 from cve_agent.openai_tools import FileToolPathPolicy, ToolPolicyError
 from cve_agent.orchestrator import _run_cve_pipeline
 from cve_agent.session import guarded_session
@@ -112,6 +113,84 @@ def test_trusted_git_baseline_records_only_validated_handoff_provenance(tmp_path
     assert unbound.trusted_git_state.handoff_digest is None
 
 
+def test_merge_handoff_authorizes_clean_mainline_paths_on_continue(tmp_path):
+    repo = tmp_path / "build" / "workspace" / "sources" / "recipe"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    branch = _git(repo, "branch", "--show-current")
+    (repo / "conflict.c").write_text("base\n", encoding="utf-8")
+    (repo / "clean.c").write_text("base\n", encoding="utf-8")
+    base = _commit(repo, "base")
+
+    _git(repo, "checkout", "-q", "-b", "topic")
+    (repo / "conflict.c").write_text("topic\n", encoding="utf-8")
+    (repo / "clean.c").write_text("security fix\n", encoding="utf-8")
+    _commit(repo, "topic security fix")
+    _git(repo, "checkout", "-q", branch)
+    (repo / "conflict.c").write_text("mainline\n", encoding="utf-8")
+    _commit(repo, "mainline change")
+    merged = subprocess.run(
+        ["git", "merge", "--no-ff", "topic", "-m", "security merge"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert merged.returncode != 0
+    (repo / "conflict.c").write_text("merged security fix\n", encoding="utf-8")
+    selected = _commit(repo, "security merge")
+
+    _git(repo, "checkout", "-q", "-b", "stable", base)
+    (repo / "conflict.c").write_text("stable change\n", encoding="utf-8")
+    _commit(repo, "stable change")
+    _git(repo, "tag", "original-version")
+    cherry_pick = subprocess.run(
+        ["git", "cherry-pick", "-m", "1", selected],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert cherry_pick.returncode != 0
+
+    state_dir = repo.parent.parent / "cve_corrector"
+    manifest = emit_handoff(
+        _state(repo, selected, mainline_parent=1), state_dir)
+    validated = validate_repository_handoff(
+        repo, "CVE-2026-1234", required=True)
+    assert validated == manifest
+    token = activate_validated_handoff(validated)
+    try:
+        runtime = GitToolRuntime(
+            repo, set(manifest.allowed_paths), "gpt-test", 30)
+    finally:
+        deactivate_validated_handoff(token)
+
+    assert runtime.dispatch("git_restore_conflict", {
+        "path": "conflict.c", "side": "theirs",
+    }).success
+    assert runtime.dispatch("git_stage", {"paths": ["conflict.c"]}).success
+    result = runtime.dispatch("git_cherry_pick_continue", {})
+
+    assert result.success
+    assert (repo / "clean.c").read_text(encoding="utf-8") == "security fix\n"
+    assert (repo / "conflict.c").read_text(encoding="utf-8") == "merged security fix\n"
+
+
+def test_handoff_retains_complete_ordered_reference_series(tmp_path):
+    repo, first = _repo(tmp_path)
+    (repo / "source.c").write_text("complete fix\n", encoding="utf-8")
+    second = _commit(repo, "second fix commit")
+    state_dir = repo.parent.parent / "cve_corrector"
+
+    manifest = emit_handoff(
+        _state(repo, second, series_state={"commits": [first, second]}), state_dir)
+
+    assert manifest.reference_commits == (first, second)
+
+
 def test_unknown_tracked_out_of_scope_fails_with_bounded_manifest(tmp_path):
     repo, selected = _repo(tmp_path)
     (repo / "generated.txt").write_text("unknown source edit\n", encoding="utf-8")
@@ -121,6 +200,93 @@ def test_unknown_tracked_out_of_scope_fails_with_bounded_manifest(tmp_path):
         emit_handoff(_state(repo, selected), state_dir)
     persisted = read_handoff(state_dir / "handoffs" / "recipe.json")
     assert persisted.tracked_out_of_scope_paths == ("generated.txt",)
+
+
+@pytest.mark.parametrize(
+    ("upstream_path", "workspace_path"),
+    [
+        ("src/source.c", "source.c"),
+        (
+            "subprojects/gst-plugins-good/gst/isomp4/qtdemux.c",
+            "gst/isomp4/qtdemux.c",
+        ),
+    ],
+)
+def test_handoff_maps_upstream_paths_to_extracted_source_root(
+        tmp_path, upstream_path, workspace_path):
+    """Authorize the path layout the corrector actually handed to the agent."""
+    repo = tmp_path / "build" / "workspace" / "sources" / "recipe"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    source = repo / upstream_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("old\n", encoding="utf-8")
+    upstream_base = _commit(repo, "upstream base")
+    source.write_text("fixed\n", encoding="utf-8")
+    selected = _commit(repo, "upstream fix")
+
+    extracted = repo / workspace_path
+    tree = repo / "extracted"
+    tree.mkdir()
+    extracted_relative = tree / workspace_path
+    extracted_relative.parent.mkdir(parents=True, exist_ok=True)
+    extracted_relative.write_text("stable\n", encoding="utf-8")
+    index = tmp_path / "extracted-index"
+    env = os.environ | {"GIT_INDEX_FILE": str(index)}
+    subprocess.run(
+        ["git", "read-tree", "--empty"], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["git", "--work-tree", str(tree), "add", "-A"],
+        cwd=repo,
+        env=env,
+        check=True,
+    )
+    extracted_tree = subprocess.run(
+        ["git", "write-tree"], cwd=repo, env=env, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    extracted_commit = _git(
+        repo, "commit-tree", extracted_tree, "-p", upstream_base,
+        "-m", "extracted source root",
+    )
+    _git(repo, "checkout", "-q", "-B", "stable", extracted_commit)
+    _git(repo, "tag", "original-version")
+    extracted = repo / workspace_path
+    extracted.write_text("candidate fix\n", encoding="utf-8")
+
+    state_dir = repo.parent.parent / "cve_corrector"
+    manifest = emit_handoff(_state(repo, selected), state_dir)
+
+    assert manifest.allowed_paths == (workspace_path,)
+    assert manifest.tracked_out_of_scope_paths == ()
+    assert validate_repository_handoff(
+        repo, "CVE-2026-1234", required=True) == manifest
+
+
+def test_handoff_scope_accepts_staged_extracted_path_for_upstream_prefix(tmp_path):
+    """Non-conflicting staged paths use the authenticated workspace scope."""
+    repo, selected = _repo(tmp_path)
+    state_dir = repo.parent.parent / "cve_corrector"
+    manifest = emit_handoff(_state(repo, selected), state_dir)
+    validated = validate_repository_handoff(
+        repo, "CVE-2026-1234", required=True)
+    token = activate_validated_handoff(validated)
+    try:
+        runtime = GitToolRuntime(
+            repo, set(manifest.allowed_paths), "gpt-test", 30)
+    finally:
+        deactivate_validated_handoff(token)
+
+    upstream_path = ChangedPath(
+        path="src/source.c", status="M", old_mode="100644", new_mode="100644")
+    with patch.object(runtime, "_staged_paths", return_value=["source.c"]), \
+            patch.object(
+                runtime, "_active_cherry_pick_changed_paths",
+                return_value=[upstream_path],
+            ), patch.object(runtime, "_validate_staged_modes"):
+        assert runtime._validate_staged_scope() == ["source.c"]
 
 
 def test_manifest_tamper_and_repository_drift_are_rejected(tmp_path):
@@ -189,6 +355,87 @@ def test_missing_required_handoff_makes_zero_provider_calls(tmp_path):
     assert not result.resolved
     assert result.failure_reason == "Corrector handoff failed: HANDOFF_MISSING"
     backend.run_session.assert_not_called()
+
+
+def test_unresolved_provider_state_is_refreshed_for_next_session(tmp_path):
+    repo, selected = _repo(tmp_path)
+    state_dir = repo.parent.parent / "cve_corrector"
+    emit_handoff(_state(repo, selected), state_dir)
+    backend = MagicMock()
+
+    def amend_then_timeout(*_args, **_kwargs):
+        (repo / "source.c").write_text("model adaptation\n", encoding="utf-8")
+        _git(repo, "add", "source.c")
+        _git(repo, "commit", "--amend", "--no-edit")
+        return SessionResult(
+            resolved=False, duration=600.0,
+            failure_reason="Chat Completions request timed out")
+
+    calls = 0
+
+    def run_session(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return amend_then_timeout(*args, **kwargs)
+        return SessionResult(resolved=True, duration=1.0)
+
+    backend.run_session.side_effect = run_session
+    with patch("cve_agent.session.get_backend", return_value=backend), \
+            patch("cve_agent.session._write_audit_log"):
+        first = guarded_session(
+            tmp_path / "context.md", repo, selected, {"hashes": [selected]},
+            cve_id="CVE-2026-1234", require_handoff=True)
+        refreshed = read_handoff(state_dir / "handoffs" / "recipe.json")
+        second = guarded_session(
+            tmp_path / "context.md", repo, selected, {"hashes": [selected]},
+            cve_id="CVE-2026-1234", require_handoff=True)
+
+    assert first.resolved is False
+    assert refreshed.current_head == _git(repo, "rev-parse", "HEAD")
+    assert second.resolved is True
+
+
+def test_unresolved_provider_refresh_uses_post_checkout_session_head(tmp_path):
+    """A devtool-to-CVE checkout is preparation, not provider scope drift."""
+    repo, selected = _repo(tmp_path)
+    _git(repo, "branch", "CVE-2026-1234", selected)
+    _git(repo, "checkout", "-q", "-b", "devtool", "original-version")
+    (repo / "devtool-only.txt").write_text("generated\n", encoding="utf-8")
+    _commit(repo, "devtool generated file")
+    _git(repo, "cherry-pick", selected)
+
+    state_dir = repo.parent.parent / "cve_corrector"
+    original_handoff = emit_handoff(
+        _state(repo, selected, known_generated_paths=["devtool-only.txt"]),
+        state_dir,
+    )
+    assert original_handoff.current_head != selected
+
+    backend = MagicMock()
+    backend.run_session.side_effect = [
+        SessionResult(
+            resolved=False,
+            duration=600.0,
+            failure_reason="Chat Completions request timed out",
+        ),
+        SessionResult(resolved=True, duration=1.0),
+    ]
+    with patch("cve_agent.session.get_backend", return_value=backend), \
+            patch("cve_agent.session._write_audit_log"):
+        first = guarded_session(
+            tmp_path / "context.md", repo, selected, {"hashes": [selected]},
+            cve_id="CVE-2026-1234", require_handoff=True,
+        )
+        refreshed = read_handoff(state_dir / "handoffs" / "recipe.json")
+        second = guarded_session(
+            tmp_path / "context.md", repo, selected, {"hashes": [selected]},
+            cve_id="CVE-2026-1234", require_handoff=True,
+        )
+
+    assert first.resolved is False
+    assert refreshed.current_head == selected
+    assert second.resolved is True
 
 
 def test_corrector_handoff_error_is_preserved_in_result(tmp_path):

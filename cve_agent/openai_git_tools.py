@@ -27,6 +27,7 @@ from .openai_deadline import RuntimeTimeoutError, SessionDeadline
 from .openai_tools import (
     MAX_MODEL_RESULT_BYTES,
     TOOL_CONTRACTS,
+    AuthorizedPath,
     FieldContract,
     FileToolLimits,
     FileToolRuntime,
@@ -306,7 +307,8 @@ class GitCommandExecutor:
 
         self.deadline.require("Git operation")
         limit = self.limits.max_output_bytes if output_limit is None else output_limit
-        if operation.startswith("preflight_"):
+        if (operation.startswith("preflight_")
+                or operation == "status" and output_limit is not None):
             limit = min(limit, MAX_GIT_PREFLIGHT_OUTPUT_BYTES)
         else:
             limit = min(limit, self.limits.max_output_bytes)
@@ -744,8 +746,17 @@ class GitToolRuntime(FileToolRuntime):
         allowed_path_digest = hashlib.sha256(
             "\0".join(sorted(self.policy.allowed_files)).encode("utf-8")
         ).hexdigest()
-        from .handoff import current_validated_handoff_digest
-        handoff_digest = current_validated_handoff_digest()
+        from .handoff import current_validated_handoff
+        handoff = current_validated_handoff()
+        handoff_digest = None if handoff is None else handoff.critical_sha256
+        self._handoff_conflicted_paths = set(
+            () if handoff is None else handoff.conflicted_paths)
+        self._handoff_allowed_paths = set(
+            () if handoff is None else handoff.allowed_paths)
+        self._handoff_selected_commit = (
+            None if handoff is None else handoff.selected_commit)
+        self._handoff_selected_parent = (
+            None if handoff is None else handoff.selected_parent)
         self.trusted_git_state = TrustedGitState(
             session_root_head=head,
             session_root_tree=tree,
@@ -826,9 +837,28 @@ class GitToolRuntime(FileToolRuntime):
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(result, "Git status")
         payload = self._parse_status(result.stdout)
+        counts: dict[str, int] = {}
+        remaining = self.git_limits.max_status_paths
+        truncated = False
+        for key in ("staged", "unstaged", "untracked", "deleted", "conflicted"):
+            paths = payload[key]
+            if not isinstance(paths, list):
+                raise ToolOperationalError("Git status returned malformed paths")
+            counts[key] = len(paths)
+            clipped = paths
+            if len(paths) > remaining:
+                clipped = paths[:remaining]
+                payload[key] = clipped
+                truncated = True
+            remaining = max(0, remaining - len(clipped))
+            if len(clipped) != len(paths):
+                truncated = True
+        payload["path_counts"] = counts
+        payload["paths_truncated"] = truncated
         payload["operations"] = self._operation_state()
         return _ExecutionResult(payload)
 
@@ -1172,9 +1202,8 @@ class GitToolRuntime(FileToolRuntime):
         if rejected:
             raise GitScopeError("staged paths are outside allowed_files", rejected)
         expected = {
-            item.path for item in self._changed_paths(
-                self._resolve_commit("CHERRY_PICK_HEAD"))
-        }
+            item.path for item in self._active_cherry_pick_changed_paths()
+        } | self._handoff_conflicted_paths | self._handoff_allowed_paths
         unexpected = sorted(set(staged) - expected)
         if unexpected:
             error = GitScopeError(
@@ -1571,9 +1600,6 @@ class GitToolRuntime(FileToolRuntime):
                     conflicted.append(path)
             else:
                 raise ToolOperationalError("Git status returned an unknown record")
-            total = sum(map(len, (staged, unstaged, untracked, deleted, conflicted)))
-            if total > self.git_limits.max_status_paths:
-                raise ToolOperationalError("Git status exceeds the configured path limit")
         return {
             "branch": branch,
             "staged": sorted(set(staged)),
@@ -1678,8 +1704,9 @@ class GitToolRuntime(FileToolRuntime):
             self._reject_pathspec_syntax(path)
             try:
                 file_fd, _ = self.policy.open_regular(authorized)
-            except ToolOperationalError as exc:
-                if not allow_missing or not self._is_tracked_regular(path):
+            except (ToolOperationalError, ToolPolicyError) as exc:
+                if (not allow_missing
+                        or not self._is_safe_tracked_regular(authorized, path)):
                     raise ToolPolicyError(
                         "mutation path does not name an exact file") from exc
             else:
@@ -1688,6 +1715,28 @@ class GitToolRuntime(FileToolRuntime):
         if len(paths) != len(set(paths)):
             raise ToolPolicyError("duplicate paths are not allowed")
         return paths
+
+    def _is_safe_tracked_regular(
+        self, authorized: AuthorizedPath, path: str,
+    ) -> bool:
+        """Accept a tracked source hardlink for a host-constructed Git command."""
+        if not self._is_tracked_regular(path):
+            return False
+        # File content tools still require a single link. Git path operations
+        # only name the index/worktree entry, so a regular tracked hardlink is
+        # safe and commonly appears after BitBake source/debug packaging.
+        try:
+            parent_fd, name = self.policy.open_write_parent(authorized)
+            try:
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            finally:
+                os.close(parent_fd)
+        except FileNotFoundError:
+            return True
+        except (OSError, ToolOperationalError, ToolPolicyError):
+            return False
+        return (stat.S_ISREG(info.st_mode)
+                and self.trusted_git_state.built_generation is not None)
 
     @staticmethod
     def _reject_pathspec_syntax(path: str) -> None:
@@ -1716,6 +1765,7 @@ class GitToolRuntime(FileToolRuntime):
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(result, "cherry-pick start status")
         status = self._parse_status(result.stdout)
@@ -1733,12 +1783,15 @@ class GitToolRuntime(FileToolRuntime):
     def _validate_cherry_pick_rollback(self) -> list[str]:
         """Permit rollback of active and typed changes, never unrelated edits."""
         self._require_current_trusted_head()
-        commit = self._resolve_commit("CHERRY_PICK_HEAD")
-        changed = self._changed_paths(commit)
-        expected = {item.path for item in changed} | self._typed_mutation_paths
+        changed = self._active_cherry_pick_changed_paths()
+        expected = ({item.path for item in changed}
+                    | self._typed_mutation_paths
+                    | self._handoff_conflicted_paths
+                    | self._handoff_allowed_paths)
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(result, "active cherry-pick status")
         status = self._parse_status(result.stdout)
@@ -1768,6 +1821,7 @@ class GitToolRuntime(FileToolRuntime):
         result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(result, "cherry-pick rollback status")
         status = self._parse_status(result.stdout)
@@ -1794,6 +1848,7 @@ class GitToolRuntime(FileToolRuntime):
         status_result = self._executor.run(
             "status",
             ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"],
+            output_limit=MAX_GIT_PREFLIGHT_OUTPUT_BYTES,
         )
         self._require_complete(status_result, "typed-path rollback status")
         status = self._parse_status(status_result.stdout)
@@ -1819,6 +1874,18 @@ class GitToolRuntime(FileToolRuntime):
         )
         self._require_complete(result, "Git changed-path preflight")
         return self._parse_changed_paths(result.stdout)
+
+    def _active_cherry_pick_changed_paths(self) -> list[ChangedPath]:
+        """Inspect an active handoff merge against its selected mainline."""
+        commit = self._resolve_commit("CHERRY_PICK_HEAD")
+        parents = self._commit_parents(commit)
+        if (len(parents) > 1
+                and commit == self._handoff_selected_commit
+                and self._handoff_selected_parent in parents):
+            assert self._handoff_selected_parent is not None
+            return self._changed_paths_between(
+                self._handoff_selected_parent, commit)
+        return self._changed_paths(commit)
 
     def _changed_paths_between(self, old: str, new: str) -> list[ChangedPath]:
         result = self._executor.run(
@@ -1880,7 +1947,9 @@ class GitToolRuntime(FileToolRuntime):
                     except FileNotFoundError:
                         pass
                     else:
-                        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        if (not stat.S_ISREG(info.st_mode)
+                                or (info.st_nlink != 1
+                                    and self.trusted_git_state.built_generation is None)):
                             raise ToolPolicyError(
                                 "changed path is not a regular file")
                 finally:

@@ -30,7 +30,7 @@ from . import (
     WorkflowStatus,
     get_agent_dir,
 )
-from .artifacts import ArtifactError, current_run_artifacts
+from .artifacts import ArtifactError, RunArtifacts, current_run_artifacts
 from .backend import SessionResult, get_backend
 from .git import (
     compute_allowed_files,
@@ -50,6 +50,7 @@ from .handoff import (
     activate_validated_handoff,
     deactivate_validated_handoff,
     read_transfer_artifact,
+    refresh_repository_handoff,
     validate_repository_handoff,
 )
 from .openai_deadline import SessionDeadline
@@ -385,11 +386,33 @@ def guarded_session(context_file: Path, workspace_path: Path,
             cleanup_errors.append(exc)
         if pre_session_head is not None:
             try:
+                _capture_final_repository_artifacts(
+                    artifact_run, workspace_path, pre_session_head, allowed)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            try:
                 _write_audit_log(
                     workspace_path, recipe, cve_id, all_shas, upstream_diffs,
                     pre_session_head)
             except BaseException as exc:
                 cleanup_errors.append(exc)
+
+    if (result is not None and not result.resolved and handoff is not None
+            and not cleanup_errors and workspace_path.exists()):
+        try:
+            handoff = refresh_repository_handoff(
+                workspace_path, handoff, allowed,
+                session_root_head=pre_session_head,
+            )
+            if artifact_run is not None:
+                artifact_run.event(
+                    "corrector_handoff_refreshed",
+                    operation_state=handoff.operation_state,
+                    current_head=handoff.current_head,
+                    digest=handoff.critical_sha256,
+                )
+        except BaseException as exc:
+            cleanup_errors.append(exc)
 
     if artifact_run is not None:
         artifact_run.add_duration(
@@ -460,6 +483,63 @@ def guarded_session(context_file: Path, workspace_path: Path,
         )
 
     return result
+
+
+def _capture_final_repository_artifacts(
+    artifact_run: RunArtifacts | None,
+    workspace_path: Path,
+    session_root_head: str,
+    allowed_paths: set[str],
+) -> None:
+    """Retain the actual final candidate even when the provider times out."""
+    if artifact_run is None:
+        return
+    baseline = "original-version"
+    baseline_check = run_capture(
+        ["git", "rev-parse", "--verify", "--quiet", baseline],
+        cwd=workspace_path,
+    )
+    if baseline_check.returncode != 0:
+        baseline = session_root_head
+    candidate = run_capture(
+        ["git", "diff", "--binary", baseline, "--"], cwd=workspace_path)
+    commits = run_capture(
+        ["git", "format-patch", "--binary", "--stdout", f"{baseline}..HEAD"],
+        cwd=workspace_path,
+    )
+    status = run_capture(
+        ["git", "status", "--porcelain=v2", "--branch", "--untracked-files=all"],
+        cwd=workspace_path,
+    )
+    if any(result.returncode != 0 for result in (candidate, commits, status)):
+        raise ArtifactError("unable to capture final repository state")
+    untracked_patches: list[str] = []
+    for path in sorted(allowed_paths):
+        untracked = run_capture(
+            ["git", "ls-files", "--others", "--exclude-standard", "--", path],
+            cwd=workspace_path,
+        )
+        if untracked.returncode != 0 or not untracked.stdout.strip():
+            continue
+        patch = run_capture(
+            ["git", "diff", "--no-index", "--binary", "--", "/dev/null", path],
+            cwd=workspace_path,
+        )
+        if patch.returncode not in {0, 1}:
+            raise ArtifactError("unable to capture final untracked source file")
+        untracked_patches.append(patch.stdout)
+    final_patch = candidate.stdout
+    if untracked_patches:
+        final_patch += "\n" + "\n".join(untracked_patches)
+    artifact_run.atomic_repository_text("final.patch", final_patch)
+    artifact_run.atomic_repository_text("final-commits.patch", commits.stdout)
+    artifact_run.atomic_repository_text("final-status.txt", status.stdout)
+    artifact_run.atomic_json("final-repository.json", {
+        "schema_version": 1,
+        "baseline": baseline,
+        "session_root_head": session_root_head,
+        "head": run_git_stdout(["rev-parse", "HEAD"], cwd=workspace_path).strip(),
+    })
 
 
 def _extract_diff_hunks(git_show_output: str) -> str:

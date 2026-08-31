@@ -138,6 +138,20 @@ def test_status_is_parsed_for_clean_modified_staged_untracked_and_deleted(reposi
     assert status.payload["branch"]["head"]
 
 
+def test_status_summarizes_more_than_model_path_limit(repository):
+    repo, _, _ = repository
+    for index in range(300):
+        (repo / f"cache-{index:03}.tmp").write_text("generated\n", encoding="utf-8")
+    runtime = _runtime(repo, {"a.c"})
+
+    status = runtime.dispatch("git_status", {})
+
+    assert status.success
+    assert status.payload["path_counts"]["untracked"] == 300
+    assert len(status.payload["untracked"]) == 256
+    assert status.payload["paths_truncated"] is True
+
+
 def test_status_and_unmerged_files_parse_conflict(repository):
     repo, _, branch = repository
     source = _make_source_commit(repo, branch)
@@ -755,6 +769,24 @@ def test_cherry_pick_refuses_worktree_hardlink_before_mutation(
     assert result.payload["rejected_paths"] == ["a.c"]
     assert outside.read_text(encoding="utf-8") == "base\n"
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base
+
+
+def test_staged_moved_path_is_authorized_by_validated_conflict_alias(repository):
+    repo, _, branch = repository
+    _git(repo, "checkout", "-q", "-b", "upstream-layout")
+    source_path = repo / "subprojects" / "component" / "a.c"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("upstream fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "subprojects/component/a.c")
+    source = _commit(repo, "monorepo fix")
+    _git(repo, "checkout", "-q", branch)
+    runtime = _runtime(repo, {"a.c"})
+    runtime._handoff_conflicted_paths = {"a.c"}
+    (repo / "a.c").write_text("stable-layout fix\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    (repo / ".git" / "CHERRY_PICK_HEAD").write_text(source + "\n", encoding="utf-8")
+
+    assert runtime._validate_staged_scope() == ["a.c"]
 
 
 def test_cherry_pick_start_refuses_preexisting_staged_content(repository):

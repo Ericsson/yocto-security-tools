@@ -40,7 +40,11 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
     if transferred is not None:
         allowed = transferred
 
-    declared = set(allowed) | set(captured.conflicted_paths)
+    # Conflict paths prove the selected operation's actual workspace layout,
+    # including added/deleted paths for which prefix mapping has no tracked
+    # path evidence.
+    allowed = tuple(sorted(set(allowed) | set(captured.conflicted_paths)))
+    declared = set(allowed)
     out_of_scope = tuple(sorted(set(captured.tracked_paths) - declared))
     manifest = RepositoryHandoff(
         schema_version=HANDOFF_SCHEMA_VERSION,

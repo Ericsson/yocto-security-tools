@@ -29,6 +29,7 @@ MAX_ARTIFACT_STRING_BYTES = 4096
 MAX_ARTIFACT_NODES = 1024
 MAX_ERROR_BYTES = 1024
 MAX_HUMAN_REPORT_BYTES = 64 * 1024
+MAX_REPOSITORY_ARTIFACT_BYTES = 32 * 1024 * 1024
 MAX_ARTIFACT_MANIFEST_BYTES = 256 * 1024
 MAX_ARTIFACT_MANIFEST_ENTRIES = 256
 MAX_VERIFIED_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -263,6 +264,11 @@ class RunArtifacts:
         self.atomic_json("preflight.json", {"schema_version": 1, "status": "pending"})
         self.atomic_json("provider-summary.json", {"schema_version": 1, "status": "pending"})
         self.atomic_json("build-summary.json", {"schema_version": 1, "status": "not_run"})
+        self.atomic_repository_text("final.patch", "")
+        self.atomic_repository_text("final-commits.patch", "")
+        self.atomic_repository_text("final-status.txt", "")
+        self.atomic_json(
+            "final-repository.json", {"schema_version": 1, "status": "pending"})
         self.atomic_json("result.json", {"schema_version": 2, "status": "running"})
         self.event(
             "run_started",
@@ -384,6 +390,13 @@ class RunArtifacts:
 
     def atomic_text(self, name: str, value: str) -> None:
         """Write one bounded redacted human-readable mode-0600 artifact."""
+        self._atomic_text(name, value, MAX_HUMAN_REPORT_BYTES)
+
+    def atomic_repository_text(self, name: str, value: str) -> None:
+        """Write a bounded final Git diff/status artifact."""
+        self._atomic_text(name, value, MAX_REPOSITORY_ARTIFACT_BYTES)
+
+    def _atomic_text(self, name: str, value: str, maximum_bytes: int) -> None:
         if (not isinstance(value, str) or "/" in name or "\\" in name
                 or name in {"", ".", ".."}):
             raise ArtifactError("invalid text artifact")
@@ -392,7 +405,7 @@ class RunArtifacts:
             encoded = redacted.encode("utf-8", errors="strict")
         except UnicodeError as error:
             raise ArtifactError("unable to encode text artifact") from error
-        if len(encoded) > MAX_HUMAN_REPORT_BYTES:
+        if len(encoded) > maximum_bytes:
             raise ArtifactError("text artifact exceeds its size limit")
         target = self.path / name
         temporary = self.path / f".{name}.{uuid.uuid4().hex}.tmp"

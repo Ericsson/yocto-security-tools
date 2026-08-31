@@ -5,39 +5,51 @@ from __future__ import annotations
 
 import contextvars
 import json
+import subprocess
+from dataclasses import replace
 from pathlib import Path
 
+from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 from shared.handoff import (
     HandoffError,
     RepositoryHandoff,
+    capture_handoff_state,
     read_handoff,
     reference_change_paths,
     validate_handoff_state,
+    write_handoff,
 )
 
 from .openai_tools import FileToolPathPolicy, ToolPolicyError, ToolValidationError
 
-_VALIDATED_HANDOFF_DIGEST: contextvars.ContextVar[str | None] = (
-    contextvars.ContextVar("cve_agent_validated_handoff_digest", default=None)
+_VALIDATED_HANDOFF: contextvars.ContextVar[RepositoryHandoff | None] = (
+    contextvars.ContextVar("cve_agent_validated_handoff", default=None)
 )
 
 
 def activate_validated_handoff(
     handoff: RepositoryHandoff | None,
-) -> contextvars.Token[str | None]:
+) -> contextvars.Token[RepositoryHandoff | None]:
     """Bind validated handoff provenance to one provider session."""
-    digest = None if handoff is None else handoff.critical_sha256
-    return _VALIDATED_HANDOFF_DIGEST.set(digest)
+    return _VALIDATED_HANDOFF.set(handoff)
 
 
-def deactivate_validated_handoff(token: contextvars.Token[str | None]) -> None:
+def deactivate_validated_handoff(
+    token: contextvars.Token[RepositoryHandoff | None],
+) -> None:
     """Remove session-local handoff provenance."""
-    _VALIDATED_HANDOFF_DIGEST.reset(token)
+    _VALIDATED_HANDOFF.reset(token)
+
+
+def current_validated_handoff() -> RepositoryHandoff | None:
+    """Return the manifest established by full handoff validation."""
+    return _VALIDATED_HANDOFF.get()
 
 
 def current_validated_handoff_digest() -> str | None:
     """Return only provenance established by full handoff validation."""
-    return _VALIDATED_HANDOFF_DIGEST.get()
+    handoff = current_validated_handoff()
+    return None if handoff is None else handoff.critical_sha256
 
 
 def repository_handoff_path(workspace: Path) -> Path:
@@ -94,6 +106,8 @@ def validate_repository_handoff(
         workspace, manifest.selected_commit, manifest.mainline_parent)
     if expected_parent != manifest.selected_parent:
         raise HandoffError("HANDOFF_REFERENCE_DRIFT", "reference parent changed")
+    expected_paths = tuple(sorted(
+        set(expected_paths) | set(manifest.conflicted_paths)))
     if expected_paths != manifest.allowed_paths:
         transfer = read_transfer_artifact(workspace)
         transfer_paths = (transfer.get("final_changed_paths")
@@ -106,3 +120,48 @@ def validate_repository_handoff(
             raise HandoffError("HANDOFF_REFERENCE_DRIFT", "reference operation changed")
     validate_handoff_state(manifest, workspace)
     return manifest
+
+
+def refresh_repository_handoff(
+    workspace: Path,
+    manifest: RepositoryHandoff,
+    allowed_paths: set[str],
+    session_root_head: str | None = None,
+) -> RepositoryHandoff:
+    """Reissue a handoff for a narrowly audited provider retry state."""
+    captured = capture_handoff_state(workspace)
+    authorized = set(allowed_paths) | set(manifest.known_generated_paths)
+    tracked_outside = sorted(set(captured.tracked_paths) - authorized)
+    if tracked_outside:
+        raise HandoffError(
+            "HANDOFF_RETRY_SCOPE_DRIFT", "retry state has unauthorized tracked paths")
+    result = subprocess.run(
+        ["git", "--no-pager", "diff", "--name-only", "--no-renames", "-z",
+         session_root_head or manifest.current_head, captured.head, "--"],
+        cwd=workspace,
+        env=build_git_env(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding=TEXT_ENCODING,
+        errors=TEXT_ERRORS,
+        check=False,
+    )
+    if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 8 * 1024 * 1024:
+        raise HandoffError("HANDOFF_RETRY_CAPTURE_FAILED", "retry commit scope unavailable")
+    durable_paths = {path for path in result.stdout.split("\0") if path}
+    if durable_paths - authorized:
+        raise HandoffError(
+            "HANDOFF_RETRY_SCOPE_DRIFT", "retry commits have unauthorized paths")
+    refreshed = replace(
+        manifest,
+        current_head=captured.head,
+        current_tree=captured.tree,
+        operation_state=captured.operation_state,
+        conflicted_paths=captured.conflicted_paths,
+        tracked_out_of_scope_paths=(),
+        index_fingerprint=captured.index_fingerprint,
+        worktree_fingerprint=captured.worktree_fingerprint,
+        critical_sha256="",
+    ).with_digest()
+    write_handoff(repository_handoff_path(workspace), refreshed)
+    return refreshed
