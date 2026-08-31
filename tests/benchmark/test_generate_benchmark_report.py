@@ -73,7 +73,7 @@ class TestGenerateReport:
         ])
         report = generate_report(tmp_path)
 
-        assert "## Meaningful vs Stylistic (Judged Moderate/Major/Partial Diffs)" in report
+        assert "## Meaningful vs Stylistic (Judged Minor/Moderate/Major/Partial Diffs)" in report
         # meaningful=2 (CVE-1, CVE-4), stylistic=1 (CVE-2), comment-only=0,
         # structural-only=0, not-yet-judged=1 (CVE-3)
         assert "| model-a | 2 | 1 | 0 | 0 | 1 |" in report
@@ -109,7 +109,7 @@ class TestGenerateReport:
         assert "| model-a | 0 | 0 | 1 | 0 | 0 |" in report
         assert "Comment-only" in report
 
-    def test_minor_and_identical_excluded_from_judge_split(self, tmp_path):
+    def test_identical_excluded_minor_pending_from_judge_split(self, tmp_path):
         _write_agent_csv(tmp_path, [
             "CVE-1,easy,model-a,0,1.0,10,3,identical,0",
             "CVE-2,easy,model-a,0,1.0,10,3,minor,5",
@@ -117,11 +117,12 @@ class TestGenerateReport:
         _write_judge_csv(tmp_path, [])
         report = generate_report(tmp_path)
 
-        # Neither identical nor minor rows count toward the judged split —
-        # model-a has zero judgeable (moderate/major) rows, so it gets no
-        # row in that table at all.
+        # identical never counts toward the judged split. minor now does
+        # (it's judgeable), but with no matching judge_results.csv row it
+        # shows up as not-yet-judged rather than absent.
         split_section = report.split("## Meaningful vs Stylistic")[1]
-        assert "model-a" not in split_section
+        assert "model-a" in split_section
+        assert "| model-a | 0 | 0 | 0 | 0 | 1 |" in split_section
 
     def test_judge_model_note_present(self, tmp_path):
         _write_agent_csv(tmp_path, ["CVE-1,easy,model-a,0,1.0,10,3,identical,0"])

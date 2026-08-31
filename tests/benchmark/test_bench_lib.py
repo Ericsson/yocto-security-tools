@@ -580,11 +580,14 @@ class TestFilterForJudging:
         rows = [self._agent_row('CVE-1', 'm', 'partial')]
         assert filter_for_judging(rows, []) == rows
 
-    def test_excludes_minor_identical_file_mismatch(self):
+    def test_includes_minor(self):
+        rows = [self._agent_row('CVE-1', 'm', 'minor')]
+        assert filter_for_judging(rows, []) == rows
+
+    def test_excludes_identical_and_file_mismatch(self):
         rows = [
-            self._agent_row('CVE-1', 'm', 'minor'),
-            self._agent_row('CVE-2', 'm', 'identical'),
-            self._agent_row('CVE-3', 'm', 'file-mismatch'),
+            self._agent_row('CVE-1', 'm', 'identical'),
+            self._agent_row('CVE-2', 'm', 'file-mismatch'),
         ]
         assert filter_for_judging(rows, []) == []
 
