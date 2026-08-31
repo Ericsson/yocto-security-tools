@@ -91,7 +91,7 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 ./run_benchmark.sh --roster clean-apply --retier
 
 # A specific model selection:
-./run_benchmark.sh --models claude-opus-5,claude-sonnet-4.8
+./run_benchmark.sh --models claude-opus-5,claude-sonnet-4.6
 
 # List the roster CVEs as numbered cases (in run order), then run only some
 # of them -- handy to avoid an expensive recipe (e.g. skip glib/binutils), to
@@ -438,7 +438,7 @@ committing to a full run, and `--models` to narrow the model set:
 ```bash
 ./run_benchmark.sh --roster extended --list-cases          # 22 numbered cases
 ./run_benchmark.sh --roster extended --run-case 1 2 3 4 5 6 7 8 9 10  # the 10 easy ones
-./run_benchmark.sh --roster extended --models claude-opus-5,claude-sonnet-4.8 \
+./run_benchmark.sh --roster extended --models claude-opus-5,claude-sonnet-4.6 \
     --run-case 13 14
 ```
 
