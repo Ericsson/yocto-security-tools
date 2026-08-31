@@ -26,7 +26,10 @@ Resolve each conflicted file. Three shapes come up, cheapest-correct first:
 
 Then stage ONLY allowed files (`git add <resolved_files>`). If the cherry-pick
 as a whole does not apply, `git cherry-pick --skip` drops it (`--abort` stops
-the sequence).
+the sequence). If the cherry-pick has **already been committed** and you need to
+back it out, do not reach for `git reset`/`git revert` — they are not available.
+See **Undoing a Bad Cherry-Pick** in the core instructions for the four cases
+and the sanctioned recovery for each.
 
 If you adapted the patch, append backport notes to `.git/MERGE_MSG` (preserve
 the original message — see Commit Message Format), then:

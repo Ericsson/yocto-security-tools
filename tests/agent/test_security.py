@@ -101,44 +101,12 @@ import re
 
 import pytest
 
+from tests.agent.allowlist_model import has_file_redirect as _has_file_redirect
+from tests.agent.allowlist_model import kiro_permits as _kiro_permits
+
 _KIRO_CONFIG = Path(__file__).resolve().parent.parent.parent / '.kiro' / 'agents' / 'yocto-cve-backport.json'
 _AGENT_INSTRUCTIONS = (Path(__file__).resolve().parent.parent.parent
                        / 'cve_agent' / 'AGENT_INSTRUCTIONS.md')
-
-# A bare ``>`` / ``>>`` file redirect. ``2>&1`` (digit before, ``&`` after) is
-# not a file redirect and is accepted by kiro-cli.
-_FILE_REDIRECT_RE = re.compile(r'(?<![0-9])>>?(?!&)')
-
-
-def _has_file_redirect(command: str) -> bool:
-    return _FILE_REDIRECT_RE.search(command) is not None
-
-
-def _split_subcommands(command: str) -> list:
-    """Split a compound command the way kiro-cli's guard does."""
-    return [part.strip() for part in re.split(r'&&|\|\||[;|]', command)
-            if part.strip()]
-
-
-def _kiro_permits(command: str, allowed: list) -> bool:
-    """Whether kiro-cli's execute_bash guard would run ``command``.
-
-    Models the behaviour verified empirically against kiro-cli 2.9.0 (see
-    ``TestAgentConfig.test_build_verify_command_is_permitted``):
-
-    1. ``>`` / ``>>`` file redirection is refused unconditionally — no
-       ``allowedCommands`` pattern can re-enable it.
-    2. Compound commands are split on ``;``, ``|`` and ``&&``, and **each**
-       part must match an ``allowedCommands`` entry on its own.
-
-    This deliberately differs from a naive ``re.fullmatch`` against the whole
-    command string, which wrongly reported the old redirect-based build
-    command as permitted while kiro-cli rejected it in practice.
-    """
-    if _has_file_redirect(command):
-        return False
-    return all(any(re.fullmatch(pattern, part) for pattern in allowed)
-               for part in _split_subcommands(command))
 
 
 def _documented_build_command() -> str:
@@ -171,7 +139,6 @@ class TestAgentConfig:
         prerequisite (Strategy A), but the rule must not permit command
         chaining. The pre-commit scope hook remains the hard boundary for
         what actually gets committed."""
-        import re
         config = json.loads(_KIRO_CONFIG.read_text())
         allowed = config['toolsSettings']['execute_bash']['allowedCommands']
 
