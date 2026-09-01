@@ -73,6 +73,14 @@ MUST_ALLOW = [
     "git checkout --ours tests/jq.test",
     "git checkout --theirs tests/jq.test",
     "git checkout --theirs -- src/execute.c",
+    # Restore a file to its pre-cherry-pick content. bench_20260831_140123 had
+    # claude-sonnet-4.6 and qwen3-coder-next both escalate CVE-2025-1176
+    # (binutils) because a wholesale --theirs on bfd/elflink.c imported APIs
+    # absent from 2.42, and no available command could put the 15k-line stable
+    # file back (tee is confined to agent-dir .log files).
+    "git checkout original-version -- bfd/elflink.c",
+    "git checkout original-version bfd/elflink.c",
+    "git checkout original-version -- bfd/elflink.c bfd/elf.c",
     # Mark a resolution where upstream deleted the file.
     "git rm src/gone.c",
     "git rm -- src/gone.c",
@@ -148,6 +156,17 @@ MUST_DENY = [
     "git restore --staged tests/jq.test --worktree",
     "git checkout --ours a.c --force",
     "git checkout --theirs a.c -f",
+    # The pre-image restore is pinned to the original-version ref. Any other
+    # revision stays denied, so it cannot become a general checkout primitive
+    # (HEAD~1/main forms above cover the bare cases).
+    "git checkout original-version~1 -- bfd/elflink.c",
+    "git checkout original-version^ -- bfd/elflink.c",
+    "git checkout original-version -- bfd/elflink.c --force",
+    "git checkout original-version -- -f",
+    # ...and it is still a pathspec command, so it needs at least one path:
+    # a bare form would check out the tag itself and detach HEAD.
+    "git checkout original-version",
+    "git checkout original-version --",
     # git rm stays one path per invocation (no benchmark evidence for widening).
     "git rm a b",
     # History rewriting / ref mutation is unavailable in every form — this is
