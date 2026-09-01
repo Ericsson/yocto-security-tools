@@ -266,6 +266,76 @@ NON_BACKPORT_OUTCOMES = ('skipped',)
 # Outcomes that exit non-zero but are a defensible, intended result.
 HONEST_OUTCOMES = ('escalated',)
 
+# ResultStatus.SKIPPED covers several unrelated situations, and only one of them
+# is a claim by the model. Conflating them makes the report accuse models of
+# dismissing CVEs they never even looked at: in bench_20260831_140123 all five
+# runs of CVE-2025-64505 were recorded as 'skipped', which reads as a unanimous
+# not-applicable verdict, when in fact libpng's build was already broken before
+# any patch was applied (corrector exit 10) and no model was ever consulted.
+#
+#   ai_not_applicable        the AI itself concluded the CVE does not apply --
+#                            the only kind worth auditing, and the only one
+#                            that can silently leave a live vulnerability
+#   empty_cherry_pick        the cherry-pick produced no changes, so the fix
+#                            looked already-present. Often not the model's
+#                            fault at all: handing it a commit that is already
+#                            an ancestor of HEAD guarantees an empty result,
+#                            which is how three models came to dismiss
+#                            CVE-2024-6387 (a live pre-auth RCE) -- see
+#                            cve_corrector.git_ops.is_ancestor_of_head
+#   corrector_not_applicable cve-corrector determined the vulnerable code is
+#                            absent (exit 12) before involving the AI
+#   already_applied          the fix is already in the tree (exit 11)
+#   ignored_by_status        the recipe's CVE_STATUS excludes it (exit 16)
+#   build_preexisting        the recipe did not build even unpatched (exit 10)
+#   ptest_preexisting        ptests were already failing unpatched (exit 8)
+AI_NOT_APPLICABLE = 'ai_not_applicable'
+EMPTY_CHERRY_PICK = 'empty_cherry_pick'
+ENVIRONMENTAL_SKIPS = ('build_preexisting', 'ptest_preexisting')
+
+_AI_NOT_APPLICABLE_RE = re.compile(
+    r'Agent concluded (?:CVE|CVE-\d{4}-\d{4,}) is not applicable')
+_CORRECTOR_EXIT_RE = re.compile(r'cve-corrector exited with code (\d+)')
+_EMPTY_PICK_RE = re.compile(r'--allow-empty|already present in tree')
+
+_SKIP_REASON_BY_EXIT = {
+    8: 'ptest_preexisting',
+    10: 'build_preexisting',
+    11: 'already_applied',
+    12: 'corrector_not_applicable',
+    16: 'ignored_by_status',
+}
+
+
+def parse_skip_reason(log_text: str) -> str:
+    """Classify *why* a run ended up as ``skipped``.
+
+    Args:
+        log_text: Captured combined stdout/stderr of one ``cve-agent`` run.
+
+    Returns:
+        One of the reasons listed above, or ``''`` when the log gives no
+        usable signal.
+
+    The corrector's own exit code is authoritative where it says anything
+    definite (8/10/11/12/16), because those are decided before the AI is
+    consulted. Only when the exit code is inconclusive does the AI's verdict
+    apply -- and even then an empty cherry-pick is reported separately, since
+    the model had no other conclusion available to draw.
+    """
+    if not log_text:
+        return ''
+    clean = strip_ansi(log_text)
+    codes = _CORRECTOR_EXIT_RE.findall(clean)
+    if codes:
+        mapped = _SKIP_REASON_BY_EXIT.get(int(codes[-1]))
+        if mapped:
+            return mapped
+    if _AI_NOT_APPLICABLE_RE.search(clean):
+        return (EMPTY_CHERRY_PICK if _EMPTY_PICK_RE.search(clean)
+                else AI_NOT_APPLICABLE)
+    return ''
+
 
 def parse_agent_outcome(log_text: str) -> str:
     """Extract cve-agent's own final outcome from a captured run log.

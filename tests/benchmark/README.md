@@ -167,16 +167,23 @@ them per-model right after reading the bucket/diff_lines.)
 ### `agent_results.csv`
 
 ```
-cve_id,tier,model,exit_status,outcome,credits,duration_s,commands,diff_bucket,diff_lines
+cve_id,tier,model,exit_status,outcome,skip_reason,credits,duration_s,commands,diff_bucket,diff_lines
 ```
 
 - `exit_status` — `0` for a clean cve-agent run, `TIMEOUT`, or the raw exit code
 - `outcome` — cve-agent's **own** verdict (`cve_agent.ResultStatus`), read from the run log by `bench_lib.parse_agent_outcome`: `conflict_resolved`, `success`, `skipped`, `escalated`, or `failed`. Empty when the log has no verdict line (timeout, kill, environment failure). **Read this rather than `exit_status`** — the exit code collapses four meaningfully different results into two:
-  - `skipped` exits **0** but produced no patch at all; the model judged the CVE *not applicable*. If that judgement is wrong, a live vulnerability was dismissed and the run still looks like a pass. The report lists every one of these under "Not-Applicable Verdicts (verify these)".
+  - `skipped` exits **0** but produced no patch at all. See `skip_reason` for why; only some of these are the model's own claim.
   - `escalated` exits **14** but is the *intended* result when the fix cannot be made within the allowed file scope — the model declined to guess and asked for a human.
   - Only `failed` is an outright breakage, and only `conflict_resolved`/`success` are real backports.
 
   Ranking models on `exit_status` therefore rewards a confident wrong dismissal over a correct refusal to guess. Results directories predating this column still generate a report; their rows count as "no outcome".
+- `skip_reason` — for a `skipped` row only, *why* it was skipped (`bench_lib.parse_skip_reason`). `ResultStatus.SKIPPED` covers several unrelated situations and only one is a judgement call, so the report audits only that one:
+  - `ai_not_applicable` — the model concluded on its own reasoning that the CVE does not apply. **This is the only kind worth auditing**, and the only one that can silently leave a live vulnerability unpatched.
+  - `empty_cherry_pick` — the cherry-pick produced no changes, so the fix looked already present. Frequently not the model's fault: a commit already reachable from HEAD *guarantees* an empty result, which is how CVE-2024-6387 (a live pre-auth RCE) got dismissed before `cve_corrector.git_ops.is_ancestor_of_head` started filtering those out.
+  - `build_preexisting` / `ptest_preexisting` — the recipe was already broken before patching (corrector exit 10 / 8). An environment problem, not a result.
+  - `already_applied`, `corrector_not_applicable`, `ignored_by_status` — decided by cve-corrector (exit 11 / 12 / 16) before the AI was consulted.
+
+  The corrector's exit code wins over the printed AI wording, because the already-applied path prints the same "Agent concluded ... is not applicable" line; trusting that string alone misreports a mechanical skip as a model judgement.
 - `credits` — parsed from cve-agent's kiro-cli output (`cve_agent.metrics.parse_kiro_credits`); empty if unavailable
 - `duration_s` — wall-clock seconds measured by the script
 - `commands` — tool-call count from the captured log (`bench_lib.count_tool_calls`)
@@ -460,9 +467,11 @@ distribution** (resolved / skipped / escalated / failed — see the `outcome`
 column above for why this and not the exit status), a per-tier bucket
 distribution table, a meaningful-vs-stylistic split for the judged subset, and
 a **"Not-Applicable Verdicts"** audit listing every CVE a model declared
-inapplicable, with how many of the models that ran it agreed. A CVE dismissed
-by some models but backported by others is the cheapest available signal that
-one side is wrong.
+inapplicable **on its own reasoning**, with how many of the models that ran it
+agreed. A CVE dismissed by some models but backported by others is the cheapest
+available signal that one side is wrong. Skips with a mechanical cause (a
+pre-existing build failure, an empty cherry-pick) are listed separately, since
+those never involved the model's opinion.
 
 ## Files
 

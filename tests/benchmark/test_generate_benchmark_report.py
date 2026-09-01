@@ -5,8 +5,8 @@ from pathlib import Path
 
 from tests.benchmark.generate_benchmark_report import generate_report
 
-AGENT_HEADER = ("cve_id,tier,model,exit_status,outcome,credits,duration_s,"
-                "commands,diff_bucket,diff_lines")
+AGENT_HEADER = ("cve_id,tier,model,exit_status,outcome,skip_reason,credits,"
+                "duration_s,commands,diff_bucket,diff_lines")
 # The pre-outcome-column schema, still readable by generate_report so existing
 # results directories keep working.
 LEGACY_AGENT_HEADER = ("cve_id,tier,model,exit_status,credits,duration_s,"
@@ -26,6 +26,9 @@ def _write_agent_csv(results_dir: Path, rows: list[str]) -> None:
         fields = row.split(",")
         if len(fields) == 9:
             fields.insert(4, "conflict_resolved")
+        if len(fields) == 10:
+            # outcome present, skip_reason omitted
+            fields.insert(5, "")
         normalised.append(",".join(fields))
     (results_dir / "agent_results.csv").write_text(
         AGENT_HEADER + "\n" + "\n".join(normalised) + "\n"
@@ -215,6 +218,54 @@ class TestGenerateReport:
         _write_judge_csv(tmp_path, [])
         report = generate_report(tmp_path)
         assert "Not-Applicable Verdicts" not in report
+
+    def test_mechanical_skips_excluded_from_the_dismissal_audit(self, tmp_path):
+        """A build that was already broken is not a model dismissing a CVE.
+
+        All five CVE-2025-64505 runs in bench_20260831_140123 were skipped
+        because libpng did not build even unpatched. Counting those as
+        not-applicable verdicts reads as a unanimous dismissal of a CVE no
+        model was ever asked about.
+        """
+        (tmp_path / "agent_results.csv").write_text(
+            "cve_id,tier,model,exit_status,outcome,skip_reason,credits,"
+            "duration_s,commands,diff_bucket,diff_lines\n"
+            "CVE-7,hard,model-a,0,skipped,build_preexisting,1.0,10,3,skipped,-\n"
+            "CVE-7,hard,model-b,0,skipped,build_preexisting,1.0,10,3,skipped,-\n"
+            "CVE-8,hard,model-a,0,skipped,ai_not_applicable,1.0,10,3,skipped,-\n"
+        )
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        audit = report.split("## Not-Applicable Verdicts (verify these)")[1]
+        audit = audit.split("## ")[0]
+        assert "CVE-8" in audit
+        assert "CVE-7" not in audit
+        # ...but the mechanical skips are still reported, just not as verdicts.
+        mech = report.split("## Skips With a Mechanical Cause")[1]
+        assert "build_preexisting" in mech
+        assert "CVE-7" in mech
+
+    def test_empty_cherry_pick_is_reported_as_mechanical(self, tmp_path):
+        """An empty cherry-pick gave the model no other conclusion to draw."""
+        (tmp_path / "agent_results.csv").write_text(
+            "cve_id,tier,model,exit_status,outcome,skip_reason,credits,"
+            "duration_s,commands,diff_bucket,diff_lines\n"
+            "CVE-9,hard,model-a,0,skipped,empty_cherry_pick,1.0,10,3,skipped,-\n"
+        )
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+        assert "Not-Applicable Verdicts" not in report
+        assert "empty_cherry_pick" in report
+
+    def test_skip_without_a_recorded_reason_is_still_audited(self, tmp_path):
+        """Legacy rows have no skip_reason; treat them as claims, not noise."""
+        _write_agent_csv(tmp_path, [
+            "CVE-5,hard,model-a,0,skipped,1.0,10,3,skipped,-",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+        assert "CVE-5" in report.split("## Not-Applicable Verdicts")[1]
 
     def test_missing_judge_csv_treated_as_empty(self, tmp_path):
         _write_agent_csv(tmp_path, [

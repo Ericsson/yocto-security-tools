@@ -272,7 +272,7 @@ mkdir -p "$RESULTS_DIR"
 LOG_DIR="$RESULTS_DIR"  # test_common.sh's remove_cve_patch()/compare_patches_detailed() use $LOG_DIR
 AGENT_CSV="${RESULTS_DIR}/agent_results.csv"
 JUDGE_CSV="${RESULTS_DIR}/judge_results.csv"
-[[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,outcome,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
+[[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,outcome,skip_reason,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
 JUDGE_HEADER="cve_id,model,judgment,reason,judge_credits,scope"
 if [[ ! -f "$JUDGE_CSV" ]]; then
     echo "$JUDGE_HEADER" > "$JUDGE_CSV"
@@ -722,17 +722,25 @@ print(count_diff_changed_lines(scope_diff_to_common_files(text)))
                 # human -- the correct outcome when the fix is out of scope)
                 # with a genuine failure. Recording it keeps those four
                 # distinguishable in the report.
-                local outcome=""
+                # A 'skipped' outcome has several unrelated causes, only one of
+                # which is the model's own claim -- record which, so the report
+                # cannot accuse a model of dismissing a CVE it never saw.
+                local outcome="" skip_reason=""
                 if [[ -f "$run_log" ]]; then
-                    outcome=$(python3 -c "
-from tests.benchmark.bench_lib import parse_agent_outcome
+                    read -r outcome skip_reason < <(python3 -c "
+from tests.benchmark.bench_lib import parse_agent_outcome, parse_skip_reason
 with open('${run_log}', encoding='utf-8', errors='replace') as f:
-    print(parse_agent_outcome(f.read()))
+    text = f.read()
+outcome = parse_agent_outcome(text)
+reason = parse_skip_reason(text) if outcome == 'skipped' else ''
+print(outcome or '-', reason or '-')
 ")
+                    [[ "$outcome" == "-" ]] && outcome=""
+                    [[ "$skip_reason" == "-" ]] && skip_reason=""
                 fi
 
-                echo "${cve_id},${tier},${model},${exit_status},${outcome},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
-                log "  -> exit=${exit_status} outcome=${outcome:-?} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
+                echo "${cve_id},${tier},${model},${exit_status},${outcome},${skip_reason},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
+                log "  -> exit=${exit_status} outcome=${outcome:-?}${skip_reason:+ (${skip_reason})} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
 
                 # Save the agent's generated patch(es) for later evaluation
                 # before the reset wipes them from the tree.

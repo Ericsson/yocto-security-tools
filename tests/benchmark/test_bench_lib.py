@@ -6,7 +6,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.benchmark.bench_lib import (
+    AI_NOT_APPLICABLE,
     EASY_MAX_MARKERS,
+    EMPTY_CHERRY_PICK,
+    ENVIRONMENTAL_SKIPS,
     HARD_MIN_FILES,
     HONEST_OUTCOMES,
     JUDGE_REASON_MAX_CHARS,
@@ -28,6 +31,7 @@ from tests.benchmark.bench_lib import (
     observed_avg_credits,
     ordered_roster_cases,
     parse_agent_outcome,
+    parse_skip_reason,
     project_remaining_cost,
     relative_cost_weight,
     resolve_models,
@@ -626,6 +630,76 @@ class TestParseAgentOutcome:
     def test_escalated_is_flagged_as_honest(self):
         assert "escalated" in HONEST_OUTCOMES
         assert "failed" not in HONEST_OUTCOMES
+
+
+class TestParseSkipReason:
+    """`skipped` has several causes; only one is the model's own claim."""
+
+    def test_empty_log(self):
+        assert parse_skip_reason("") == ""
+
+    def test_no_signal(self):
+        assert parse_skip_reason("Building AI context...\n") == ""
+
+    def test_ai_verdict_without_empty_pick(self):
+        log = (
+            "cve-corrector exited with code 1\n"
+            "\u26a0 Agent concluded CVE is not applicable:\n"
+            "  The vulnerable helper was rewritten upstream.\n"
+        )
+        assert parse_skip_reason(log) == AI_NOT_APPLICABLE
+
+    def test_empty_cherry_pick_is_distinguished_from_a_verdict(self):
+        """An empty cherry-pick leaves the model no other conclusion.
+
+        Handing over a commit already reachable from HEAD guarantees an empty
+        result; three CVE-2024-6387 dismissals came from this, not from the
+        model reasoning about whether a live RCE applied.
+        """
+        log = (
+            "cve-corrector exited with code 1\n"
+            "git cherry-pick --allow-empty ...\n"
+            "\u26a0 Agent concluded CVE is not applicable:\n"
+        )
+        assert parse_skip_reason(log) == EMPTY_CHERRY_PICK
+
+    @pytest.mark.parametrize("code,expected", [
+        (8, "ptest_preexisting"),
+        (10, "build_preexisting"),
+        (11, "already_applied"),
+        (12, "corrector_not_applicable"),
+        (16, "ignored_by_status"),
+    ])
+    def test_corrector_exit_codes_are_authoritative(self, code, expected):
+        """A pre-AI corrector determination outranks the printed AI wording.
+
+        The already-applied path prints "Agent concluded CVE is not
+        applicable" too, so trusting that string alone would misreport a
+        mechanical skip as a model judgement.
+        """
+        log = (
+            f"cve-corrector exited with code {code}\n"
+            "\u26a0 Agent concluded CVE is not applicable:\n"
+        )
+        assert parse_skip_reason(log) == expected
+
+    def test_build_preexisting_is_environmental(self):
+        assert "build_preexisting" in ENVIRONMENTAL_SKIPS
+        assert AI_NOT_APPLICABLE not in ENVIRONMENTAL_SKIPS
+
+    def test_last_corrector_exit_wins(self):
+        # The agent re-invokes the corrector; the final code is the verdict.
+        log = ("cve-corrector exited with code 1\n"
+               "cve-corrector exited with code 10\n")
+        assert parse_skip_reason(log) == "build_preexisting"
+
+    def test_unmapped_exit_code_falls_through(self):
+        # Exit 1 says nothing about applicability and there is no AI verdict.
+        assert parse_skip_reason("cve-corrector exited with code 1\n") == ""
+
+    def test_ansi_colored_log(self):
+        log = ("\x1b[0mcve-corrector exited with code \x1b[38;5;10m10\x1b[0m\n")
+        assert parse_skip_reason(log) == "build_preexisting"
 
 
 class TestFilterForJudging:

@@ -21,7 +21,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.benchmark.bench_lib import JUDGEABLE_BUCKETS  # noqa: E402
+from tests.benchmark.bench_lib import (  # noqa: E402
+    AI_NOT_APPLICABLE,
+    JUDGEABLE_BUCKETS,
+)
 
 # Same bucket set generate_differences_report.py classifies diffs into, plus
 # 'partial' (fileset overlap, judged on the shared files — see
@@ -226,24 +229,33 @@ def generate_report(results_dir: Path) -> str:
         lines.append("")
 
     # --- Not-applicable audit ------------------------------------------------
-    # Every `skipped` row asserts a CVE does not affect this recipe version.
-    # That claim exits 0 and is otherwise invisible in the report, so list them
-    # explicitly: a wrong one silently leaves a live vulnerability unpatched,
-    # and the models disagreeing with each other on the same CVE is the
-    # cheapest signal that one of them is wrong.
+    # A `skipped` row does not necessarily mean the model dismissed anything.
+    # Split by recorded skip_reason so the audit accuses a model only of claims
+    # it actually made: in bench_20260831_140123 all five CVE-2025-64505 runs
+    # were skipped because libpng did not build even unpatched, and six more
+    # because the cherry-pick came out empty -- neither is a judgement call.
     dismissed: dict[str, list[str]] = defaultdict(list)
+    other_skips: dict[str, list[str]] = defaultdict(list)
     for row in agent_rows:
-        if (row.get("outcome") or "").strip() == "skipped":
+        if (row.get("outcome") or "").strip() != "skipped":
+            continue
+        reason = (row.get("skip_reason") or "").strip()
+        if reason in ("", AI_NOT_APPLICABLE):
             dismissed[row["cve_id"]].append(row["model"])
+        else:
+            other_skips[reason].append(f'{row["cve_id"]} ({row["model"]})')
+
     if dismissed:
         lines.append("## Not-Applicable Verdicts (verify these)")
         lines.append("")
         lines.append(
-            "_Each row is a model asserting the CVE does not affect this "
-            "recipe version, which exits 0 and counts as a pass. A wrong "
-            "verdict here leaves a live vulnerability unpatched. Where the "
-            "**Models** column does not list every model that ran the CVE, "
-            "the others disagreed — at least one side is wrong._"
+            "_Each row is a model asserting on its own reasoning that the CVE "
+            "does not affect this recipe version, which exits 0 and counts as "
+            "a pass. A wrong verdict here leaves a live vulnerability "
+            "unpatched. Where the **Models** column does not list every model "
+            "that ran the CVE, the others disagreed — at least one side is "
+            "wrong. Skips with a mechanical cause are excluded and listed "
+            "separately below._"
         )
         lines.append("")
         ran_per_cve: dict[str, int] = defaultdict(int)
@@ -257,6 +269,26 @@ def generate_report(results_dir: Path) -> str:
                 f"| {cve} | {len(models)} | {ran_per_cve[cve]} "
                 f"| {', '.join(models)} |"
             )
+        lines.append("")
+
+    if other_skips:
+        lines.append("## Skips With a Mechanical Cause (not model judgements)")
+        lines.append("")
+        lines.append(
+            "_These runs never involved the model's opinion on applicability. "
+            "`build_preexisting`/`ptest_preexisting` mean the recipe was "
+            "already broken before patching — an environment problem, not a "
+            "result. `empty_cherry_pick` means the cherry-pick produced no "
+            "changes, so the fix appeared already present; when the commit "
+            "handed over was already an ancestor of HEAD that outcome was "
+            "guaranteed, and the model had no other conclusion available._"
+        )
+        lines.append("")
+        lines.append("| Cause | Runs | Cases |")
+        lines.append("|-------|------|-------|")
+        for reason in sorted(other_skips):
+            cases = sorted(other_skips[reason])
+            lines.append(f"| {reason} | {len(cases)} | {', '.join(cases)} |")
         lines.append("")
 
     return "\n".join(lines)
