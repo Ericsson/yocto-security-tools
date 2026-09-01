@@ -45,14 +45,14 @@ same CVEs regardless of environment or when it's run. Three hold CVEs that
 triggers `cve-agent`'s AI — tiered by conflict/file complexity. The fourth
 holds CVEs whose cherry-pick applies **cleanly** (no conflict at all), which
 is a different kind of case and is scored separately (see
-[Clean-apply roster](#clean-apply-roster-5-cves)).
+[Clean-apply roster](#clean-apply-roster-6-cves)).
 
 | `--roster` | File | CVEs | Composition |
 |---|---|---|---|
 | `default` | `benchmark-roster.json` | 6 | 3 easy, 1 medium, 2 hard |
 | `balanced` | `benchmark-roster-balanced.json` | 8 | 3 easy, 2 medium, 3 hard |
-| `extended` | `benchmark-roster-extended.json` | 21 | 10 easy, 2 medium, 9 hard |
-| `clean-apply` | `benchmark-roster-clean-apply.json` | 5 | n/a — no tier, see below |
+| `extended` | `benchmark-roster-extended.json` | 20 | 9 easy, 2 medium, 9 hard |
+| `clean-apply` | `benchmark-roster-clean-apply.json` | 6 | n/a — no tier, see below |
 
 `default`/`balanced`/`extended` are **nested** — `default` ⊂ `balanced` ⊂
 `extended`, with shared entries carrying identical recorded stats — so results
@@ -68,11 +68,11 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 # resolution roster, then judges.
 ./run_benchmark.sh
 
-# The same, against the 8-CVE balanced roster or the 21-CVE extended one:
+# The same, against the 8-CVE balanced roster or the 20-CVE extended one:
 ./run_benchmark.sh --roster balanced
 ./run_benchmark.sh --roster extended
 
-# Against the separate 5-CVE clean-apply roster (mandatory-analysis phase,
+# Against the separate 6-CVE clean-apply roster (mandatory-analysis phase,
 # not conflict resolution -- see "Clean-apply roster" below):
 ./run_benchmark.sh --roster clean-apply
 
@@ -113,7 +113,7 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 
 | Flag | Effect |
 |------|--------|
-| `--roster <default\|balanced\|extended\|clean-apply\|path>` | Which committed roster to run (default: `default`, 6 CVEs; `balanced` is 8, `extended` is 21, and the three nest. `clean-apply` is separate, see [Clean-apply roster](#clean-apply-roster-5-cves)). A path selects an arbitrary roster JSON. The chosen roster is logged at startup so a run's provenance is recorded. |
+| `--roster <default\|balanced\|extended\|clean-apply\|path>` | Which committed roster to run (default: `default`, 6 CVEs; `balanced` is 8, `extended` is 20, and the three nest. `clean-apply` is separate, see [Clean-apply roster](#clean-apply-roster-6-cves)). A path selects an arbitrary roster JSON. The chosen roster is logged at startup so a run's provenance is recorded. |
 | `--retier` | Re-probes the selected roster's CVEs with cve-corrector (no AI cost) and updates their recorded stats/tier in that roster file in place. Never changes which CVEs are in the roster. Only accepts a recoverable exit for the three resolution rosters (a clean or unrecoverable exit leaves the cached entry unchanged and warns), and only a clean exit for `clean-apply` (any conflict leaves it unchanged and warns) — see [Roster files](#roster-files). |
 | `--models <default\|full\|comma-list>` | Model selection for phase 1 (default: `default`) |
 | `--list-cases` | List the roster CVEs as numbered cases (in run order: easy→medium→hard, alphabetical within a tier; `clean-apply` has no tiers, so its cases are just alphabetical) and exit, without running anything. |
@@ -238,7 +238,7 @@ Three files are committed in this schema, all selected with `--roster`:
 
 - `tests/benchmark/benchmark-roster.json` — the default, 6 CVEs.
 - `tests/benchmark/benchmark-roster-balanced.json` — 8 CVEs.
-- `tests/benchmark/benchmark-roster-extended.json` — 21 CVEs, the full pool
+- `tests/benchmark/benchmark-roster-extended.json` — 20 CVEs, the full pool
   of CVEs mined so far that need resolution.
 
 They nest: `default` ⊂ `balanced` ⊂ `extended`. Each is the entire, fixed
@@ -310,7 +310,7 @@ The cheap roster for quick model comparisons: 3 `easy`, 1 `medium`, 2 `hard`.
 
 #### Balanced roster (8 CVEs)
 
-3 `easy`, 2 `medium`, 3 `hard` — the closest even split the real 21-CVE pool
+3 `easy`, 2 `medium`, 3 `hard` — the closest even split the real 20-CVE pool
 supports (only 2 CVEs in the whole pool measure `medium`; both are included
 here). A superset of the default roster and a subset of the extended one.
 
@@ -325,9 +325,9 @@ here). A superset of the default roster and a subset of the extended one.
 | hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
 | hard | `CVE-2025-1153` | binutils | 45 | 28 |
 
-#### Extended roster (21 CVEs)
+#### Extended roster (20 CVEs)
 
-10 `easy`, 2 `medium`, 9 `hard` — every CVE mined so far that reproduces a
+9 `easy`, 2 `medium`, 9 `hard` — every CVE mined so far that reproduces a
 recoverable exit against openembedded-core (scarthgap). A superset of the
 balanced roster.
 
@@ -338,7 +338,6 @@ balanced roster.
 | easy | `CVE-2024-52532` | libsoup-2.4 | 3 | 1 |
 | easy | `CVE-2024-6345` | python3-setuptools | 2 | 2 |
 | easy | `CVE-2024-7537` | ofono | 2 | 1 |
-| easy | `CVE-2025-24857` | u-boot-tools | 0 | 0 |
 | easy | `CVE-2025-47183` | gstreamer1.0-plugins-good | 1 | 1 |
 | easy | `CVE-2026-21441` | python3-urllib3 | 3 | 1 |
 | easy | `CVE-2026-24049` | python3-wheel | 2 | 2 |
@@ -384,7 +383,7 @@ then score it with `bench_lib.count_conflict_markers` /
 add it to every larger one too, or the nesting test in
 `test_benchmark_roster.py` will fail.
 
-### Clean-apply roster (5 CVEs)
+### Clean-apply roster (6 CVEs)
 
 ```json
 {
@@ -426,8 +425,18 @@ resolution, which is why this roster is kept separate.
 | `CVE-2024-24856` | acpica | 1 | 0 |
 | `CVE-2024-5569` | python3-zipp | 1 | 2 |
 | `CVE-2025-11687` | gi-docgen | 1 | 0 |
+| `CVE-2025-24857` | u-boot-tools | 1 | 0 |
 | `CVE-2025-46805` | screen | 1 | 10 |
 | `CVE-2025-46836` | net-tools | 2 | 4 |
+
+`CVE-2025-24857` (u-boot-tools) moved here from the extended roster. It used to
+fail with an empty cherry-pick because its only recorded fix commit was
+`c253573f3e2` *"Prepare v2017.11"* — a 2017 release bump, and an ancestor of the
+recipe's own version. Once the metadata carried the real fix
+(`87d85139a96`, from the `Upstream-Status` header of OE-Core's own patch) and
+`cve-corrector` learned to skip commits already in history, it applies cleanly
+and reproduces the reference backport exactly (`diff_lines: 0`, *"Patches are
+equivalent"*).
 
 Run it the same way as the others: `./run_benchmark.sh --roster clean-apply`,
 `--retier` to refresh, `--list-cases`/`--run-case` to slice it. `--retier`
@@ -446,16 +455,16 @@ directly there. The clean-apply roster's mandatory-analysis phase also calls
 the AI, but for a single review turn rather than an open-ended
 conflict-resolution loop, so it is typically cheaper per CVE.
 
-| | default (6) | balanced (8) | extended (21) | clean-apply (5) |
+| | default (6) | balanced (8) | extended (20) | clean-apply (6) |
 |---|---|---|---|---|
-| AI-consuming entries | 6 | 8 | 21 | 5 |
-| Agent invocations, 5 models | 30 | 40 | 105 | 25 |
+| AI-consuming entries | 6 | 8 | 20 | 6 |
+| Agent invocations, 5 models | 30 | 40 | 100 | 30 |
 
 Use `--run-case` to work through a roster in affordable slices rather than
 committing to a full run, and `--models` to narrow the model set:
 
 ```bash
-./run_benchmark.sh --roster extended --list-cases          # 21 numbered cases
+./run_benchmark.sh --roster extended --list-cases          # 20 numbered cases
 ./run_benchmark.sh --roster extended --run-case 1 2 3 4 5 6 7 8 9 10  # the 10 easy ones
 ./run_benchmark.sh --roster extended --models claude-opus-5,claude-sonnet-4.6 \
     --run-case 13 14
@@ -486,6 +495,6 @@ those never involved the model's opinion.
 - `generate_benchmark_report.py` — markdown report generator
 - `benchmark-roster.json` — the default committed resolution roster, 6 CVEs (see [Roster files](#roster-files) above)
 - `benchmark-roster-balanced.json` — the balanced committed resolution roster, 8 CVEs (3/2/3)
-- `benchmark-roster-extended.json` — the extended committed resolution roster, 21 CVEs (the full mined pool)
-- `benchmark-roster-clean-apply.json` — the separate clean-apply roster, 5 CVEs (see [Clean-apply roster](#clean-apply-roster-5-cves))
+- `benchmark-roster-extended.json` — the extended committed resolution roster, 20 CVEs (the full mined pool)
+- `benchmark-roster-clean-apply.json` — the separate clean-apply roster, 6 CVEs (see [Clean-apply roster](#clean-apply-roster-6-cves))
 - `test_benchmark_roster.py` — integrity tests for all four roster files
