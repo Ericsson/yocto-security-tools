@@ -5,13 +5,30 @@ from pathlib import Path
 
 from tests.benchmark.generate_benchmark_report import generate_report
 
-AGENT_HEADER = "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines"
+AGENT_HEADER = ("cve_id,tier,model,exit_status,outcome,credits,duration_s,"
+                "commands,diff_bucket,diff_lines")
+# The pre-outcome-column schema, still readable by generate_report so existing
+# results directories keep working.
+LEGACY_AGENT_HEADER = ("cve_id,tier,model,exit_status,credits,duration_s,"
+                       "commands,diff_bucket,diff_lines")
 JUDGE_HEADER = "cve_id,model,judgment,reason,judge_credits,scope"
 
 
 def _write_agent_csv(results_dir: Path, rows: list[str]) -> None:
+    """Write agent_results.csv, defaulting the outcome column when omitted.
+
+    Rows may be given in the legacy 9-field form (no ``outcome``); this
+    inserts ``conflict_resolved`` after ``exit_status`` so tests that don't
+    care about the outcome stay readable. Pass a full 10-field row to set it.
+    """
+    normalised = []
+    for row in rows:
+        fields = row.split(",")
+        if len(fields) == 9:
+            fields.insert(4, "conflict_resolved")
+        normalised.append(",".join(fields))
     (results_dir / "agent_results.csv").write_text(
-        AGENT_HEADER + "\n" + "\n".join(rows) + "\n"
+        AGENT_HEADER + "\n" + "\n".join(normalised) + "\n"
     )
 
 
@@ -129,6 +146,75 @@ class TestGenerateReport:
         _write_judge_csv(tmp_path, [])
         report = generate_report(tmp_path)
         assert "claude-opus-4.8" in report
+
+    def test_per_model_outcome_table_separates_skipped_from_resolved(self, tmp_path):
+        """A not-applicable verdict must not be tallied as a resolved backport.
+
+        Both exit 0, so an exit-status-only view shows model-a and model-b as
+        equally successful even though model-b produced no patch at all.
+        """
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,conflict_resolved,1.0,10,3,minor,4",
+            "CVE-2,hard,model-a,0,conflict_resolved,1.0,10,3,minor,4",
+            "CVE-1,hard,model-b,0,skipped,1.0,10,3,skipped,-",
+            "CVE-2,hard,model-b,0,skipped,1.0,10,3,skipped,-",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        assert "## Per-Model Outcomes" in report
+        outcomes = report.split("## Per-Model Outcomes")[1].split("##")[0]
+        # conflict_resolved | success | skipped | escalated | failed | unknown
+        assert "| model-a | 2 | 0 | 0 | 0 | 0 | 0 |" in outcomes
+        assert "| model-b | 0 | 0 | 2 | 0 | 0 | 0 |" in outcomes
+
+    def test_escalated_counted_separately_from_failed(self, tmp_path):
+        """An honest escalation and a real breakage share exit 14; split them."""
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,14,escalated,1.0,10,3,-,-",
+            "CVE-2,hard,model-a,14,failed,1.0,10,3,-,-",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        outcomes = report.split("## Per-Model Outcomes")[1].split("##")[0]
+        assert "| model-a | 0 | 0 | 0 | 1 | 1 | 0 |" in outcomes
+
+    def test_legacy_csv_without_outcome_column_still_reports(self, tmp_path):
+        """Results dirs predating the outcome column must not break the report."""
+        (tmp_path / "agent_results.csv").write_text(
+            LEGACY_AGENT_HEADER + "\n"
+            + "CVE-1,hard,model-a,0,1.0,10,3,minor,4\n"
+        )
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        # Row is counted, but its outcome is unknown rather than guessed.
+        outcomes = report.split("## Per-Model Outcomes")[1].split("##")[0]
+        assert "| model-a | 0 | 0 | 0 | 0 | 0 | 1 |" in outcomes
+
+    def test_not_applicable_audit_lists_dismissals_and_disagreement(self, tmp_path):
+        """Skipped CVEs are listed with how many models dismissed them."""
+        _write_agent_csv(tmp_path, [
+            "CVE-9,hard,model-a,0,skipped,1.0,10,3,skipped,-",
+            "CVE-9,hard,model-b,0,skipped,1.0,10,3,skipped,-",
+            "CVE-9,hard,model-c,0,conflict_resolved,1.0,10,3,minor,4",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+
+        assert "## Not-Applicable Verdicts (verify these)" in report
+        audit = report.split("## Not-Applicable Verdicts (verify these)")[1]
+        # 2 of the 3 runs dismissed it -> model-c disagreed, so one side is wrong.
+        assert "| CVE-9 | 2 | 3 | model-a, model-b |" in audit
+
+    def test_no_audit_section_when_nothing_was_dismissed(self, tmp_path):
+        _write_agent_csv(tmp_path, [
+            "CVE-1,hard,model-a,0,conflict_resolved,1.0,10,3,minor,4",
+        ])
+        _write_judge_csv(tmp_path, [])
+        report = generate_report(tmp_path)
+        assert "Not-Applicable Verdicts" not in report
 
     def test_missing_judge_csv_treated_as_empty(self, tmp_path):
         _write_agent_csv(tmp_path, [

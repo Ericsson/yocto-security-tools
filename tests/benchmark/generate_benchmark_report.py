@@ -28,6 +28,11 @@ from tests.benchmark.bench_lib import JUDGEABLE_BUCKETS  # noqa: E402
 # bench_lib.scope_diff_to_common_files).
 DIFF_BUCKETS = ("identical", "minor", "moderate", "major", "partial", "file-mismatch")
 
+# cve_agent.ResultStatus values, ordered best-to-worst as a backport result
+# rather than by exit code. See the Per-Model Outcomes note in the report for
+# why exit status alone is misleading.
+OUTCOMES = ("conflict_resolved", "success", "skipped", "escalated", "failed")
+
 # Judge model used by run_benchmark.sh's phase 2 — fixed, and deliberately
 # not part of the model roster being benchmarked (see bench_lib.judge_diff).
 JUDGE_MODEL_NOTE = "claude-opus-4.8"
@@ -91,6 +96,43 @@ def generate_report(results_dir: Path) -> str:
             f"| {model} | {len(rows)} | {total_credits:.2f} "
             f"| {avg_duration:.1f} | {avg_commands:.1f} |"
         )
+    lines.append("")
+
+    # --- Per-model outcome distribution ---
+    # The headline "did it work" signal, and deliberately separate from the
+    # exit status: cve-agent exits 0 for both a real backport and a "not
+    # applicable" verdict, and exits 14 for both an honest escalation and a
+    # genuine failure. Ranking models on the exit code alone therefore rewards
+    # a confident wrong dismissal over a correct refusal to guess.
+    lines.append("## Per-Model Outcomes")
+    lines.append("")
+    lines.append(
+        "_`conflict_resolved`/`success` produced a patch. `skipped` means the "
+        "model judged the CVE **not applicable** — it exits 0 and looks like a "
+        "pass, but no backport was produced, and if the verdict is wrong a live "
+        "vulnerability was dismissed; check these before trusting them. "
+        "`escalated` means the model declined to guess and asked for a human, "
+        "which is the **intended** outcome when the fix cannot be made in "
+        "scope, even though it exits non-zero. Only `failed` is an outright "
+        "breakage._"
+    )
+    lines.append("")
+    outcome_header = "| Model | " + " | ".join(OUTCOMES) + " | (no outcome) |"
+    outcome_sep = ("|-------|" + "|".join("-" * (len(o) + 2) for o in OUTCOMES)
+                   + "|--------------|")
+    lines.append(outcome_header)
+    lines.append(outcome_sep)
+    for model in sorted(by_model):
+        outcome_counts: dict[str, int] = {o: 0 for o in OUTCOMES}
+        unknown = 0
+        for row in by_model[model]:
+            outcome = (row.get("outcome") or "").strip()
+            if outcome in outcome_counts:
+                outcome_counts[outcome] += 1
+            else:
+                unknown += 1
+        cells = " | ".join(str(outcome_counts[o]) for o in OUTCOMES)
+        lines.append(f"| {model} | {cells} | {unknown} |")
     lines.append("")
 
     # --- Per-tier bucket distribution ---
@@ -180,6 +222,40 @@ def generate_report(results_dir: Path) -> str:
             lines.append(
                 f"| {row['cve_id']} | {row['model']} | {row.get('judgment', '')} "
                 f"| {reason} |"
+            )
+        lines.append("")
+
+    # --- Not-applicable audit ------------------------------------------------
+    # Every `skipped` row asserts a CVE does not affect this recipe version.
+    # That claim exits 0 and is otherwise invisible in the report, so list them
+    # explicitly: a wrong one silently leaves a live vulnerability unpatched,
+    # and the models disagreeing with each other on the same CVE is the
+    # cheapest signal that one of them is wrong.
+    dismissed: dict[str, list[str]] = defaultdict(list)
+    for row in agent_rows:
+        if (row.get("outcome") or "").strip() == "skipped":
+            dismissed[row["cve_id"]].append(row["model"])
+    if dismissed:
+        lines.append("## Not-Applicable Verdicts (verify these)")
+        lines.append("")
+        lines.append(
+            "_Each row is a model asserting the CVE does not affect this "
+            "recipe version, which exits 0 and counts as a pass. A wrong "
+            "verdict here leaves a live vulnerability unpatched. Where the "
+            "**Models** column does not list every model that ran the CVE, "
+            "the others disagreed — at least one side is wrong._"
+        )
+        lines.append("")
+        ran_per_cve: dict[str, int] = defaultdict(int)
+        for row in agent_rows:
+            ran_per_cve[row["cve_id"]] += 1
+        lines.append("| CVE | Dismissed by | Of runs | Models |")
+        lines.append("|-----|--------------|---------|--------|")
+        for cve in sorted(dismissed):
+            models = sorted(dismissed[cve])
+            lines.append(
+                f"| {cve} | {len(models)} | {ran_per_cve[cve]} "
+                f"| {', '.join(models)} |"
             )
         lines.append("")
 

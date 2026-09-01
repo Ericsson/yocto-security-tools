@@ -238,6 +238,56 @@ def count_tool_calls(transcript: str) -> int:
     return len(_TOOL_CALL_RE.findall(clean))
 
 
+# cve_agent/__main__.py's final per-CVE line: `✓ <cve-id>: <status.value>`,
+# where status is a cve_agent.ResultStatus. The process exit code collapses
+# these five outcomes into two values (0 for success/conflict_resolved/skipped,
+# EXIT_AGENT_ERROR=14 for escalated/failed), which conflates outcomes that mean
+# opposite things about a model's quality:
+#
+#   * `skipped` exits 0 -- the model concluded the CVE is NOT APPLICABLE. When
+#     that verdict is wrong, a live vulnerability is dismissed and the run
+#     still scores as a clean pass. bench_20260831_140123 had two models mark
+#     CVE-2024-6387 (regreSSHion, openssh 9.6p1, in the affected 8.5p1-9.7p1
+#     range) not-applicable this way.
+#   * `escalated` exits 14 -- the model declined to guess and asked for a
+#     human. That is the *correct* outcome for a CVE it cannot fix in scope,
+#     but it scores identically to a genuine breakage.
+#
+# So the benchmark must read the outcome from the log rather than infer it from
+# the exit status, or the leaderboard rewards confident wrong answers over
+# honest escalation.
+_OUTCOME_RE = re.compile(
+    r'^\s*\u2713\s+(CVE-\d{4}-\d{4,}):\s*'
+    r'(success|conflict_resolved|failed|escalated|skipped)\s*$',
+    re.MULTILINE)
+
+# Outcomes that exit 0 today but are NOT a successful backport.
+NON_BACKPORT_OUTCOMES = ('skipped',)
+# Outcomes that exit non-zero but are a defensible, intended result.
+HONEST_OUTCOMES = ('escalated',)
+
+
+def parse_agent_outcome(log_text: str) -> str:
+    """Extract cve-agent's own final outcome from a captured run log.
+
+    Args:
+        log_text: Captured combined stdout/stderr of one ``cve-agent`` run
+            (may contain ANSI colour codes).
+
+    Returns:
+        The :class:`cve_agent.ResultStatus` value as a string -- one of
+        ``'success'``, ``'conflict_resolved'``, ``'failed'``, ``'escalated'``,
+        ``'skipped'`` -- or ``''`` when the log has no outcome line (a
+        timeout, a kill, or an environment failure before the agent reported).
+        When a log somehow contains several outcome lines, the last one wins,
+        since that is the run's final word.
+    """
+    if not log_text:
+        return ''
+    matches = _OUTCOME_RE.findall(strip_ansi(log_text))
+    return matches[-1][1] if matches else ''
+
+
 # --- Roster case selection (--list-cases / --run-case) -----------------------
 
 # Canonical tier ordering used to enumerate roster "cases". Mirrors
