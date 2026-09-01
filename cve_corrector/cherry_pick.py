@@ -408,6 +408,14 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
 _METADATA_ONLY_FILES = frozenset({
     'VERSION', 'CHANGES', 'NEWS', 'ChangeLog', 'RELEASE',
     'configure', 'configure.ac', 'meson.build',
+    # A commit touching *only* the top-level Makefile is a release/version
+    # bump, not a fix: upstreams like u-boot cut releases by editing the
+    # VERSION/PATCHLEVEL variables there. CVE-2025-24857's sole metadata hash
+    # (c253573f3e2, "Prepare v2017.11") is exactly this shape -- a 2017 release
+    # commit changing one Makefile line, eight years older than the CVE. A
+    # genuine fix that happens to touch a Makefile also touches source, so it
+    # never trips this all()-based check.
+    'Makefile', 'Makefile.am', 'Makefile.in',
 })
 
 

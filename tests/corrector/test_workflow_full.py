@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cve_corrector.cherry_pick import (
+    _is_metadata_only_commit,
     apply_series,
     apply_single_commits,
     cherry_pick_to_devtool,
@@ -372,9 +373,41 @@ class TestFindLeastConflictCommit:
         assert "ancestor" not in [c[0][1] for c in mock_pick.call_args_list]
 
 
+class TestIsMetadataOnlyCommit:
+    """Version-bump commits must not be mistaken for a CVE fix."""
+
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    def test_makefile_only_commit_is_metadata(self, mock_run):
+        """A lone top-level Makefile change is a release bump, not a fix.
+
+        CVE-2025-24857's only metadata hash (c253573f3e2, "Prepare v2017.11")
+        changes one Makefile line and predates the CVE by eight years; the real
+        fix (87d85139a96) touches fs/fat/fat.c. Recognising this shape lets
+        find_least_conflict_commit sort it behind any genuine candidate.
+        """
+        mock_run.return_value = MagicMock(stdout="Makefile\n")
+        assert _is_metadata_only_commit(Path("/ws"), "c253573f3e2") is True
+
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    def test_makefile_plus_source_is_not_metadata(self, mock_run):
+        """A real fix touching a Makefile as well stays a candidate."""
+        mock_run.return_value = MagicMock(stdout="Makefile\nfs/fat/fat.c\n")
+        assert _is_metadata_only_commit(Path("/ws"), "87d85139a96") is False
+
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    def test_source_only_commit_is_not_metadata(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="fs/fat/fat.c\n")
+        assert _is_metadata_only_commit(Path("/ws"), "87d85139a96") is False
+
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    def test_empty_commit_is_not_metadata(self, mock_run):
+        """No files at all is not a positive metadata-only answer."""
+        mock_run.return_value = MagicMock(stdout="")
+        assert _is_metadata_only_commit(Path("/ws"), "deadbeef") is False
+
+
 class TestCherryPickToDevtool:
     """Tests for cherry_pick_to_devtool — format-patch and fallback logic."""
-
     @patch("cve_corrector.cherry_pick.run_cmd")
     @patch("cve_corrector.cherry_pick.run_cmd_capture")
     @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
