@@ -21,6 +21,7 @@ from tests.integration.enrich_metadata_from_oe import (
     find_hashes_from_oe,
     find_hashes_from_patch_headers,
     find_hashes_from_upstream_status,
+    missing_upstream_hashes,
 )
 
 _SCRIPT = (Path(__file__).resolve().parent.parent
@@ -186,3 +187,135 @@ class TestScriptEntryPoint:
             [sys.executable, str(_SCRIPT), str(path), str(tmp_path / 'meta')],
             capture_output=True, text=True, check=True)
         assert 'No new hashes found' in result.stdout
+
+
+class TestCorrectExisting:
+    """``--correct-existing`` repairs entries whose hashes are all wrong.
+
+    Tracker data can name a release commit (u-boot's CVE-2025-24857 carried
+    only "Prepare v2017.11"), a different project's commit (wpa-supplicant's
+    CVE-2024-3596 carried 28 FreeRADIUS commits), or one commit of a series
+    (binutils' CVE-2025-1153 needs three, including a partial revert). None of
+    those are visible without comparing against what OE-Core actually
+    backported.
+    """
+
+    def _run(self, path, meta, *extra):
+        return subprocess.run(
+            [sys.executable, str(_SCRIPT), str(path), str(meta), *extra],
+            capture_output=True, text=True, check=True)
+
+    def test_wrong_hash_is_corrected_and_kept_as_fallback(self, meta, tmp_path):
+        """A single ground-truth commit is prepended, the guess kept behind it."""
+        truth = find_hashes_from_upstream_status('CVE-2024-24856', meta)
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2024-24856': {'name': 'acpica', 'hashes': ['wrongguess']},
+        }), encoding='utf-8')
+        self._run(path, meta, '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2024-24856']
+        # Ground truth first, so cve-corrector tries it before the guess...
+        assert entry['hashes'][0] == truth[0]['hash']
+        # ...and the original is retained rather than discarded.
+        assert 'wrongguess' in entry['hashes']
+        # One commit is not a chain, so no series is invented.
+        assert not entry.get('series')
+
+    def test_multiple_patches_become_an_ordered_series(self, tmp_path):
+        """Several Upstream-Status patches are a chain, not alternatives.
+
+        cve-corrector treats ``hashes`` as alternatives and stops at the first
+        that applies; for binutils' CVE-2025-1153 that would leave a partial
+        fix, since the third patch reverts part of the first. Recording a
+        series makes apply_series require all of them, in order.
+        """
+        root = tmp_path / 'meta' / 'recipes-devtools' / 'binutils'
+        root.mkdir(parents=True)
+        # Numeric prefixes are how OE orders them in SRC_URI; sorted() on the
+        # filename must reproduce that order.
+        for n, sha in (
+            ('0019-CVE-2025-1153-1.patch', 'a' * 40),
+            ('0020-CVE-2025-1153-2.patch', 'b' * 40),
+            ('0021-CVE-2025-1153-3.patch', 'c' * 40),
+        ):
+            (root / n).write_text(
+                'Upstream-Status: Backport '
+                f'[https://sourceware.org/git/?p=binutils-gdb.git;a=commit;h={sha}]\n',
+                encoding='utf-8')
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2025-1153': {'name': 'binutils', 'hashes': ['oldguess']},
+        }), encoding='utf-8')
+        result = self._run(path, tmp_path / 'meta', '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2025-1153']
+
+        assert entry['series'][0]['commits'] == ['a' * 40, 'b' * 40, 'c' * 40]
+        assert entry['series'][0]['pull_url'] == 'oe_patch:0019-CVE-2025-1153-1.patch'
+        # The chain must NOT be scattered into `hashes`, where the corrector
+        # would treat each commit as a standalone alternative.
+        assert entry['hashes'] == ['oldguess']
+        assert 'SERIES' in result.stdout
+
+    def test_series_is_prepended_ahead_of_existing_series(self, tmp_path):
+        root = tmp_path / 'meta' / 'files'
+        root.mkdir(parents=True)
+        for n, sha in (('CVE-2025-0002-1.patch', 'd' * 40),
+                       ('CVE-2025-0002-2.patch', 'e' * 40)):
+            (root / n).write_text(
+                f'Upstream-Status: Backport [https://github.com/o/r/commit/{sha}]\n',
+                encoding='utf-8')
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2025-0002': {'name': 'r', 'hashes': ['x'],
+                              'series': [{'pull_url': 'old', 'commits': ['y']}]},
+        }), encoding='utf-8')
+        self._run(path, tmp_path / 'meta', '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2025-0002']
+        assert [s['pull_url'] for s in entry['series']] == [
+            'oe_patch:CVE-2025-0002-1.patch', 'old']
+
+    def test_default_run_leaves_wrong_hashes_alone(self, meta, tmp_path):
+        """Without the flag, behaviour is unchanged (existing hashes win)."""
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2024-24856': {'name': 'acpica', 'hashes': ['wrongguess']},
+        }), encoding='utf-8')
+        self._run(path, meta)
+        data = json.loads(path.read_text(encoding='utf-8'))
+        assert data['CVE-2024-24856']['hashes'] == ['wrongguess']
+
+    def test_entry_already_holding_ground_truth_is_untouched(self, meta, tmp_path):
+        """No churn for the 84-of-89 entries that were already correct."""
+        truth = find_hashes_from_upstream_status('CVE-2024-24856', meta)
+        assert truth, 'fixture should expose an Upstream-Status hash'
+        path = tmp_path / 'meta.json'
+        original = [truth[0]['hash'], 'extra-series-commit']
+        path.write_text(json.dumps({
+            'CVE-2024-24856': {'name': 'acpica', 'hashes': list(original)},
+        }), encoding='utf-8')
+        result = self._run(path, meta, '--correct-existing')
+        data = json.loads(path.read_text(encoding='utf-8'))
+        assert data['CVE-2024-24856']['hashes'] == original
+        assert 'CVE-2024-24856' not in result.stdout
+
+    def test_short_recorded_hash_counts_as_covering_the_full_one(self, meta, tmp_path):
+        """A prefix match must not be treated as a missing commit."""
+        truth = find_hashes_from_upstream_status('CVE-2024-24856', meta)
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2024-24856': {'name': 'acpica',
+                               'hashes': [truth[0]['hash'][:12]]},
+        }), encoding='utf-8')
+        self._run(path, meta, '--correct-existing')
+        data = json.loads(path.read_text(encoding='utf-8'))
+        assert data['CVE-2024-24856']['hashes'] == [truth[0]['hash'][:12]]
+
+    def test_missing_upstream_hashes_helper(self, meta):
+        entry = {'hashes': ['somethingelse']}
+        missing = missing_upstream_hashes('CVE-2024-24856', entry, meta)
+        assert [h['hash'] for h in missing] == [
+            '4d4547cf13cca820ff7e0f859ba83e1a610b9fd0']
+
+    def test_helper_reports_nothing_when_covered(self, meta):
+        entry = {'hashes': ['4d4547cf13cca820ff7e0f859ba83e1a610b9fd0']}
+        assert missing_upstream_hashes('CVE-2024-24856', entry, meta) == []
