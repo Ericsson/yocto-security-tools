@@ -3,7 +3,7 @@
 
 Four rosters ship. Three hold CVEs that need resolution — a recoverable exit
 (conflict/ptest/build) — nested for comparability: default (6) ⊂ balanced (8)
-⊂ extended (22). ``tier`` on those three is derived from conflict/file
+⊂ extended (21). ``tier`` on those three is derived from conflict/file
 complexity (:func:`score_tier`), not diff size, since diffing against a
 reference fix has no meaning until a conflict is actually resolved.
 
@@ -45,7 +45,7 @@ ALL_ROSTERS = (*RESOLUTION_ROSTERS, CLEAN_APPLY_ROSTER)
 EXPECTED_SIZES = {
     DEFAULT_ROSTER.name: 6,
     BALANCED_ROSTER.name: 8,
-    EXTENDED_ROSTER.name: 22,
+    EXTENDED_ROSTER.name: 21,
     CLEAN_APPLY_ROSTER.name: 5,
 }
 

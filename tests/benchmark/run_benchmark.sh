@@ -102,7 +102,7 @@ at all, scored separately (see README "Clean-apply roster").
 
   default      benchmark-roster.json             6 CVEs  (3 easy, 1 medium, 2 hard)
   balanced     benchmark-roster-balanced.json     8 CVEs  (3 easy, 2 medium, 3 hard)
-  extended     benchmark-roster-extended.json    22 CVEs  (10 easy, 2 medium, 10 hard)
+  extended     benchmark-roster-extended.json    21 CVEs  (10 easy, 2 medium, 9 hard)
   clean-apply  benchmark-roster-clean-apply.json  5 CVEs  (no tier -- clean cherry-picks)
 
 They are nested -- default is a subset of balanced, which is a subset of
