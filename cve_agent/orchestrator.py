@@ -76,6 +76,15 @@ class _AttemptOutcome:
     """Result of a single resolution attempt."""
     result: Optional[CveResult] = None
     next_step: Optional[int] = None
+    # Retain a typed provider failure while the trust-mode loop retries.  If
+    # every retry fails, this is more accurate than inventing a generic
+    # security-review outcome for a repository that was never built.
+    failure_outcome: Optional[ResultOutcome] = None
+    failure_reason: str = ""
+    # True when this iteration received a result from a provider session. A
+    # later non-failing provider result supersedes any retained failure from an
+    # earlier retry; control-flow iterations without a provider leave it alone.
+    provider_completed: bool = False
     # Set when the attempt was bounced solely because the AI's commit notes
     # exceeded the length budget, so the loop can cap those retries separately
     # from genuine resolution failures.
@@ -537,15 +546,20 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
     attempt = 0
     total_attempts = 0
     note_rejects = 0
+    last_failure_outcome: Optional[ResultOutcome] = None
+    last_failure_reason = ""
     max_total = config.max_total_attempts if config.max_total_attempts > 0 else None
 
     while attempt < config.max_retries:
         attempt += 1
         total_attempts += 1
         if max_total and total_attempts > max_total:
+            summary = "Total attempt cap reached"
+            if last_failure_reason:
+                summary += f": {last_failure_reason}"
             return _make_result(
                 config.cve_id, ResultStatus.ESCALATED, total_attempts,
-                start_time, "Total attempt cap reached")
+                start_time, summary, last_failure_outcome)
         print(f"\n--- Resolution attempt {attempt}/{config.max_retries} "
               f"for {config.cve_id} ---")
 
@@ -563,21 +577,31 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
             attempt -= 1
         if outcome.result is not None:
             return outcome.result
+        if outcome.failure_outcome is not None or outcome.failure_reason:
+            last_failure_outcome = outcome.failure_outcome
+            last_failure_reason = outcome.failure_reason
+        elif outcome.provider_completed:
+            last_failure_outcome = None
+            last_failure_reason = ""
 
         if outcome.next_step is not None and outcome.next_step != current_step:
             print(f"Step changed ({current_step} -> {outcome.next_step}), "
                   f"resetting attempt counter")
             current_step = outcome.next_step
             attempt = 0
+            last_failure_outcome = None
+            last_failure_reason = ""
             # A new phase writes new notes, so it gets its own bounce budget —
             # otherwise notes added during a build/ptest amend would never be
             # checked once the conflict phase spent the allowance.
             note_rejects = 0
 
+    summary = f"Max retries ({config.max_retries}) exhausted at step {current_step}"
+    if last_failure_reason:
+        summary += f": {last_failure_reason}"
     return _make_result(
         config.cve_id, ResultStatus.ESCALATED,
-        attempt, start_time,
-        f"Max retries ({config.max_retries}) exhausted at step {current_step}"
+        attempt, start_time, summary, last_failure_outcome,
     )
 
 
@@ -643,7 +667,11 @@ def _run_single_resolution_attempt(
                 session_result.outcome,
             ))
         if config.trust_mode:
-            return _AttemptOutcome()
+            return _AttemptOutcome(
+                failure_outcome=session_result.outcome,
+                failure_reason=session_result.failure_reason,
+                provider_completed=True,
+            )
         response = input(
             f"Retry {config.backend} session? [y]es / [n]o (escalate): "
         ).strip().lower()
@@ -653,7 +681,11 @@ def _run_single_resolution_attempt(
                 attempt, start_time, f"{config.backend} session failed to resolve",
                 session_result.outcome,
             ))
-        return _AttemptOutcome()
+        return _AttemptOutcome(
+            failure_outcome=session_result.outcome,
+            failure_reason=session_result.failure_reason,
+            provider_completed=True,
+        )
 
     conclusion_reason = _read_conclusion(workspace_path)
     if conclusion_reason:
@@ -687,7 +719,7 @@ def _run_single_resolution_attempt(
             and exit_code in (EXIT_BUILD_ERROR, EXIT_PTEST_ERROR)):
         print(f"AI session made no changes to resolve exit code {exit_code}, "
               f"retrying...")
-        return _AttemptOutcome()
+        return _AttemptOutcome(provider_completed=True)
 
     # The AI made a real change (HEAD moved, or this is a conflict resolution).
     # Before anything else, hold it to the commit-note budget: the workspace
@@ -695,7 +727,7 @@ def _run_single_resolution_attempt(
     # but a manual edit or a pre-hook commit can still reach HEAD.
     note_outcome = _enforce_note_budget(config, workspace_path, note_rejects)
     if note_outcome is not None:
-        return note_outcome
+        return dataclasses.replace(note_outcome, provider_completed=True)
 
     # Show the human the review *before* finalizing: request_approval runs
     # against the still-present workspace, and only on approval does
@@ -713,16 +745,19 @@ def _run_single_resolution_attempt(
             agent_dir = get_agent_dir(workspace_path)
             (agent_dir / 'human_feedback.txt').write_text(
                 feedback, encoding='utf-8')
-        return _AttemptOutcome()
+        return _AttemptOutcome(provider_completed=True)
     if approval == "rejected":
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.ESCALATED,
             attempt, start_time, "Human rejected resolution"
         ))
 
-    return _finalize_resolution(
-        config, knowledge_base, workspace_path,
-        upstream_sha, attempt, start_time, semantic_reference
+    return dataclasses.replace(
+        _finalize_resolution(
+            config, knowledge_base, workspace_path,
+            upstream_sha, attempt, start_time, semantic_reference,
+        ),
+        provider_completed=True,
     )
 
 
