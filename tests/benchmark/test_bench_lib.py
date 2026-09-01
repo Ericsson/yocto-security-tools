@@ -8,11 +8,13 @@ import pytest
 from tests.benchmark.bench_lib import (
     EASY_MAX_MARKERS,
     HARD_MIN_FILES,
+    HONEST_OUTCOMES,
     JUDGE_REASON_MAX_CHARS,
     MEDIUM_MAX_MARKERS,
     MINOR_DIFF_LINES_THRESHOLD,
     MODELS,
     MODERATE_DIFF_LINES_THRESHOLD,
+    NON_BACKPORT_OUTCOMES,
     classify_diff_bucket,
     count_conflict_markers,
     count_conflicted_files,
@@ -25,6 +27,7 @@ from tests.benchmark.bench_lib import (
     judge_diff,
     observed_avg_credits,
     ordered_roster_cases,
+    parse_agent_outcome,
     project_remaining_cost,
     relative_cost_weight,
     resolve_models,
@@ -562,6 +565,67 @@ class TestCountToolCalls:
             "max depth: 0)\x1b[0m\n"
         )
         assert count_tool_calls(transcript) == 2
+
+
+class TestParseAgentOutcome:
+    """cve-agent's own verdict must be read from the log, not the exit code."""
+
+    def test_empty_log_is_empty_string(self):
+        assert parse_agent_outcome("") == ""
+
+    def test_no_outcome_line_is_empty_string(self):
+        # A timeout or kill leaves the log without a final verdict line.
+        assert parse_agent_outcome("Building AI context...\nStarting kiro\n") == ""
+
+    @pytest.mark.parametrize("status", [
+        "success", "conflict_resolved", "failed", "escalated", "skipped",
+    ])
+    def test_each_result_status_is_parsed(self, status):
+        assert parse_agent_outcome(f"\u2713 CVE-2024-1234: {status}\n") == status
+
+    def test_real_shape_with_trailing_detail_lines(self):
+        # cve_agent/__main__.py prints the verdict, then indented detail.
+        log = (
+            "\u26a0 Agent escalated to human review:\n"
+            "  Wrong upstream SHA: 752250caabda is already an ancestor.\n"
+            "\n"
+            "\u2713 CVE-2024-6387: escalated\n"
+            "  Max retries (3) exhausted at step 1\n"
+            "  credits: 6.16 credits\n"
+        )
+        assert parse_agent_outcome(log) == "escalated"
+
+    def test_ansi_colored_log(self):
+        log = "\x1b[0m\u2713 \x1b[38;5;10mCVE-2025-1153\x1b[0m: skipped\x1b[0m\n"
+        # The CVE id is wrapped in colour codes; stripping ANSI must expose it.
+        assert parse_agent_outcome(log) == "skipped"
+
+    def test_last_outcome_wins(self):
+        # A resumed/retried log can hold more than one verdict; the run's final
+        # word is the last one.
+        log = (
+            "\u2713 CVE-2024-1234: failed\n"
+            "\u2713 CVE-2024-1234: conflict_resolved\n"
+        )
+        assert parse_agent_outcome(log) == "conflict_resolved"
+
+    def test_unknown_status_word_is_not_matched(self):
+        # Guards against drift if ResultStatus gains a value: an unrecognised
+        # word yields '' (reported as "no outcome") rather than a bogus label.
+        assert parse_agent_outcome("\u2713 CVE-2024-1234: pending\n") == ""
+
+    def test_prose_mentioning_a_status_is_not_matched(self):
+        log = "The cherry-pick was skipped because the commit is present.\n"
+        assert parse_agent_outcome(log) == ""
+
+    def test_skipped_is_flagged_as_a_non_backport(self):
+        """The whole point: a 'skipped' run exits 0 but produced no patch."""
+        assert "skipped" in NON_BACKPORT_OUTCOMES
+        assert "conflict_resolved" not in NON_BACKPORT_OUTCOMES
+
+    def test_escalated_is_flagged_as_honest(self):
+        assert "escalated" in HONEST_OUTCOMES
+        assert "failed" not in HONEST_OUTCOMES
 
 
 class TestFilterForJudging:

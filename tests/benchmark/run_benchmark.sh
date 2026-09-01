@@ -272,7 +272,7 @@ mkdir -p "$RESULTS_DIR"
 LOG_DIR="$RESULTS_DIR"  # test_common.sh's remove_cve_patch()/compare_patches_detailed() use $LOG_DIR
 AGENT_CSV="${RESULTS_DIR}/agent_results.csv"
 JUDGE_CSV="${RESULTS_DIR}/judge_results.csv"
-[[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
+[[ -f "$AGENT_CSV" ]] || echo "cve_id,tier,model,exit_status,outcome,credits,duration_s,commands,diff_bucket,diff_lines" > "$AGENT_CSV"
 JUDGE_HEADER="cve_id,model,judgment,reason,judge_credits,scope"
 if [[ ! -f "$JUDGE_CSV" ]]; then
     echo "$JUDGE_HEADER" > "$JUDGE_CSV"
@@ -715,8 +715,24 @@ print(count_diff_changed_lines(scope_diff_to_common_files(text)))
                     fi
                 fi
 
-                echo "${cve_id},${tier},${model},${exit_status},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
-                log "  -> exit=${exit_status} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
+                # cve-agent's own verdict, read from the log rather than
+                # inferred from the exit code. The exit status collapses
+                # skipped (a "not applicable" verdict -- exit 0, but NOT a
+                # backport) with a real success, and escalated (asking for a
+                # human -- the correct outcome when the fix is out of scope)
+                # with a genuine failure. Recording it keeps those four
+                # distinguishable in the report.
+                local outcome=""
+                if [[ -f "$run_log" ]]; then
+                    outcome=$(python3 -c "
+from tests.benchmark.bench_lib import parse_agent_outcome
+with open('${run_log}', encoding='utf-8', errors='replace') as f:
+    print(parse_agent_outcome(f.read()))
+")
+                fi
+
+                echo "${cve_id},${tier},${model},${exit_status},${outcome},${credits},${duration_s},${commands},${diff_bucket},${diff_lines}" >> "$AGENT_CSV"
+                log "  -> exit=${exit_status} outcome=${outcome:-?} credits=${credits} duration=${duration_s}s commands=${commands} bucket=${diff_bucket} diff_lines=${diff_lines}"
 
                 # Save the agent's generated patch(es) for later evaluation
                 # before the reset wipes them from the tree.

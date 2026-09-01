@@ -167,10 +167,16 @@ them per-model right after reading the bucket/diff_lines.)
 ### `agent_results.csv`
 
 ```
-cve_id,tier,model,exit_status,credits,duration_s,commands,diff_bucket,diff_lines
+cve_id,tier,model,exit_status,outcome,credits,duration_s,commands,diff_bucket,diff_lines
 ```
 
 - `exit_status` — `0` for a clean cve-agent run, `TIMEOUT`, or the raw exit code
+- `outcome` — cve-agent's **own** verdict (`cve_agent.ResultStatus`), read from the run log by `bench_lib.parse_agent_outcome`: `conflict_resolved`, `success`, `skipped`, `escalated`, or `failed`. Empty when the log has no verdict line (timeout, kill, environment failure). **Read this rather than `exit_status`** — the exit code collapses four meaningfully different results into two:
+  - `skipped` exits **0** but produced no patch at all; the model judged the CVE *not applicable*. If that judgement is wrong, a live vulnerability was dismissed and the run still looks like a pass. The report lists every one of these under "Not-Applicable Verdicts (verify these)".
+  - `escalated` exits **14** but is the *intended* result when the fix cannot be made within the allowed file scope — the model declined to guess and asked for a human.
+  - Only `failed` is an outright breakage, and only `conflict_resolved`/`success` are real backports.
+
+  Ranking models on `exit_status` therefore rewards a confident wrong dismissal over a correct refusal to guess. Results directories predating this column still generate a report; their rows count as "no outcome".
 - `credits` — parsed from cve-agent's kiro-cli output (`cve_agent.metrics.parse_kiro_credits`); empty if unavailable
 - `duration_s` — wall-clock seconds measured by the script
 - `commands` — tool-call count from the captured log (`bench_lib.count_tool_calls`)
@@ -449,9 +455,14 @@ python3 generate_benchmark_report.py test-results/bench_20260814_120000
 ```
 
 Produces `benchmark_report.md` (or `-o <path>`) with a per-model summary
-(total credits, avg duration, avg commands, run count), a per-tier bucket
-distribution table, and a meaningful-vs-stylistic split for the judged
-moderate/major/partial subset.
+(total credits, avg duration, avg commands, run count), a **per-model outcome
+distribution** (resolved / skipped / escalated / failed — see the `outcome`
+column above for why this and not the exit status), a per-tier bucket
+distribution table, a meaningful-vs-stylistic split for the judged subset, and
+a **"Not-Applicable Verdicts"** audit listing every CVE a model declared
+inapplicable, with how many of the models that ran it agreed. A CVE dismissed
+by some models but backported by others is the cheapest available signal that
+one side is wrong.
 
 ## Files
 
