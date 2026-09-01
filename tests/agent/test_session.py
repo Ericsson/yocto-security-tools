@@ -82,3 +82,54 @@ def test_expand_no_false_positives(tmp_path):
     expanded = _expand_path_variants(allowed, ws)
     assert "bar.c" not in expanded
     assert "missing.c" not in expanded
+
+
+def test_expand_finds_file_moved_between_branches(tmp_path):
+    """A stable branch keeping a file at another path is still in scope.
+
+    libsoup 3.x holds websocket sources in libsoup/websocket/; the 2.4 branch
+    that the libsoup-2.4 recipe builds keeps them flat in libsoup/. Scope
+    derived from a 3.x commit named a path absent from the 2.4 tree, so the
+    agent could not edit the one file it needed (CVE-2024-52532).
+    """
+    ws = tmp_path / "workspace"
+    (ws / "libsoup").mkdir(parents=True)
+    (ws / "libsoup" / "soup-websocket-connection.c").write_text("")
+    allowed = {"libsoup/websocket/soup-websocket-connection.c"}
+    expanded = _expand_path_variants(allowed, ws)
+    assert "libsoup/soup-websocket-connection.c" in expanded
+    # The upstream path is still kept, so the hook accepts either spelling.
+    assert "libsoup/websocket/soup-websocket-connection.c" in expanded
+
+
+def test_expand_ignores_ambiguous_basename(tmp_path):
+    """An ambiguous basename must not silently widen scope to the wrong file."""
+    ws = tmp_path / "workspace"
+    (ws / "a").mkdir(parents=True)
+    (ws / "b").mkdir(parents=True)
+    (ws / "a" / "Makefile").write_text("")
+    (ws / "b" / "Makefile").write_text("")
+    expanded = _expand_path_variants({"upstream/dir/Makefile"}, ws)
+    assert "a/Makefile" not in expanded
+    assert "b/Makefile" not in expanded
+
+
+def test_expand_does_not_search_when_path_already_exists(tmp_path):
+    """An existing upstream path needs no moved-file search."""
+    ws = tmp_path / "workspace"
+    (ws / "libsoup" / "websocket").mkdir(parents=True)
+    (ws / "libsoup" / "websocket" / "conn.c").write_text("")
+    # A decoy at another path must not be pulled into scope.
+    (ws / "other").mkdir()
+    (ws / "other" / "conn.c").write_text("")
+    expanded = _expand_path_variants({"libsoup/websocket/conn.c"}, ws)
+    assert "other/conn.c" not in expanded
+
+
+def test_expand_skips_git_directory_when_searching(tmp_path):
+    """A match inside .git is not a source file and must be ignored."""
+    ws = tmp_path / "workspace"
+    (ws / ".git").mkdir(parents=True)
+    (ws / ".git" / "config.c").write_text("")
+    expanded = _expand_path_variants({"src/config.c"}, ws)
+    assert ".git/config.c" not in expanded

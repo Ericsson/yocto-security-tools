@@ -8,6 +8,7 @@ post-session revert of unauthorized changes), and the commit-msg hook that
 enforces the backport-note length budget.
 """
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -125,13 +126,64 @@ def upstream_changed_files(workspace_path: Path, sha: str) -> set[str]:
 
 _COMMON_PREFIXES = ('src/', 'lib/', 'source/')
 
+# Directories never worth scanning when hunting for a moved file's new home.
+_MOVED_FILE_SKIP_DIRS = frozenset({
+    '.git', 'build', 'dist', '__pycache__', 'node_modules', '.pc',
+})
+
+# Upper bound on tree entries examined while resolving a moved path. A CVE fix
+# touches a handful of files; walking a huge tree repeatedly would cost more
+# than the lookup is worth.
+_MOVED_FILE_SCAN_LIMIT = 20000
+
+
+def _find_moved_file(filename: str, workspace_path: Path) -> Optional[str]:
+    """Locate a uniquely-named file that upstream keeps at a different path.
+
+    Stable branches and upstream master often disagree on layout. libsoup is
+    the case that motivated this: 3.x keeps websocket sources in
+    ``libsoup/websocket/``, while the 2.4 branch (the ``libsoup-2.4`` recipe)
+    keeps them flat in ``libsoup/``. An allowed-files list derived from a 3.x
+    commit therefore names a path that does not exist in the tree being
+    patched, leaving the agent unable to edit the very file it must fix -- in
+    bench_20260831_140123 that cost four of five models an escalation on
+    CVE-2024-52532, one of them trying to `mkdir` the upstream directory.
+
+    Only an **unambiguous** match counts: if the basename occurs more than once
+    in the tree (``Makefile``, ``meson.build``, ...) there is no way to tell
+    which is meant, and widening scope to the wrong file is worse than leaving
+    it out.
+
+    Args:
+        filename: Basename to search for.
+        workspace_path: Root of the tree to search.
+
+    Returns:
+        The single matching path relative to ``workspace_path``, or ``None``
+        when there is no match or more than one.
+    """
+    matches: list[str] = []
+    scanned = 0
+    for root, dirs, files in os.walk(workspace_path):
+        dirs[:] = [d for d in dirs if d not in _MOVED_FILE_SKIP_DIRS]
+        scanned += len(files)
+        if scanned > _MOVED_FILE_SCAN_LIMIT:
+            return None
+        if filename in files:
+            matches.append(
+                str((Path(root) / filename).relative_to(workspace_path)))
+            if len(matches) > 1:
+                return None
+    return matches[0] if len(matches) == 1 else None
+
 
 def expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
     """Expand allowed paths to include variants with/without common prefixes.
 
     If upstream uses src/foo.c but workspace has foo.c (or vice versa),
     include both so the scope guard doesn't reject the agent's work.
-    Also handles monorepo subprojects/ prefixes (e.g. gstreamer).
+    Also handles monorepo subprojects/ prefixes (e.g. gstreamer), and files
+    the stable branch keeps at a different path than upstream master.
 
     Args:
         allowed: Paths taken from the upstream commit(s).
@@ -159,6 +211,14 @@ def expand_path_variants(allowed: set[str], workspace_path: Path) -> set[str]:
                 prefixed = prefix + filepath
                 if (workspace_path / prefixed).exists():
                     expanded.add(prefixed)
+
+        # Last resort: upstream's path is absent here and no prefix rule found
+        # it, so the file may simply live elsewhere on this branch. Only accept
+        # a unique basename match.
+        if not (workspace_path / filepath).exists():
+            moved = _find_moved_file(Path(filepath).name, workspace_path)
+            if moved:
+                expanded.add(moved)
     return expanded
 
 
