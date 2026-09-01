@@ -383,6 +383,15 @@ class TestFetchGitlabIssueCommits:
 
 
 class TestDeduceRepoUrl:
+    def test_busybox_cgit_commit_url(self):
+        url = ("https://git.busybox.net/busybox/commit/"
+               "?id=3fb6b31c716669e12f75a2accd31bb7685b1a1cb")
+        assert deduce_repo_url(url) == "https://git.busybox.net/busybox"
+
+    def test_busybox_cgit_lookalike_host_rejected(self):
+        url = "https://git.busybox.net.evil.example/busybox/commit/?id=abc1234"
+        assert deduce_repo_url(url) is None
+
     def test_sourceware_cgit_commit_url(self):
         # Regression: CVE-2026-42250 fix commit lived in the bzip2 source repo,
         # exposed via a /cgit/ URL that previously deduced to None.

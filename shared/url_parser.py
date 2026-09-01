@@ -343,6 +343,14 @@ def deduce_repo_url(url: str) -> Optional[str]:
     if 'sourceware.org' in host:
         return None  # lookalike host
 
+    # BusyBox's canonical cgit uses /<repo>/commit/?id=<sha>, while the Git
+    # endpoint is the same URL with the commit-view suffix removed.
+    if host == 'git.busybox.net':
+        parts = [part for part in parsed.path.split('/') if part]
+        if len(parts) >= 2 and parts[1] in _COMMIT_VIEW_SEGMENTS:
+            return f'{parsed.scheme}://{parsed.netloc}/{parts[0]}'
+        return None
+
     # Strip commit/PR/MR path suffixes to get base repo URL
     base_url = (url.replace("gitweb.cgi?p=", "")
                 .split("-/commit")[0].split("-/merge_requests")[0]

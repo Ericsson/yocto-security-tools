@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for cve_corrector.workflow — workflow functions."""
 import json
-import logging
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -27,6 +27,7 @@ from cve_corrector.recipe_ops import sort_cve_lines_in_recipe
 from cve_corrector.state import (
     BuildError,
     ConflictError,
+    GitError,
     MetadataError,
     PatchError,
     PtestError,
@@ -1262,6 +1263,109 @@ class TestSetupUpstreamRemoteFixSource:
             if len(c.args) and isinstance(c.args[0], list)
             and 'upstream-fix' in c.args[0]]
         assert not fix_calls, "should not add a fix remote when repos match"
+
+    @patch("cve_corrector.workspace._commit_exists", side_effect=[False, True])
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_fetches_canonical_source_when_local_mirror_lacks_fix(
+            self, mock_fetch, _mock_exists, tmp_path):
+        """A present but stale mirror must not turn valid fixes into bad objects."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "busybox"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+
+        setup_upstream_remote(
+            ws, mirror, None, "busybox",
+            hash_details=[{
+                "hash": "3fb6b31c716669e12f75a2accd31bb7685b1a1cb",
+                "url": ("https://git.busybox.net/busybox/commit/"
+                        "?id=3fb6b31c716669e12f75a2accd31bb7685b1a1cb"),
+            }],
+        )
+
+        fix_url = subprocess.run(
+            ["git", "remote", "get-url", "upstream-fix"],
+            cwd=ws, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        assert fix_url == "https://git.busybox.net/busybox"
+        assert any(call.args[1] == "upstream-fix" for call in mock_fetch.call_args_list)
+
+    @patch("cve_corrector.workspace._commit_exists",
+           side_effect=[True, False, True])
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_fetches_repository_for_each_missing_hash(
+            self, mock_fetch, _mock_exists, tmp_path):
+        """A present first hash must not select its repo for a missing second hash."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        sha_a = "a" * 40
+        sha_b = "b" * 40
+
+        setup_upstream_remote(
+            ws,
+            mirror,
+            None,
+            "mixed-fix",
+            hash_details=[
+                {
+                    "hash": sha_a,
+                    "url": f"https://github.com/example/repo-a/commit/{sha_a}",
+                },
+                {
+                    "hash": sha_b,
+                    "url": f"https://github.com/example/repo-b/commit/{sha_b}",
+                },
+            ],
+        )
+
+        fix_url = subprocess.run(
+            ["git", "remote", "get-url", "upstream-fix"],
+            cwd=ws,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert fix_url == "https://github.com/example/repo-b"
+        fix_fetches = [
+            call for call in mock_fetch.call_args_list
+            if call.args[1].startswith("upstream-fix")
+        ]
+        assert [call.args[2] for call in fix_fetches] == [
+            "https://github.com/example/repo-b"]
+
+    @patch("cve_corrector.workspace._commit_exists",
+           side_effect=[False, False])
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_rejects_fix_hash_still_missing_after_fetch(
+            self, _mock_fetch, _mock_exists, tmp_path):
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        commit_hash = "c" * 40
+
+        with pytest.raises(GitError, match="Missing fix commit"):
+            setup_upstream_remote(
+                ws,
+                mirror,
+                None,
+                "missing-fix",
+                hash_details=[{
+                    "hash": commit_hash,
+                    "url": (
+                        "https://github.com/example/repo/commit/"
+                        f"{commit_hash}"
+                    ),
+                }],
+            )
 
 
 class TestProtocolFallback:
