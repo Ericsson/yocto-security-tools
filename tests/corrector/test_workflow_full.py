@@ -244,12 +244,39 @@ class TestCopyMissingFilesFromDevtool:
 
 class TestApplySingleCommits:
     @patch("cve_corrector.cherry_pick.try_cherry_pick", return_value=True)
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
     @patch("cve_corrector.cherry_pick.run_cmd_capture",
            return_value=MagicMock(stdout="other stuff"))
     def test_success(self, *_):
         ok, h = apply_single_commits(Path("/ws"), ["abc"])
         assert ok and h == "abc"
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.try_cherry_pick", return_value=True)
+    @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
+    @patch("cve_corrector.cherry_pick.run_cmd_capture",
+           return_value=MagicMock(stdout=""))
+    def test_skips_a_commit_already_in_history(self, mock_capture, mock_bad,
+                                              mock_pick, mock_cmd):
+        """An ancestor of HEAD is never cherry-picked.
+
+        Regression test for the CVE-2024-6387 shape: the metadata's first hash
+        was the commit that *introduced* the vulnerability, already shipped in
+        the recipe's version. Replaying it produced a 30-conflict, 7-file mess
+        that looked like a legitimately hard backport, and resolving it toward
+        the incoming side would have reverted later hardening.
+        """
+        with patch("cve_corrector.cherry_pick.is_ancestor_of_head",
+                   side_effect=lambda _ws, h: h == "752250caa"):
+            ok, chosen = apply_single_commits(
+                Path("/ws"), ["752250caa", "81c1099d2"])
+
+        assert ok
+        # The real fix was taken, not the introducer.
+        assert chosen == "81c1099d2"
+        picked = [c[0][1] for c in mock_pick.call_args_list]
+        assert "752250caa" not in picked
 
     @patch("cve_corrector.cherry_pick.run_cmd_capture",
            return_value=MagicMock(stdout="abc12345 already here"))
@@ -259,6 +286,7 @@ class TestApplySingleCommits:
 
     @patch("cve_corrector.cherry_pick.run_cmd")
     @patch("cve_corrector.cherry_pick.try_cherry_pick", return_value=False)
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
     @patch("cve_corrector.cherry_pick.run_cmd_capture",
            return_value=MagicMock(stdout=""))
@@ -280,8 +308,10 @@ class TestFindLeastConflictCommit:
     @patch("cve_corrector.cherry_pick.has_conflict_state", return_value=True)
     @patch("cve_corrector.cherry_pick.cherry_pick_command",
            side_effect=lambda ws, h: ["git", "cherry-pick", h])
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
-    def test_finds_best(self, mock_bad, mock_pick, mock_state, mock_capture, mock_cmd):
+    def test_finds_best(self, mock_bad, mock_anc, mock_pick, mock_state,
+                        mock_capture, mock_cmd):
         mock_capture.side_effect = [
             MagicMock(returncode=1, stderr=""),  # cherry-pick first (conflicts)
             MagicMock(stdout="a.c\nb.c\n"),  # 2 conflicts for first
@@ -299,9 +329,10 @@ class TestFindLeastConflictCommit:
     @patch("cve_corrector.cherry_pick.has_conflict_state", return_value=False)
     @patch("cve_corrector.cherry_pick.cherry_pick_command",
            side_effect=lambda ws, h: ["git", "cherry-pick", h])
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
-    def test_skips_pick_that_never_started(self, mock_bad, mock_pick, mock_state,
-                                          mock_capture, mock_cmd):
+    def test_skips_pick_that_never_started(self, mock_bad, mock_anc, mock_pick,
+                                          mock_state, mock_capture, mock_cmd):
         """A rejected cherry-pick must not be scored as "0 conflicts"."""
         mock_capture.side_effect = [
             MagicMock(returncode=128, stderr="is a merge but no -m option"),
@@ -310,6 +341,35 @@ class TestFindLeastConflictCommit:
         best, count = find_least_conflict_commit(Path("/ws"), ["h1"])
         assert best is None
         assert count == float("inf")
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.has_conflict_state", return_value=True)
+    @patch("cve_corrector.cherry_pick.cherry_pick_command",
+           side_effect=lambda ws, h: ["git", "cherry-pick", h])
+    @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
+    def test_ancestor_of_head_is_not_a_candidate(self, mock_bad, mock_pick,
+                                                 mock_state, mock_capture,
+                                                 mock_cmd):
+        """An already-shipped commit must not win the least-conflict contest.
+
+        This is where the CVE-2024-6387 introducer was most dangerous: replaying
+        superseded code can score *fewer* conflicts than the real fix's genuine
+        adaptation work, so without this guard it is actively preferred.
+        """
+        mock_capture.side_effect = [
+            MagicMock(returncode=1, stderr=""),   # cherry-pick h2 (conflicts)
+            MagicMock(stdout="a.c\n"),            # 1 conflict
+            MagicMock(stdout="a.c\n"),            # diff-tree: source file
+        ]
+        with patch("cve_corrector.cherry_pick.is_ancestor_of_head",
+                   side_effect=lambda _ws, h: h == "ancestor"):
+            best, count = find_least_conflict_commit(
+                Path("/ws"), ["ancestor", "h2"])
+
+        assert best == "h2"
+        # The ancestor was never even probed.
+        assert "ancestor" not in [c[0][1] for c in mock_pick.call_args_list]
 
 
 class TestCherryPickToDevtool:

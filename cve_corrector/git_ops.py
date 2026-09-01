@@ -169,6 +169,40 @@ def is_bad_object(workspace_path: Path, commit_hash: str) -> bool:
     return result.returncode != 0
 
 
+def is_ancestor_of_head(workspace_path: Path, commit_hash: str) -> bool:
+    """Check whether a commit is already reachable from HEAD.
+
+    A commit that is already in the branch's history cannot be the fix being
+    backported: it shipped in this version. Re-applying one is not merely a
+    no-op, it is actively misleading — git replays a stale version of the code
+    against the newer state that superseded it, producing a large conflict that
+    looks like a hard-but-legitimate backport.
+
+    CVE-2024-6387 (regreSSHion) is the case that motivated this check: the
+    metadata's first hash, 752250caa ("revised log infrastructure", 2020), is
+    the commit Qualys identified as *introducing* the regression, and it is an
+    ancestor of openssh 9.6p1. Cherry-picking it produced 30 conflicts across
+    7 files, and resolving them by taking the incoming side would have reverted
+    later hardening.
+
+    Args:
+        workspace_path: Path to the git repository.
+        commit_hash: Commit to test.
+
+    Returns:
+        ``True`` if ``commit_hash`` is an ancestor of (or identical to) HEAD.
+        ``False`` when it is not, or when the check cannot be run (unknown
+        object, no HEAD yet) — callers treat that as "not an ancestor" so a
+        failed probe never silently discards a candidate.
+    """
+    result = run_cmd_capture(
+        ['git', 'merge-base', '--is-ancestor', commit_hash, 'HEAD'],
+        cwd=workspace_path)
+    # git exits 0 for "is an ancestor", 1 for "is not", and >1 for a genuine
+    # error (bad object, no HEAD). Only 0 is a positive answer.
+    return result.returncode == 0
+
+
 def is_merge_commit(workspace_path: Path, commit_hash: str) -> bool:
     """Check whether a commit has more than one parent.
 

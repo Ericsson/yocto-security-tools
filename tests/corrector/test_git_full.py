@@ -9,6 +9,7 @@ from cve_corrector.git_ops import (
     checkout_version,
     detect_monorepo_subproject,
     get_git_user_info,
+    is_ancestor_of_head,
     is_bad_object,
     try_cherry_pick,
 )
@@ -99,6 +100,33 @@ class TestIsBadObject:
             MagicMock(returncode=0),  # second cat-file
         ]
         assert is_bad_object(Path("/repo"), "abc123") is False
+
+
+class TestIsAncestorOfHead:
+    """A commit already in history cannot be the fix being backported."""
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_ancestor_returns_true(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert is_ancestor_of_head(Path("/repo"), "752250caa") is True
+        assert mock_run.call_args[0][0] == [
+            'git', 'merge-base', '--is-ancestor', '752250caa', 'HEAD']
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_not_an_ancestor_returns_false(self, mock_run):
+        # git exits 1 for a definite "no".
+        mock_run.return_value = MagicMock(returncode=1)
+        assert is_ancestor_of_head(Path("/repo"), "81c1099d2") is False
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_probe_error_is_not_treated_as_ancestor(self, mock_run):
+        """A failed probe must not silently discard a candidate commit.
+
+        git uses >1 for a real error (unknown object, no HEAD); only 0 means
+        "yes". Treating an error as True would drop a viable fix.
+        """
+        mock_run.return_value = MagicMock(returncode=128)
+        assert is_ancestor_of_head(Path("/repo"), "deadbeef") is False
 
 
 class TestTryCherryPick:
