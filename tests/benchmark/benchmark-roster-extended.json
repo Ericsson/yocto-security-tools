@@ -97,13 +97,6 @@
     "recipe": "python3-urllib3",
     "tier": "medium"
   },
-  "CVE-2025-64505": {
-    "conflict_markers": 20,
-    "exit_code": 1,
-    "files_involved": 18,
-    "recipe": "libpng",
-    "tier": "hard"
-  },
   "CVE-2026-21441": {
     "conflict_markers": 3,
     "exit_code": 1,
