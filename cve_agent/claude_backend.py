@@ -79,6 +79,7 @@ _ALLOWED_TOOLS = (
     "Bash(git restore --staged:*)",
     "Bash(git checkout --ours:*)",
     "Bash(git checkout --theirs:*)",
+    "Bash(git checkout original-version:*)",
     "Bash(git commit -m:*)",
     "Bash(git commit -F:*)",
     "Bash(git commit --amend:*)",

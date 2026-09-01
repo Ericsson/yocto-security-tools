@@ -14,6 +14,11 @@ Resolve each conflicted file. Three shapes come up, cheapest-correct first:
    git checkout --theirs <file>   # keep the upstream (cherry-picked) side
    git checkout --ours <file>     # keep the stable-branch side
    ```
+   Beware `--theirs` on a file that diverged heavily: it imports upstream's
+   *whole* file, which may reference APIs this stable branch does not have, and
+   the build then fails on hundreds of unrelated errors. If that happens,
+   `git checkout original-version -- <file>` puts the stable file back, and you
+   can port just the fix's own hunks onto it.
 2. **Partial resolution** — neither side is right alone: edit the file with your
    editing tool, removing all conflict markers.
 3. **Drop a path** — if upstream deletes a file, `git rm <file>`. If a conflicted

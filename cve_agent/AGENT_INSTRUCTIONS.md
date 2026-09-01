@@ -76,6 +76,12 @@ Bash commands you CAN run:
   `git restore --staged <path>...`.
 - Take one side of a conflict wholesale: `git checkout --ours <path>...`,
   `git checkout --theirs <path>...`.
+- Restore a file to its pre-cherry-pick content:
+  `git checkout original-version -- <path>...`. Only the `original-version`
+  ref is permitted — this rolls a tracked file back to the stable branch's
+  version, it cannot fetch content from an arbitrary revision. Use it when a
+  wholesale `--theirs` pulled in a newer file than the branch can build, then
+  port only the fix's own hunks onto the restored file.
 - Cherry-pick: `git cherry-pick <sha>` (start a fresh cherry-pick, e.g. `git
   cherry-pick -x <sha>` for a prerequisite), `git cherry-pick
   --continue|--no-edit --continue|--abort|--skip`, `git am --continue|--abort`.
@@ -97,6 +103,7 @@ Notes on the allow-list's exact shapes:
 
 - Pathspec commands accept **several** paths in one call
   (`git restore --staged a.c b.c`, `git checkout --theirs a.c b.c`,
+  `git checkout original-version -- a.c b.c`,
   `git status --porcelain -- a.c b.c`), but every path must be
   whitespace-separated and must not start with `-`. `git rm` remains one path
   per invocation. A trailing flag such as `git restore --staged a.c --worktree`
@@ -260,16 +267,30 @@ only its content changes. This covers almost every "the cherry-pick brought in
 too much" situation, because the fix is to *delete* the unwanted hunks.
 
 **Case 3 — you need a file back exactly as it was before the cherry-pick.**
-Its pre-cherry-pick content is at the `original-version` tag. Capture it to a
-log in the agent dir, read that with your file-reading tool, and write the
-needed parts back with your file-editing tool:
+Its pre-cherry-pick content is at the `original-version` tag. Restore it
+directly:
+```bash
+git checkout original-version -- <path>...
+```
+Then re-apply just the parts of the fix that belong, `git add <path>...`, and
+`git commit --amend --no-edit`. This is the right move when the cherry-pick
+took a whole file wholesale (e.g. via `--theirs`) and pulled in APIs the stable
+branch does not have: restore the stable file, then port only the fix's own
+hunks onto it.
+
+`git checkout` is restricted to the `original-version` ref, so it can only ever
+roll a tracked file back to its pre-cherry-pick state — it cannot pull content
+from an arbitrary revision. `git restore <path>` (without `--staged`) remains
+unavailable.
+
+To inspect the pre-image without overwriting your working copy, capture it to a
+log in the agent dir and read that with your file-reading tool:
 ```bash
 git show original-version:<path> | tee <agent_dir>/pre-image.log
 ```
-Then `git add <path>` and `git commit --amend --no-edit`. Use targeted
-replacements against the pre-image rather than retyping a large file. `git
-restore <path>` (without `--staged`) is not available, so this `tee` +
-file-tool route is the sanctioned way to recover committed content.
+Prefer `git checkout original-version -- <path>` when you want the file back;
+that avoids retyping a large file through your file-editing tool, which is not
+viable for files of more than a few hundred lines.
 
 **Case 4 — the wrong commit was cherry-picked altogether** (wrong SHA, or a
 commit vastly larger than the upstream fix). Confirm the mismatch first:
