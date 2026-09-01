@@ -90,9 +90,11 @@ class TestSubmoduleBaseUrl:
             returncode=0, stdout='/home/user/git/glib\n')
         base = _submodule_base_url(tmp_path, [{
             'url': 'https://gitlab.gnome.org/GNOME/glib/-/commit/abc123'}])
-        assert base is not None
-        assert 'gitlab.gnome.org' in base
-        assert not base.startswith('/')
+        # Assert the exact base rather than a substring: a substring check
+        # would also pass for a URL that merely mentions the host somewhere
+        # (e.g. a local path with it in a query string), which is the whole
+        # thing this test needs to rule out.
+        assert base == 'https://gitlab.gnome.org/GNOME/glib'
 
 
 class TestInitSubmodulesUrlOverride:
