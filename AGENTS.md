@@ -42,8 +42,8 @@
         ├── bench_lib.py          # Pure-Python helpers (tiering, cost weight, judge call)
         ├── benchmark-roster.json # Committed default resolution roster, 6 CVEs (--roster default)
         ├── benchmark-roster-balanced.json  # Committed 8-CVE resolution roster, 3/2/3 (--roster balanced)
-        ├── benchmark-roster-extended.json  # Committed 21-CVE resolution roster superset (--roster extended)
-        └── benchmark-roster-clean-apply.json  # Committed 5-CVE no-conflict roster, separate schema (--roster clean-apply)
+        ├── benchmark-roster-extended.json  # Committed 20-CVE resolution roster superset (--roster extended)
+        └── benchmark-roster-clean-apply.json  # Committed 6-CVE no-conflict roster, separate schema (--roster clean-apply)
 ```
 
 ## Key Abstractions

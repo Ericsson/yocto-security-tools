@@ -14,7 +14,7 @@
     "tier": "easy"
   },
   "CVE-2025-1153": {
-    "conflict_markers": 45,
+    "conflict_markers": 52,
     "exit_code": 1,
     "files_involved": 28,
     "recipe": "binutils",

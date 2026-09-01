@@ -28,9 +28,9 @@
     "tier": "easy"
   },
   "CVE-2024-6387": {
-    "conflict_markers": 23,
+    "conflict_markers": 18,
     "exit_code": 1,
-    "files_involved": 14,
+    "files_involved": 9,
     "recipe": "openssh",
     "tier": "hard"
   },
@@ -42,7 +42,7 @@
     "tier": "easy"
   },
   "CVE-2025-1153": {
-    "conflict_markers": 45,
+    "conflict_markers": 52,
     "exit_code": 1,
     "files_involved": 28,
     "recipe": "binutils",
@@ -54,13 +54,6 @@
     "files_involved": 22,
     "recipe": "binutils",
     "tier": "hard"
-  },
-  "CVE-2025-24857": {
-    "conflict_markers": 0,
-    "exit_code": 1,
-    "files_involved": 0,
-    "recipe": "u-boot-tools",
-    "tier": "easy"
   },
   "CVE-2025-4674": {
     "conflict_markers": 12,
@@ -84,7 +77,7 @@
     "tier": "hard"
   },
   "CVE-2025-47273": {
-    "conflict_markers": 6,
+    "conflict_markers": 7,
     "exit_code": 1,
     "files_involved": 5,
     "recipe": "python3-setuptools",
@@ -105,16 +98,16 @@
     "tier": "easy"
   },
   "CVE-2026-24049": {
-    "conflict_markers": 2,
+    "conflict_markers": 3,
     "exit_code": 1,
     "files_involved": 2,
     "recipe": "python3-wheel",
     "tier": "easy"
   },
   "CVE-2026-26007": {
-    "conflict_markers": 16,
+    "conflict_markers": 10,
     "exit_code": 1,
-    "files_involved": 13,
+    "files_involved": 7,
     "recipe": "python3-cryptography",
     "tier": "hard"
   },
