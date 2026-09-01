@@ -135,8 +135,17 @@ def _git_apply_patch(workspace_path: Path, patch: Path, cve_id: str,
         ['git', 'apply', f'-p{strip_level}', '-C0', str(patch)],
         ['git', 'apply', f'-p{strip_level}', '--3way', str(patch)],
     ]
+    # When git am has already failed, this is the last thing standing between
+    # a resolved conflict and an unrecoverable PatchError -- so log why each
+    # variant refused the patch. Silently returning False here made an
+    # over-broad AI resolution (one that no longer matches the tree it must
+    # replay onto) indistinguishable from a genuinely malformed patch.
+    errors = []
     for apply_args in variants:
-        if run_cmd_capture(apply_args, cwd=workspace_path).returncode != 0:
+        result = run_cmd_capture(apply_args, cwd=workspace_path)
+        if result.returncode != 0:
+            errors.append(f"{' '.join(apply_args[1:-1])}: "
+                          f"{result.stderr.strip() or 'no stderr'}")
             continue
         run_cmd(['git', 'add', '-A'], cwd=workspace_path)
         run_cmd_capture(
@@ -144,6 +153,8 @@ def _git_apply_patch(workspace_path: Path, patch: Path, cve_id: str,
             cwd=workspace_path)
         logger.info("Applied %s via %s", patch.name, ' '.join(apply_args[1:-1]))
         return True
+    logger.warning("git apply could not apply %s; tried %s variant(s): %s",
+                   patch.name, len(variants), ' | '.join(errors))
     return False
 
 
@@ -194,6 +205,13 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
             p for p in (1, 2, 3) if p != strip_level
         ]
         am_result = None
+        # Every attempt's stderr, in order tried, as (label, stderr) pairs.
+        # Without this, `am_result` holds only the LAST attempt's error -- and
+        # since the loop ends on `-p3 --3way`, a patch that genuinely failed at
+        # the detected strip level for an unrelated reason gets reported as
+        # "lacks filename information when removing 3 leading pathname
+        # components", which describes only the final, least-relevant attempt.
+        am_failures: list[tuple[str, str]] = []
         for p_level in strip_levels:
             am_cmd = ['git', 'am', f'-p{p_level}']
             am_result = run_cmd_capture(
@@ -205,6 +223,7 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
                                 p_level, strip_level)
                 break
             logger.debug("git am -p%s failed: %s", p_level, am_result.stderr[:200])
+            am_failures.append((f'-p{p_level}', am_result.stderr))
             run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
             # Try with --3way at this level
             am_result = run_cmd_capture(
@@ -215,6 +234,9 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
                     logger.info("Strip level %s (3way) worked (detected %s)",
                                 p_level, strip_level)
                 break
+            logger.debug("git am -p%s --3way failed: %s",
+                         p_level, am_result.stderr[:200])
+            am_failures.append((f'-p{p_level} --3way', am_result.stderr))
             run_cmd(['git', 'am', '--abort'], cwd=state.workspace_path)
 
         if am_result and am_result.returncode != 0:
@@ -245,9 +267,23 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
             if pre_apply:
                 run_cmd(['git', 'reset', '--hard', pre_apply], cwd=state.workspace_path)
 
-            logger.error("git am failed at all strip levels: %s", am_result.stderr)
+            # Report the attempt at the DETECTED strip level, not the last one
+            # tried: the alternate levels are speculative retries, and their
+            # "lacks filename information" complaints are an artifact of
+            # stripping too many path components rather than the real problem.
+            if am_failures:
+                primary_label, primary_err = am_failures[0]
+            else:
+                primary_label, primary_err = f'-p{strip_level}', am_result.stderr
+            tried = ', '.join(label for label, _ in am_failures)
+            logger.error("git am failed at all strip levels (tried: %s); "
+                         "error at detected level %s: %s",
+                         tried, primary_label, primary_err)
             save_progress(state, 'cherry_pick_to_devtool')
-            raise PatchError(f"git am --3way failed: {am_result.stderr}")
+            raise PatchError(
+                f"git am {primary_label} failed: {primary_err.strip()} "
+                f"(also tried: {tried}; then direct cherry-pick and git apply)")
+
 
 
 def apply_series(workspace_path: Path,

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for cve_corrector.workflow — workflow functions."""
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -443,6 +444,91 @@ class TestCherryPickToDevtool:
                        if c[0][0][:3] == ['git', 'reset', '--hard']]
         assert reset_calls and reset_calls[-1][0][0][-1] == 'oldhead'
         mock_save.assert_called_once()
+
+    @patch("cve_corrector.cherry_pick.save_progress")
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    @patch("cve_corrector.cherry_pick.get_repo_subdir", return_value=None)
+    @patch("cve_corrector.cherry_pick.git_clean_workspace")
+    def test_error_reports_detected_strip_level_not_last_attempt(
+            self, mock_clean, mock_subdir, mock_capture, mock_cmd,
+            mock_save, tmp_path):
+        """PatchError quotes the -p1 failure, not -p3's path-stripping artifact.
+
+        Regression test: the retry loop overwrote a single `am_result`, so the
+        raised error always described the final `-p3 --3way` attempt. For a
+        patch whose real problem is at the detected strip level, that surfaced
+        a misleading "lacks filename information when removing 3 leading
+        pathname components" instead of the actual cause.
+        """
+        state = _state(tmp_path)
+        patch_content = ("From abc\nSubject: fix\n\ndiff --git a/f.c b/f.c\n"
+                         "--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-old\n+new\n")
+        patch_dir_path = tmp_path / "patches"
+        patch_dir_path.mkdir()
+        (patch_dir_path / "0001-fix.patch").write_text(patch_content)
+
+        mock_cmd.return_value = 0
+        real_cause = MagicMock(
+            returncode=1, stderr="error: patch does not apply")
+        p3_artifact = MagicMock(
+            returncode=1,
+            stderr=("error: git diff header lacks filename information when "
+                    "removing 3 leading pathname components (line 14)"))
+        fail = MagicMock(returncode=1, stderr="error: patch failed")
+        mock_capture.side_effect = [
+            MagicMock(returncode=0, stdout="+ c1\n"),      # git cherry
+            MagicMock(returncode=0, stdout=""),            # format-patch
+            real_cause, real_cause,                        # -p1, -p1 --3way
+            fail, fail,                                    # -p2, -p2 --3way
+            p3_artifact, p3_artifact,                      # -p3, -p3 --3way
+            fail,                                          # cherry-pick c1
+            MagicMock(returncode=0, stdout="oldhead\n"),   # rev-parse HEAD
+            fail, fail, fail,                              # git apply variants
+        ]
+
+        from cve_corrector.state import PatchError
+        with patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+            mock_tmpdir.return_value.__enter__ = lambda s: str(patch_dir_path)
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+            with pytest.raises(PatchError) as exc:
+                cherry_pick_to_devtool(state)
+
+        message = str(exc.value)
+        assert "patch does not apply" in message
+        assert "-p1" in message
+        # The p3 artifact must not be the headline cause any more.
+        assert not message.startswith("git am --3way failed")
+        assert "lacks filename information" not in message
+        # Still records what else was tried, for diagnosability.
+        assert "-p3 --3way" in message
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.run_cmd_capture")
+    def test_git_apply_logs_why_each_variant_failed(self, mock_capture,
+                                                    mock_cmd, tmp_path, caplog):
+        """_git_apply_patch logs each variant's stderr instead of failing mute.
+
+        An over-broad AI resolution that no longer matches the tree it must
+        replay onto looked identical to a malformed patch, because every
+        git-apply variant's error was discarded.
+        """
+        from cve_corrector.cherry_pick import _git_apply_patch
+
+        patch_file = tmp_path / "0001-fix.patch"
+        patch_file.write_text("diff --git a/f.c b/f.c\n")
+        mock_capture.return_value = MagicMock(
+            returncode=1, stderr="error: while searching for:\n    context\n")
+
+        with caplog.at_level(logging.WARNING):
+            applied = _git_apply_patch(tmp_path, patch_file, "CVE-2024-0001", 1)
+
+        assert applied is False
+        assert "while searching for" in caplog.text
+        # All three variants are named, so the reader can see -C0/--3way were
+        # tried and not silently skipped.
+        assert "-C0" in caplog.text
+        assert "--3way" in caplog.text
 
 
 class TestHandleFailedSeries:
