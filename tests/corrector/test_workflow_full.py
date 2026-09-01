@@ -286,6 +286,63 @@ class TestApplySingleCommits:
         assert ok
 
     @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
+    @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
+    @patch("cve_corrector.cherry_pick.run_cmd_capture",
+           return_value=MagicMock(stdout=""))
+    def test_metadata_only_commit_tried_last(self, mock_capture, mock_bad,
+                                             mock_anc, mock_cmd):
+        """A changelog-only commit must not beat the real fix to the punch.
+
+        apply_single_commits returns the first commit that cherry-picks, and an
+        irrelevant commit is *more* likely to apply cleanly than a real fix
+        needing adaptation. CVE-2024-6387's metadata left two survivors after
+        filtering: the genuine 9.8 fix (conflicts against 9.6p1) and a 2006
+        ChangeLog-only commit off the V_4_4 branch (applies trivially). In
+        metadata order the ChangeLog commit would be reported as the backport
+        for a pre-auth RCE.
+        """
+        def fake_metadata_only(_ws, h):
+            return h == "changelog06"
+
+        # The real fix conflicts; only the changelog commit applies.
+        def fake_pick(_ws, h, subproject=None):
+            return h == "changelog06"
+
+        with patch("cve_corrector.cherry_pick._is_metadata_only_commit",
+                   side_effect=fake_metadata_only), \
+             patch("cve_corrector.cherry_pick.try_cherry_pick",
+                   side_effect=fake_pick) as mock_pick:
+            ok, chosen = apply_single_commits(
+                Path("/ws"), ["changelog06", "realfix98"])
+
+        order = [c[0][1] for c in mock_pick.call_args_list]
+        # The substantive commit is attempted first despite being second in
+        # the metadata list.
+        assert order[0] == "realfix98"
+        # It failed here, so the changelog commit is still a last resort rather
+        # than being dropped outright.
+        assert ok and chosen == "changelog06"
+        assert order == ["realfix98", "changelog06"]
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
+    @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
+    @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)
+    @patch("cve_corrector.cherry_pick.run_cmd_capture",
+           return_value=MagicMock(stdout=""))
+    def test_real_fix_wins_over_metadata_only_when_both_apply(
+            self, mock_capture, mock_bad, mock_anc, mock_cmd):
+        """When both apply, the substantive commit is the one taken."""
+        with patch("cve_corrector.cherry_pick._is_metadata_only_commit",
+                   side_effect=lambda _ws, h: h == "changelog06"), \
+             patch("cve_corrector.cherry_pick.try_cherry_pick",
+                   return_value=True):
+            ok, chosen = apply_single_commits(
+                Path("/ws"), ["changelog06", "realfix98"])
+
+        assert ok and chosen == "realfix98"
+
+    @patch("cve_corrector.cherry_pick.run_cmd")
     @patch("cve_corrector.cherry_pick.try_cherry_pick", return_value=False)
     @patch("cve_corrector.cherry_pick.is_ancestor_of_head", return_value=False)
     @patch("cve_corrector.cherry_pick.is_bad_object", return_value=False)

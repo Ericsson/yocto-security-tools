@@ -382,20 +382,44 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
             logger.info("Commit %s already applied, skipping...", commit_hash[:8])
             return True, commit_hash
 
-    for idx, commit_hash in enumerate(hashes, 1):
+    # Order candidates before trying any of them. This loop returns the *first*
+    # commit that cherry-picks cleanly, so a trivial-but-irrelevant commit
+    # sitting ahead of the real fix wins outright — and the more irrelevant it
+    # is, the more likely it applies without conflict.
+    #
+    # CVE-2024-6387's metadata is the cautionary case: four hashes drawn from
+    # three different repositories (openssh-portable twice, plus the
+    # openela-main and hpn-ssh forks). After the bad-object and ancestor
+    # filters, two survive: the genuine 9.8 fix 81c1099d2, which touches
+    # sshd.c and conflicts heavily against 9.6p1, and 651879740 — a 2006
+    # ChangeLog-only commit on the V_4_4 branch, which applies trivially.
+    # Without this ordering the corrector reports success having backported a
+    # twenty-year-old documentation change as the fix for a pre-auth RCE.
+    substantive: list[str] = []
+    metadata_only: list[str] = []
+    for commit_hash in hashes:
         if is_bad_object(workspace_path, commit_hash):
-            logger.warning("[%s/%s] Skipping %s (bad object)", idx, len(hashes), commit_hash[:8])
+            logger.warning("Skipping %s (bad object)", commit_hash[:8])
             continue
         # A commit already in this branch's history shipped in this version, so
         # it cannot be the fix. Replaying it pits stale code against whatever
         # superseded it, which surfaces as a large, plausible-looking conflict.
         if is_ancestor_of_head(workspace_path, commit_hash):
             logger.warning(
-                "[%s/%s] Skipping %s: already an ancestor of HEAD (shipped in "
-                "this version, so it cannot be the fix)",
-                idx, len(hashes), commit_hash[:8])
+                "Skipping %s: already an ancestor of HEAD (shipped in this "
+                "version, so it cannot be the fix)", commit_hash[:8])
             continue
-        logger.info("[%s/%s] Trying %s...", idx, len(hashes), commit_hash[:8])
+        if _is_metadata_only_commit(workspace_path, commit_hash):
+            logger.warning(
+                "Deprioritising %s: touches only metadata/changelog files, so "
+                "it cannot carry a code fix", commit_hash[:8])
+            metadata_only.append(commit_hash)
+        else:
+            substantive.append(commit_hash)
+
+    candidates = substantive + metadata_only
+    for idx, commit_hash in enumerate(candidates, 1):
+        logger.info("[%s/%s] Trying %s...", idx, len(candidates), commit_hash[:8])
         if try_cherry_pick(workspace_path, commit_hash, subproject=subproject):
             logger.info("✓ Success")
             return True, commit_hash
