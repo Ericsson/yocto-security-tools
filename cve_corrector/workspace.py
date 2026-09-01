@@ -28,6 +28,14 @@ from .utils import logger, run_cmd, run_cmd_capture
 _DEVTOOL_BASE_BRANCHES = ('main', 'master', 'devtool-base')
 
 
+def _commit_exists(repository: Path, commit_hash: str) -> bool:
+    """Return whether *commit_hash* resolves to a commit in *repository*."""
+    return run_cmd_capture(
+        ['git', 'cat-file', '-e', f'{commit_hash}^{{commit}}'],
+        cwd=repository,
+    ).returncode == 0
+
+
 def setup_devtool_workspace(
         recipe: str, clean: bool, skip_ptest: bool
 ) -> tuple[Path, Optional[str]]:
@@ -114,10 +122,33 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
     # A patch-deduced repo that differs from the fetch source (e.g. the fix
     # commit lives in bzip2 while the recipe SRC_URI is bzip2-tests). When set,
     # it is fetched as a secondary remote so the fix commits/tags are reachable.
-    fix_repo_url: Optional[str] = None
+    fix_repo_urls: list[str] = []
+    missing_hashes: list[str] = []
 
     if mirror_path:
         upstream_url: Optional[str] = str(mirror_path.absolute())
+        missing_details = [
+            detail for detail in hash_details
+            if isinstance(detail.get('hash'), str)
+            and not _commit_exists(mirror_path, detail['hash'])
+        ]
+        missing_hashes = [detail['hash'] for detail in missing_details]
+        missing_by_repo: dict[str, list[str]] = {}
+        for detail in missing_details:
+            url = detail.get('url')
+            repo = (
+                deduce_repo_from_patches([url])
+                if isinstance(url, str) and url else None
+            )
+            if repo:
+                missing_by_repo.setdefault(repo, []).append(detail['hash'])
+        for repo, hashes in missing_by_repo.items():
+            fix_repo_urls.append(repo)
+            logger.warning(
+                "Local mirror lacks %d declared fix commit(s); fetching "
+                "their canonical source %s",
+                len(hashes), repo,
+            )
     else:
         # Try SRC_URI git repo first (authoritative)
         src_uri_git = get_recipe_src_uri_git(recipe)
@@ -164,7 +195,7 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
                 logger.warning(
                     "⚠ Deduced upstream (%s) differs from recipe SRC_URI (%s) "
                     "— verify patch origin", deduced, recipe_upstream)
-                fix_repo_url = deduced
+                fix_repo_urls.append(deduced)
 
     logger.info("Adding upstream remote: %s", upstream_url)
     assert upstream_url is not None
@@ -207,18 +238,35 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
     # add that repo as a secondary remote and fetch it so the fix commits and
     # their release tags are reachable for diff/blame/cherry-pick. This does
     # not change the primary 'upstream' used as the build/version source.
-    if fix_repo_url:
-        logger.info("Adding fix-source remote: %s", fix_repo_url)
+    if fix_repo_urls:
         result = run_cmd_capture(['git', 'remote'], cwd=workspace_path)
-        if 'upstream-fix' not in result.stdout.split():
-            run_cmd(['git', 'remote', 'add', 'upstream-fix', fix_repo_url],
-                    cwd=workspace_path)
-        logger.info("Fetching fix-source references")
-        if not _fetch_remote(workspace_path, 'upstream-fix', fix_repo_url):
-            logger.warning(
-                "Failed to fetch fix-source repo %s — fix commits may be "
-                "unavailable", fix_repo_url)
-            run_cmd(['git', 'remote', 'remove', 'upstream-fix'], cwd=workspace_path)
+        remote_names = set(result.stdout.split())
+        for index, fix_repo_url in enumerate(dict.fromkeys(fix_repo_urls), 1):
+            remote_name = 'upstream-fix' if index == 1 else f'upstream-fix-{index}'
+            logger.info("Adding fix-source remote: %s", fix_repo_url)
+            if remote_name not in remote_names:
+                run_cmd(['git', 'remote', 'add', remote_name, fix_repo_url],
+                        cwd=workspace_path)
+                remote_names.add(remote_name)
+            else:
+                run_cmd(['git', 'remote', 'set-url', remote_name, fix_repo_url],
+                        cwd=workspace_path)
+            logger.info("Fetching fix-source references")
+            if not _fetch_remote(workspace_path, remote_name, fix_repo_url):
+                logger.warning(
+                    "Failed to fetch fix-source repo %s — fix commits may be "
+                    "unavailable", fix_repo_url)
+                run_cmd(['git', 'remote', 'remove', remote_name], cwd=workspace_path)
+                remote_names.discard(remote_name)
+
+    unresolved_hashes = [
+        commit_hash for commit_hash in missing_hashes
+        if not _commit_exists(workspace_path, commit_hash)
+    ]
+    if unresolved_hashes:
+        abbreviated = ', '.join(commit_hash[:12] for commit_hash in unresolved_hashes)
+        raise GitError(
+            f"Missing fix commit(s) after canonical fetch: {abbreviated}")
 
     # Return mirror_name if available, else derive from upstream URL
     if mirror_name:
