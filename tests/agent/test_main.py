@@ -15,6 +15,8 @@ from cve_agent import (
     AgentConfig,
     BuildStatus,
     CveResult,
+    FailureClass,
+    ResultOutcome,
     ResultStatus,
     SecurityStatus,
     WorkflowStatus,
@@ -304,16 +306,30 @@ class TestRunSingleResolutionAttempt:
             _cfg(), Path("/ws"), 1, {}, MagicMock(), 1, time.monotonic())
         assert outcome.result.status == ResultStatus.CONFLICT_RESOLVED
 
-    @patch("cve_agent.orchestrator.guarded_session",
-           return_value=SessionResult(resolved=False, duration=1.0))
+    @patch("cve_agent.orchestrator.guarded_session")
     @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
     @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
-    def test_unresolved_trust_mode(self, *_):
+    def test_unresolved_trust_mode(self, _context, _sha, session):
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.MODEL_BUDGET,
+            "model_budget_exhausted",
+        )
+        session.return_value = SessionResult(
+            resolved=False,
+            duration=1.0,
+            failure_reason="model step limit reached",
+            outcome=failure,
+        )
         cfg = _cfg(trust_mode=True)
         outcome = _run_single_resolution_attempt(
             cfg, Path("/ws"), 1, {}, MagicMock(), 1, time.monotonic())
         assert outcome.result is None
         assert outcome.next_step is None
+        assert outcome.failure_outcome is failure
+        assert outcome.failure_reason == "model step limit reached"
 
     @patch("builtins.input", return_value="n")
     @patch("cve_agent.orchestrator.guarded_session",
@@ -389,6 +405,82 @@ class TestResolutionLoop:
         result = _resolution_loop(_cfg(max_retries=2), Path("/ws"), 1, {}, MagicMock())
         assert result.status == ResultStatus.ESCALATED
         assert "exhausted" in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_exhausted_retries_preserve_last_model_failure(self, mock_attempt):
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.MODEL_BUDGET,
+            "model_budget_exhausted",
+        )
+        mock_attempt.return_value = _AttemptOutcome(
+            failure_outcome=failure,
+            failure_reason="Native session reached --openai-max-steps before finish.",
+        )
+
+        result = _resolution_loop(
+            _cfg(max_retries=2), Path("/ws"), 1, {}, MagicMock())
+
+        assert result.status is ResultStatus.ESCALATED
+        assert result.outcome is failure
+        assert result.outcome.summary_state == "WORKFLOW_FAILED"
+        assert result.failure_class is FailureClass.MODEL_BUDGET
+        assert result.failure_code == "model_budget_exhausted"
+        assert "openai-max-steps" in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_completed_provider_clears_earlier_model_failure(self, mock_attempt):
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.MODEL_BUDGET,
+            "model_budget_exhausted",
+        )
+        mock_attempt.side_effect = [
+            _AttemptOutcome(
+                failure_outcome=failure,
+                failure_reason="model step limit reached",
+                provider_completed=True,
+            ),
+            _AttemptOutcome(provider_completed=True),
+        ]
+
+        result = _resolution_loop(
+            _cfg(max_retries=2), Path("/ws"), 1, {}, MagicMock())
+
+        assert result.status is ResultStatus.ESCALATED
+        assert result.failure_class is not FailureClass.MODEL_BUDGET
+        assert "model step limit" not in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_note_rejection_clears_earlier_model_failure(self, mock_attempt):
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.MODEL_BUDGET,
+            "model_budget_exhausted",
+        )
+        mock_attempt.side_effect = [
+            _AttemptOutcome(
+                failure_outcome=failure,
+                failure_reason="model step limit reached",
+                provider_completed=True,
+            ),
+            _AttemptOutcome(note_rejected=True, provider_completed=True),
+        ]
+
+        result = _resolution_loop(
+            _cfg(max_retries=2, max_total_attempts=2),
+            Path("/ws"), 1, {}, MagicMock(),
+        )
+
+        assert result.status is ResultStatus.ESCALATED
+        assert result.failure_class is not FailureClass.MODEL_BUDGET
+        assert "model step limit" not in result.resolution_summary
 
     @patch("cve_agent.orchestrator._run_single_resolution_attempt")
     def test_step_change_resets_counter(self, mock_attempt):
