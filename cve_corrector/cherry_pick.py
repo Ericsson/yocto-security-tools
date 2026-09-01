@@ -11,6 +11,7 @@ from .git_ops import (
     get_repo_subdir,
     git_clean_workspace,
     has_conflict_state,
+    is_ancestor_of_head,
     is_bad_object,
     try_cherry_pick,
 )
@@ -385,6 +386,15 @@ def apply_single_commits(workspace_path: Path, hashes: list[str],
         if is_bad_object(workspace_path, commit_hash):
             logger.warning("[%s/%s] Skipping %s (bad object)", idx, len(hashes), commit_hash[:8])
             continue
+        # A commit already in this branch's history shipped in this version, so
+        # it cannot be the fix. Replaying it pits stale code against whatever
+        # superseded it, which surfaces as a large, plausible-looking conflict.
+        if is_ancestor_of_head(workspace_path, commit_hash):
+            logger.warning(
+                "[%s/%s] Skipping %s: already an ancestor of HEAD (shipped in "
+                "this version, so it cannot be the fix)",
+                idx, len(hashes), commit_hash[:8])
+            continue
         logger.info("[%s/%s] Trying %s...", idx, len(hashes), commit_hash[:8])
         if try_cherry_pick(workspace_path, commit_hash, subproject=subproject):
             logger.info("✓ Success")
@@ -437,6 +447,15 @@ def find_least_conflict_commit(workspace_path: Path,
 
     for idx, commit_hash in enumerate(hashes):
         if is_bad_object(workspace_path, commit_hash):
+            continue
+        # Same reasoning as apply_single_commits: an ancestor of HEAD is not a
+        # candidate. Without this it is often the *winner* here, because
+        # replaying superseded code conflicts in a way that can score lower
+        # than the real fix's genuine adaptation work.
+        if is_ancestor_of_head(workspace_path, commit_hash):
+            logger.warning(
+                "Skipping %s: already an ancestor of HEAD (shipped in this "
+                "version, so it cannot be the fix)", commit_hash[:8])
             continue
         pick = run_cmd_capture(
             cherry_pick_command(workspace_path, commit_hash), cwd=workspace_path)
