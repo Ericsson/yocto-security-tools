@@ -22,8 +22,13 @@ very different quality:
 Callers that already have tracker-derived hashes should keep those first and
 treat these as additional candidates.
 
-Updates a cve-metadata JSON file in place for CVEs that have no hashes.
+Updates a cve-metadata JSON file in place. By default only CVEs with no
+hashes are filled in; ``--correct-existing`` additionally repairs CVEs whose
+recorded hashes do not include the commit OE-Core actually backported, which
+is the only way to catch a tracker naming a release commit, a fork's commit,
+or the commit that introduced the flaw.
 """
+import argparse
 import json
 import re
 import sys
@@ -117,35 +122,131 @@ def find_hashes_from_oe(cve_id: str, meta_dir: Path) -> list[dict]:
     return url_based + extra
 
 
-def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <cve-metadata.json> <oe-meta-dir>")
-        sys.exit(1)
+def _covers(recorded: list[str], candidate: str) -> bool:
+    """Check whether ``candidate`` is already represented in ``recorded``.
 
-    metadata_path = Path(sys.argv[1])
-    meta_dir = Path(sys.argv[2])
+    A short From-header sha and a full URL sha can name the same commit, so a
+    prefix match either way counts as covered.
+    """
+    cand = candidate.lower()
+    return any(cand.startswith(r.lower()) or r.lower().startswith(cand)
+               for r in recorded if r)
+
+
+def missing_upstream_hashes(cve_id: str, entry: dict,
+                            meta_dir: Path) -> list[dict]:
+    """Ground-truth hashes for ``cve_id`` that ``entry`` does not already have.
+
+    Only ``Upstream-Status: Backport [<url>]`` hashes are considered. A
+    maintainer wrote those deliberately to name the upstream commit, which
+    makes them the one authoritative source available offline — unlike tracker
+    data, which can name a release commit, a commit from a different fork, or
+    even the commit that *introduced* the flaw.
+
+    Args:
+        cve_id: CVE identifier.
+        entry: The metadata entry, read for its existing ``hashes``.
+        meta_dir: Root of an OE meta layer to search recursively.
+
+    Returns:
+        Hash dicts absent from ``entry['hashes']``, in patch order. Empty when
+        the entry already covers them or the CVE has no patch in this layer.
+    """
+    recorded = entry.get('hashes') or []
+    return [h for h in find_hashes_from_upstream_status(cve_id, meta_dir)
+            if not _covers(recorded, h['hash'])]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('metadata', type=Path, help='cve-metadata JSON to update in place')
+    parser.add_argument('meta_dir', type=Path, help='OE meta layer to search')
+    parser.add_argument(
+        '--correct-existing', action='store_true',
+        help="Also fix CVEs that already have hashes but are missing the "
+             "commit OE-Core's own Upstream-Status names. The ground-truth "
+             "hash is prepended, so cve-corrector tries it first, and the "
+             "tracker hashes are kept as fallbacks.")
+    args = parser.parse_args()
+
+    metadata_path, meta_dir = args.metadata, args.meta_dir
 
     with open(metadata_path) as f:
         data = json.load(f)
 
-    updated = 0
+    updated = corrected = 0
     for cve_id, entry in sorted(data.items()):
-        if entry.get('hashes'):
+        if not entry.get('hashes'):
+            found = find_hashes_from_oe(cve_id, meta_dir)
+            if found:
+                url_based = [h for h in found if h['source'] == 'oe_patch']
+                entry['hash_details'] = found
+                # Same reasoning as the correction path below: several
+                # Upstream-Status patches are an ordered chain, not a set of
+                # alternatives. Header-only SHAs are excluded from the series --
+                # they are frequently local/rebased commits that do not exist
+                # upstream (see module docstring), so they belong in `hashes`
+                # as last-resort candidates rather than in a chain that must
+                # apply in full.
+                if len(url_based) > 1:
+                    entry['series'] = [{
+                        'pull_url': f"oe_patch:{url_based[0]['patch']}",
+                        'commits': [h['hash'] for h in url_based],
+                    }]
+                    entry['hashes'] = [h['hash'] for h in found]
+                    kind = f"{len(url_based)}-commit series"
+                else:
+                    entry['hashes'] = [h['hash'] for h in found]
+                    kind = f"{len(found)} hash(es)"
+                updated += 1
+                sources = ', '.join(sorted({h['source'] for h in found}))
+                print(f"  {cve_id}: {kind} from OE patches ({sources})")
             continue
-        found = find_hashes_from_oe(cve_id, meta_dir)
-        if found:
-            entry['hashes'] = [h['hash'] for h in found]
-            entry['hash_details'] = found
-            updated += 1
-            sources = ', '.join(sorted({h['source'] for h in found}))
-            print(f"  {cve_id}: {len(found)} hash(es) from OE patches "
-                  f"({sources})")
 
-    if updated:
+        if not args.correct_existing:
+            continue
+        # The entry has hashes, but none of them is the commit the maintainer
+        # actually backported -- so every one of them is a wrong guess. This is
+        # not hypothetical: u-boot's CVE-2025-24857 carried only a 2017 release
+        # bump, and wpa-supplicant's CVE-2024-3596 carried 28 commits from
+        # FreeRADIUS, a different project entirely.
+        missing = missing_upstream_hashes(cve_id, entry, meta_dir)
+        if not missing:
+            continue
+        commits = [h['hash'] for h in missing]
+        if len(commits) > 1:
+            # More than one patch means an ordered, dependent chain, and it
+            # must be recorded as a series: cve-corrector treats `hashes` as
+            # *alternatives* and stops at the first that applies, which for a
+            # chain leaves a partial fix. binutils' CVE-2025-1153 is the clear
+            # case -- three patches where the third reverts part of the first,
+            # so applying only the first is worse than applying none.
+            #
+            # Order comes from the patch filenames, which is how OE itself
+            # applies them (binutils: 0019-CVE-2025-1153-1.patch ..
+            # 0021-CVE-2025-1153-3.patch, listed in that order in SRC_URI).
+            entry['series'] = [{
+                'pull_url': f"oe_patch:{missing[0]['patch']}",
+                'commits': commits,
+            }] + list(entry.get('series') or [])
+            entry['hash_details'] = missing + list(entry.get('hash_details') or [])
+            corrected += 1
+            print(f"  {cve_id}: added {len(commits)}-commit SERIES from "
+                  f"Upstream-Status ({', '.join(h[:12] for h in commits)})")
+        else:
+            entry['hashes'] = commits + list(entry['hashes'])
+            entry['hash_details'] = missing + list(entry.get('hash_details') or [])
+            corrected += 1
+            print(f"  {cve_id}: prepended ground-truth hash "
+                  f"{commits[0][:12]} from Upstream-Status")
+
+    if updated or corrected:
         with open(metadata_path, 'w') as f:
             json.dump(data, f, indent=2)
             f.write('\n')
-        print(f"\nUpdated {updated} CVEs in {metadata_path}")
+        print(f"\nFilled {updated} CVEs with no hashes; "
+              f"corrected {corrected} with wrong ones, in {metadata_path}")
     else:
         print("No new hashes found.")
 
