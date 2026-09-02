@@ -133,6 +133,27 @@ def _covers(recorded: list[str], candidate: str) -> bool:
                for r in recorded if r)
 
 
+def _series_covers_chain(entry: dict, chain: list[str]) -> bool:
+    """Check whether ``entry`` already records ``chain`` as one ordered series.
+
+    ``hashes`` cannot satisfy this no matter what they contain: cve-corrector
+    treats them as *alternatives* and stops at the first that applies, so a
+    dependent chain listed there still yields a partial fix.
+
+    Args:
+        entry: The metadata entry, read for its existing ``series``.
+        chain: Ordered upstream SHAs, as OE-Core applies them.
+
+    Returns:
+        True when some existing series covers every commit in ``chain``.
+    """
+    for series in entry.get('series') or []:
+        recorded = list(series.get('commits') or [])
+        if all(_covers(recorded, h) for h in chain):
+            return True
+    return False
+
+
 def missing_upstream_hashes(cve_id: str, entry: dict,
                             meta_dir: Path) -> list[dict]:
     """Ground-truth hashes for ``cve_id`` that ``entry`` does not already have.
@@ -143,16 +164,22 @@ def missing_upstream_hashes(cve_id: str, entry: dict,
     data, which can name a release commit, a commit from a different fork, or
     even the commit that *introduced* the flaw.
 
+    Commits already recorded in a ``series`` count as present: they are being
+    applied as part of a chain, and re-adding them to ``hashes`` would offer
+    each one to the corrector as a standalone alternative.
+
     Args:
         cve_id: CVE identifier.
-        entry: The metadata entry, read for its existing ``hashes``.
+        entry: The metadata entry, read for its existing ``hashes``/``series``.
         meta_dir: Root of an OE meta layer to search recursively.
 
     Returns:
-        Hash dicts absent from ``entry['hashes']``, in patch order. Empty when
-        the entry already covers them or the CVE has no patch in this layer.
+        Hash dicts absent from ``entry``, in patch order. Empty when the entry
+        already covers them or the CVE has no patch in this layer.
     """
-    recorded = entry.get('hashes') or []
+    recorded = list(entry.get('hashes') or [])
+    for series in entry.get('series') or []:
+        recorded.extend(series.get('commits') or [])
     return [h for h in find_hashes_from_upstream_status(cve_id, meta_dir)
             if not _covers(recorded, h['hash'])]
 
@@ -206,35 +233,55 @@ def main():
 
         if not args.correct_existing:
             continue
-        # The entry has hashes, but none of them is the commit the maintainer
-        # actually backported -- so every one of them is a wrong guess. This is
-        # not hypothetical: u-boot's CVE-2025-24857 carried only a 2017 release
-        # bump, and wpa-supplicant's CVE-2024-3596 carried 28 commits from
-        # FreeRADIUS, a different project entirely.
+        # The entry has hashes, but they may not include the commit the
+        # maintainer actually backported -- so they can be wrong guesses. This
+        # is not hypothetical: u-boot's CVE-2025-24857 carried only a 2017
+        # release bump, and wpa-supplicant's CVE-2024-3596 carried 28 commits
+        # from FreeRADIUS, a different project entirely.
+        #
+        # The chain is every Upstream-Status commit OE-Core ships for this CVE,
+        # in the order OE applies it. That -- not the subset the entry happens
+        # to be missing -- is what decides series vs hashes: when OE ships
+        # `-pre1` plus the fix, the two are a dependent pair even if the entry
+        # already lists one of them. Keying off the missing subset instead
+        # recorded setuptools' CVE-2025-47273 as three *alternatives*; the
+        # prerequisite refactor and the real fix then each failed to apply
+        # alone, and the least-conflict fallback shipped the refactor as the
+        # security fix.
+        chain_details = find_hashes_from_upstream_status(cve_id, meta_dir)
+        chain = [h['hash'] for h in chain_details]
         missing = missing_upstream_hashes(cve_id, entry, meta_dir)
-        if not missing:
+        is_chain = len(chain) > 1
+        needs_series = is_chain and not _series_covers_chain(entry, chain)
+        # A chain commit must not also sit in `hashes`. For a metadata-driven
+        # series the corrector leaves require_all_commits False, so a failed
+        # series falls back to apply_single_commits over `hashes` -- which would
+        # offer exactly the partial fix the chain exists to prevent
+        # (CVE-2025-1153's first commit is partly reverted by its third). This
+        # is checked even when the series is already correct, to clean up
+        # entries an earlier run left leaking.
+        leaked = [h for h in (entry.get('hashes') or []) if _covers(chain, h)] \
+            if is_chain else []
+        if not missing and not needs_series and not leaked:
             continue
-        commits = [h['hash'] for h in missing]
-        if len(commits) > 1:
-            # More than one patch means an ordered, dependent chain, and it
-            # must be recorded as a series: cve-corrector treats `hashes` as
-            # *alternatives* and stops at the first that applies, which for a
-            # chain leaves a partial fix. binutils' CVE-2025-1153 is the clear
-            # case -- three patches where the third reverts part of the first,
-            # so applying only the first is worse than applying none.
-            #
-            # Order comes from the patch filenames, which is how OE itself
-            # applies them (binutils: 0019-CVE-2025-1153-1.patch ..
-            # 0021-CVE-2025-1153-3.patch, listed in that order in SRC_URI).
-            entry['series'] = [{
-                'pull_url': f"oe_patch:{missing[0]['patch']}",
-                'commits': commits,
-            }] + list(entry.get('series') or [])
-            entry['hash_details'] = missing + list(entry.get('hash_details') or [])
+        if is_chain:
+            if needs_series:
+                entry['series'] = [{
+                    'pull_url': f"oe_patch:{chain_details[0]['patch']}",
+                    'commits': chain,
+                }] + list(entry.get('series') or [])
+            if leaked:
+                entry['hashes'] = [h for h in entry['hashes']
+                                   if not _covers(chain, h)]
+            if missing:
+                entry['hash_details'] = missing + list(entry.get('hash_details') or [])
             corrected += 1
-            print(f"  {cve_id}: added {len(commits)}-commit SERIES from "
-                  f"Upstream-Status ({', '.join(h[:12] for h in commits)})")
+            what = (f"added {len(chain)}-commit SERIES" if needs_series
+                    else f"de-duplicated {len(leaked)} chain commit(s) from hashes")
+            print(f"  {cve_id}: {what} from Upstream-Status "
+                  f"({', '.join(h[:12] for h in chain)})")
         else:
+            commits = [h['hash'] for h in missing]
             entry['hashes'] = commits + list(entry['hashes'])
             entry['hash_details'] = missing + list(entry.get('hash_details') or [])
             corrected += 1
