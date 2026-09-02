@@ -309,6 +309,9 @@ def test_manifest_tamper_and_repository_drift_are_rejected(tmp_path):
 
 def test_merge_paths_require_and_verify_explicit_mainline(tmp_path):
     repo, _ = _repo(tmp_path)
+    # The fixture takes whatever init.defaultBranch gives it, so ask git for
+    # the name rather than assuming one.
+    mainline = _git(repo, "branch", "--show-current")
     (repo / "delete.c").write_text("delete\n", encoding="utf-8")
     (repo / "old.c").write_text("rename\n", encoding="utf-8")
     (repo / "type.c").write_text("regular\n", encoding="utf-8")
@@ -320,7 +323,7 @@ def test_merge_paths_require_and_verify_explicit_mainline(tmp_path):
     (repo / "type.c").unlink()
     os.symlink("source.c", repo / "type.c")
     _commit(repo, "feature net change")
-    _git(repo, "checkout", "-q", "master")
+    _git(repo, "checkout", "-q", mainline)
     (repo / "main.c").write_text("main\n", encoding="utf-8")
     _commit(repo, "main change")
     _git(repo, "merge", "--no-ff", "-m", "merge fix", "feature")
