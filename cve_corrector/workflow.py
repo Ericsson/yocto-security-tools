@@ -14,8 +14,10 @@ from .cherry_pick import (
     apply_series,
     apply_single_commits,
     cherry_pick_to_devtool,
+    dependent_chain_commits,
     find_least_conflict_commit,
     reset_devtool_to_base,
+    standalone_candidates,
 )
 from .git_ops import (
     cherry_pick_command,
@@ -610,8 +612,23 @@ def _handle_failed_series(workspace_path, best_series, make_state, recipe):
 
 
 def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
-                           require_all_commits=False, mainline_parent=None):
+                           require_all_commits=False, mainline_parent=None,
+                           had_chain=False):
     """Handle case where no commit applied cleanly.
+
+    Args:
+        workspace_path: Path to the git repository.
+        hashes: Candidates still safe to apply individually — chain members
+            must already have been filtered out by the caller.
+        series: Series dicts that were attempted.
+        make_state: Factory for the resumable workflow state.
+        recipe: Recipe name, for the conflict instructions.
+        require_all_commits: Caller declared the commits a dependent chain.
+        mainline_parent: 1-based parent index to pick a merge commit against,
+            or None for an ordinary commit.
+        had_chain: The fix included a multi-commit series, so an empty
+            ``hashes`` means every candidate was a chain member rather than
+            that no candidate existed.
 
     Raises:
         ConflictError: A conflict was materialized in the workspace and is
@@ -622,11 +639,21 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
     """
     if series:
         logger.error("All commit series failed")
-    if series or require_all_commits:
+    if require_all_commits:
         # The commits form a dependent chain: picking the single
         # least-conflicting commit would produce a partial, wrong fix.
         logger.error("Dependent commit chain must be resolved as a whole — "
                      "resolve the conflict and resume with 'cve-corrector --continue'")
+        raise ConflictError("Conflict detected")
+    if not hashes and had_chain:
+        # Every candidate belonged to a dependent chain, so there is nothing
+        # left that is safe to try alone. Say so, rather than reporting the
+        # generic "failed to apply any fix" and inviting a resolver to look for
+        # an alternative commit that must not be used.
+        logger.error(
+            "The fix is a dependent commit chain and the chain did not apply; "
+            "no commit in it may be applied on its own. Resolve the series "
+            "conflict and resume with 'cve-corrector --continue'")
         raise ConflictError("Conflict detected")
     if hashes:
         best_hash, conflicts = find_least_conflict_commit(
@@ -904,18 +931,24 @@ def initialize_cve_workflow(
             _handle_failed_series(
                 workspace_path, best_series, make_state, recipe)
 
-    # A declared series is one ordered fix unit. Never fall back to applying
-    # one hash from it individually, which can produce a partial CVE fix.
-    if not success and hashes and not series:
+    # A dependent chain must apply in full, so never fall back to trying the
+    # commits individually — one commit alone is a partial fix. `hashes` often
+    # repeats a series' commits, so filter them out rather than trusting the
+    # metadata to keep the two lists disjoint. Filtering only the chain members
+    # keeps a genuinely independent candidate usable, which excluding every
+    # hash whenever any series exists would not.
+    solo_hashes = standalone_candidates(hashes, series)
+    if not success and solo_hashes and not config.require_all_commits:
         success, successful_hash = apply_single_commits(
-            workspace_path, hashes, subproject=subproject,
+            workspace_path, solo_hashes, subproject=subproject,
             mainline_parent=config.mainline_parent)
 
     if not success:
         _handle_no_clean_apply(
-            workspace_path, hashes, series, make_state, recipe,
+            workspace_path, solo_hashes, series, make_state, recipe,
             require_all_commits=config.require_all_commits,
-            mainline_parent=config.mainline_parent)
+            mainline_parent=config.mainline_parent,
+            had_chain=bool(dependent_chain_commits(series)))
 
     if config.edit_mode:
         save_workflow_state(make_state(successful_hash))
