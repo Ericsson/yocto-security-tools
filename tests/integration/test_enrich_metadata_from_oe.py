@@ -256,6 +256,117 @@ class TestCorrectExisting:
         assert entry['hashes'] == ['oldguess']
         assert 'SERIES' in result.stdout
 
+    def test_prerequisite_chain_becomes_a_series_when_fix_already_recorded(
+            self, tmp_path):
+        """A chain stays a chain even if the entry already lists part of it.
+
+        Regression test for setuptools' CVE-2025-47273. OE-Core ships
+        ``CVE-2025-47273-pre1.patch`` (a refactor that extracts the helper) and
+        ``CVE-2025-47273.patch`` (the real guard), which must be applied in
+        that order. The entry already carried the fix commit, so only the
+        prerequisite was *missing* -- and keying the series/hashes decision off
+        the missing subset made it a single prepended alternative. The
+        corrector then failed to apply either commit alone and fell back to
+        shipping the refactor as the security fix.
+
+        The decision must key off the full chain OE-Core ships, not the subset
+        the entry lacks.
+        """
+        root = tmp_path / 'meta' / 'recipes-devtools' / 'python'
+        root.mkdir(parents=True)
+        # The real shas: a hash made only of digits is rejected by the URL
+        # parser (it would otherwise swallow PR numbers), so the fixture has to
+        # use realistic hex.
+        pre = 'd8390feaa99091d1ba9626bec0e4ba7072fc507a'
+        fix = '250a6d17978f9f6ac3ac887091f2d32886fbbb0b'
+        # '-pre1.patch' sorts before '.patch', which is the order OE applies.
+        for name, sha in (('CVE-2025-47273-pre1.patch', pre),
+                          ('CVE-2025-47273.patch', fix)):
+            (root / name).write_text(
+                f'Upstream-Status: Backport [https://github.com/pypa/setuptools/commit/{sha}]\n',
+                encoding='utf-8')
+        path = tmp_path / 'meta.json'
+        # The entry already knows the real fix -- but not that it needs the
+        # prerequisite first.
+        path.write_text(json.dumps({
+            'CVE-2025-47273': {'name': 'python3-setuptools', 'hashes': [fix]},
+        }), encoding='utf-8')
+
+        result = self._run(path, tmp_path / 'meta', '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2025-47273']
+
+        assert entry['series'], 'the dependent pair was not recorded as a series'
+        assert entry['series'][0]['commits'] == [pre, fix]
+        assert entry['series'][0]['pull_url'] == 'oe_patch:CVE-2025-47273-pre1.patch'
+        # Neither commit may remain in `hashes`: both belong to the chain, and
+        # a standalone alternative is what shipped the refactor as the fix.
+        assert entry['hashes'] == []
+        assert 'SERIES' in result.stdout
+
+    def test_chain_already_recorded_as_a_series_is_left_alone(self, tmp_path):
+        """A correct series is not rewritten or duplicated on a re-run."""
+        root = tmp_path / 'meta' / 'files'
+        root.mkdir(parents=True)
+        one, two = 'a' * 40, 'b' * 40
+        for name, sha in (('CVE-2025-0003-1.patch', one),
+                          ('CVE-2025-0003-2.patch', two)):
+            (root / name).write_text(
+                f'Upstream-Status: Backport [https://github.com/o/r/commit/{sha}]\n',
+                encoding='utf-8')
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2025-0003': {
+                'name': 'thing', 'hashes': [one, two],
+                'series': [{'pull_url': 'oe_patch:CVE-2025-0003-1.patch',
+                            'commits': [one, two]}],
+            },
+        }), encoding='utf-8')
+
+        self._run(path, tmp_path / 'meta', '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2025-0003']
+
+        assert len(entry['series']) == 1, 'series was duplicated on re-run'
+        assert entry['series'][0]['commits'] == [one, two]
+
+    def test_chain_commits_are_stripped_from_hashes(self, tmp_path):
+        """A chain commit must never also be a standalone alternative.
+
+        For a metadata-driven series the corrector leaves
+        ``require_all_commits`` False, so a failed series falls back to
+        ``apply_single_commits`` over ``hashes``. If the chain's commits are
+        also listed there, that fallback applies one of them alone — the exact
+        partial fix the series exists to prevent. An earlier enrichment run
+        left entries in this state, so the cleanup must happen even when the
+        series itself is already correct.
+        """
+        root = tmp_path / 'meta' / 'files'
+        root.mkdir(parents=True)
+        one, two = 'ab' * 20, 'cd' * 20
+        for name, sha in (('CVE-2025-0004-1.patch', one),
+                          ('CVE-2025-0004-2.patch', two)):
+            (root / name).write_text(
+                f'Upstream-Status: Backport [https://github.com/o/r/commit/{sha}]\n',
+                encoding='utf-8')
+        path = tmp_path / 'meta.json'
+        path.write_text(json.dumps({
+            'CVE-2025-0004': {
+                'name': 'thing',
+                # The chain is correct here, but every commit also leaks into
+                # `hashes` as an alternative.
+                'hashes': [one, two, 'unrelatedguess'],
+                'series': [{'pull_url': 'oe_patch:CVE-2025-0004-1.patch',
+                            'commits': [one, two]}],
+            },
+        }), encoding='utf-8')
+
+        self._run(path, tmp_path / 'meta', '--correct-existing')
+        entry = json.loads(path.read_text(encoding='utf-8'))['CVE-2025-0004']
+
+        assert entry['series'][0]['commits'] == [one, two]
+        assert len(entry['series']) == 1, 'series was duplicated'
+        assert entry['hashes'] == ['unrelatedguess'], (
+            'chain commits are still offered as standalone alternatives')
+
     def test_series_is_prepended_ahead_of_existing_series(self, tmp_path):
         root = tmp_path / 'meta' / 'files'
         root.mkdir(parents=True)
