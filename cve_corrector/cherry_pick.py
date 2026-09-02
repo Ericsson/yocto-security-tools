@@ -244,6 +244,71 @@ def apply_series(workspace_path: Path,
     return False, None, best_series
 
 
+def dependent_chain_commits(series: Optional[list[dict]]) -> set[str]:
+    """Commits that only make sense applied together with the rest of a series.
+
+    A series with two or more commits is a dependent chain: ``apply_series``
+    applies it in full and in order, because each commit relies on the ones
+    before it. Such a commit must never be offered as a standalone candidate —
+    applying one alone yields a partial fix that builds and tests clean while
+    leaving the vulnerability open, or actively undoes part of itself.
+    setuptools' CVE-2025-47273 is the first shape (a refactor without its
+    guard); binutils' CVE-2025-1153 is the second (its third commit reverts
+    part of its first).
+
+    A single-commit series is not a chain: that commit alone *is* the whole
+    fix, so it stays available as a fallback.
+
+    Args:
+        series: Series dicts with ``commits``, or None.
+
+    Returns:
+        Every commit belonging to a series of two or more commits. Empty when
+        there is no such series.
+    """
+    chained: set[str] = set()
+    for pr_series in series or []:
+        commits = pr_series.get('commits') or []
+        if len(commits) > 1:
+            chained.update(c for c in commits if c)
+    return chained
+
+
+def standalone_candidates(hashes: Optional[list[str]],
+                          series: Optional[list[dict]]) -> list[str]:
+    """``hashes`` filtered down to commits safe to apply on their own.
+
+    Metadata routinely lists a chain's commits in both ``series`` and
+    ``hashes``. ``hashes`` are *alternatives*, tried one at a time, so leaving
+    a chain member there re-offers the partial fix the series exists to
+    prevent — even though the series itself is recorded correctly.
+
+    Hashes that belong to no chain are genuine independent candidates and are
+    preserved, in order.
+
+    Args:
+        hashes: Candidate commit hashes, or None.
+        series: Series dicts used to identify chain members, or None.
+
+    Returns:
+        The subset of ``hashes`` that is not part of any dependent chain.
+    """
+    chained = dependent_chain_commits(series)
+    if not chained:
+        return list(hashes or [])
+    # Hashes and series commits can be recorded at different lengths (a short
+    # tracker sha vs a full one from a patch header), so match on prefix.
+    def _is_chained(h: str) -> bool:
+        return any(h.startswith(c) or c.startswith(h) for c in chained if c)
+    kept = [h for h in (hashes or []) if h and not _is_chained(h)]
+    dropped = len(hashes or []) - len(kept)
+    if dropped:
+        logger.info(
+            "Ignoring %d dependent-chain commit(s) as standalone candidates; "
+            "they are only valid applied as a full series", dropped)
+    return kept
+
+
 def apply_single_commits(workspace_path: Path, hashes: list[str],
                          subproject: Optional[str] = None,
                          mainline_parent: Optional[int] = None,
