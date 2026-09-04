@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -483,6 +484,18 @@ def _is_loopback(hostname: str) -> bool:
         return False
 
 
+def _stdout_console_writer(line: str) -> None:
+    """Print one already-formatted, terse transcript-mirror line.
+
+    Mirrors :class:`~cve_agent.kiro_backend.KiroBackend`'s existing
+    write-then-flush convention for live non-interactive output, so a
+    non-TTY/CI stdout still shows lines as they happen instead of buffering
+    until the session ends.
+    """
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
 class OpenAICompatibleBackend(AIBackend):
     """Built-in native backend for OpenAI-compatible chat APIs."""
 
@@ -728,7 +741,8 @@ class OpenAICompatibleBackend(AIBackend):
         transcript_factory = self._transcript_factory or JSONLTranscript.create
         try:
             transcript = transcript_factory(
-                agent_dir, session_model, deadline, (secret,) if secret else ())
+                agent_dir, session_model, deadline, (secret,) if secret else (),
+                console=None if interactive else _stdout_console_writer)
         except Exception:
             logging.error(
                 "OpenAI session refused to run without its mandatory transcript")
@@ -978,7 +992,8 @@ class OpenAICompatibleBackend(AIBackend):
             artifact_run.add_secret(secret)
         try:
             transcript = transcript_factory(
-                agent_dir, config.model, deadline, (secret,) if secret else ())
+                agent_dir, config.model, deadline, (secret,) if secret else (),
+                console=None if interactive else _stdout_console_writer)
         except Exception:
             from .result import (
                 BuildStatus,

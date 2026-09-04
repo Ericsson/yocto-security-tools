@@ -192,6 +192,70 @@ def test_scripted_backend_uses_real_file_git_build_and_finish_runtime(tmp_path):
     assert any(event["event"] == "http_attempt" for event in transcript_events)
 
 
+def test_non_interactive_session_streams_tool_lines_to_stdout(tmp_path, capsys):
+    repo, agent, context = _repository(tmp_path)
+    runner = FakeBuildRunner(agent)
+    actions = [
+        _response(
+            _call("context", "read_file", json.dumps({"path": str(context)})),
+            _call("status", "git_status"),
+            _call("build", "build_recipe")),
+        _response(_call(
+            "finish", "finish",
+            '{"status":"done","reason":"verified","summary":"build passed"}')),
+    ]
+    backend, holder = _backend(actions, agent, build_runner=runner)
+    prompt = f"Read the file {context} and follow all instructions in it."
+    result = backend.run_session(
+        prompt, repo, {"a.c"}, "scripted-model", 30, False)
+
+    assert result.resolved
+    printed = capsys.readouterr().out
+    assert "tool_request: read_file" in printed
+    assert "tool_result: read_file \u2192 ok" in printed
+    assert "terminal_result: status=done" in printed
+    assert "session_end: resolved=True" in printed
+    # Only the streamed subset appears -- per-turn model chatter must not.
+    assert "model_request" not in printed
+    assert "assistant_response" not in printed
+
+
+def test_interactive_session_is_silent_on_stdout(tmp_path, capsys):
+    from cve_agent.openai_host_tools import ApprovalDecision, OpenAIHostToolRuntime
+
+    class AlwaysApprove:
+        def request(self, request, timeout):
+            return ApprovalDecision.APPROVE_ONCE
+
+    repo, agent, context = _repository(tmp_path)
+    actions = [
+        _response(_call("context", "read_file", json.dumps({"path": str(context)}))),
+        _response(_call(
+            "finish", "finish",
+            '{"status":"needs_human","reason":"prerequisite is out of scope"}')),
+    ]
+
+    def client_factory(config, deadline, event_sink=None):
+        return ScriptedClient(actions, event_sink)
+
+    def runtime_factory(*args, **kwargs):
+        kwargs["approval_provider"] = AlwaysApprove()
+        return OpenAIHostToolRuntime(*args, **kwargs)
+
+    backend = OpenAICompatibleBackend(
+        client_factory=client_factory, runtime_factory=runtime_factory)
+    backend.configure({
+        "model": "scripted-model",
+        "openai_max_steps": 10,
+        "openai_max_tool_calls": 20,
+    }, {})
+    result = backend.run_session(
+        f"Read {context}", repo, {"a.c"}, "scripted-model", 30, True)
+
+    assert result.resolved
+    assert capsys.readouterr().out == ""
+
+
 def test_real_runtime_creates_trusted_noncode_conclusion_for_orchestrator(tmp_path):
     repo, agent, context = _repository(tmp_path)
     actions = [
@@ -318,6 +382,37 @@ def test_model_no_progress_fallback_reuses_runtime_deadline_scope_and_call_ids(
     assert telemetry["counters"]["finish_calls"] == 2
     assert telemetry["counters"]["other_tool_calls"] == 3
     assert telemetry["input_tokens"] is None
+
+
+def test_fallback_attempt_also_streams_console_lines_when_non_interactive(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, agent, context = _repository(tmp_path)
+    profiles = tmp_path / "profiles"
+    _write_cascade_profiles(profiles)
+    monkeypatch.setenv("CVE_AGENT_OPENAI_CONFIG_DIR", str(profiles))
+
+    primary_actions = [_response(_call("primary-1", "run_shell"))] * 3
+    fallback_actions = [_response(_call(
+        "fallback-finish", "finish",
+        '{"status":"needs_human","reason":"fallback inspected state"}'))]
+
+    def client_factory(config, deadline, event_sink=None):
+        actions = primary_actions if config.model == "primary-model" else fallback_actions
+        return ScriptedClient(actions, event_sink)
+
+    backend = OpenAICompatibleBackend(client_factory=client_factory)
+    backend.configure({"backend_profile": "primary", "model": None}, os.environ)
+    result = backend.run_session(
+        f"Read {context}", repo, {"a.c"}, backend.config.model, 30, False)
+
+    assert result.resolved
+    printed = capsys.readouterr().out
+    # Both the primary attempt's nonprogress warnings and the fallback
+    # attempt's terminal outcome must be visible on stdout.
+    assert "progress_warning" in printed
+    assert "terminal_result: status=needs_human" in printed
+    assert printed.count("session_end") == 2
 
 
 @pytest.mark.parametrize("failure_class", [
