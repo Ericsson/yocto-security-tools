@@ -77,7 +77,7 @@ CLAUDE_LIVE_TESTS=1 pytest -m live -v
 | 3 | Multiple patches (series) | CVE-2026-25210 | exit 0 |
 | 4 | Conflict | CVE-2026-2903 | exit 1 |
 | 5 | Single patch with ptest | CVE-2023-42363 | exit 0 |
-| 6 | Agent conflict+ptest | CVE-2026-26157 | exit 0 |
+| 6 | Agent conflict+ptest | CVE-2026-26157 | exit 14 (correct fix deviates from upstream; see script comment) |
 | 7 | Agent build-fix | CVE-2024-0684 | exit 0 |
 | 8 | Missing autotools files | CVE-2024-0684 | exit 0 |
 | 9 | Monorepo subprojects strip | CVE-2024-47539 | exit 0 |
