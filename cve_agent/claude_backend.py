@@ -23,7 +23,7 @@ from pathlib import Path
 from shared import build_git_env
 from shared.git_runner import run_capture
 
-from .backend import AIBackend, SessionResult
+from .backend import AIBackend, SessionResult, VerifyResult
 from .git import has_in_progress_operation
 
 # Agent instructions are assembled lazily as the Claude-specific preamble plus
@@ -301,3 +301,14 @@ class ClaudeBackend(AIBackend):
             if line and len(line) >= 2 and (line[0] == "U" or line[1] == "U"):
                 return False
         return True
+
+    def verify(self) -> VerifyResult:
+        """Bare, no-op `claude` invocation — no --allowedTools,
+        --append-system-prompt, or --add-dir, since this only has to prove
+        the CLI can respond to a prompt and is authenticated.
+        """
+        from .backend import VERIFY_PROMPT, _verify_cli_marker
+        model = self._map_model(self.resolve_model(None, os.environ))
+        return _verify_cli_marker(
+            ["claude", "-p", "--model", model, "--", VERIFY_PROMPT],
+            extra_env=_claude_auth_env())

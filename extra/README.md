@@ -101,6 +101,21 @@ class MyBackend(AIBackend):
 register_backend(MyBackend())
 ```
 
+`AIBackend.verify()` backs `cve-agent --verify-backend`: a trivial no-op
+check that the backend can actually respond, run before any real CVE
+workflow. The default implementation falls back to `is_available()` (a
+presence check only), so plugins work unmodified without overriding it.
+Override it to run a real, cheap round trip against your backend — e.g. a
+bare CLI invocation asking for a fixed marker string back, with no file or
+git operations:
+
+```python
+    def verify(self):
+        from cve_agent.backend import VerifyResult
+        # Run a trivial request against your backend and check the response.
+        return VerifyResult(ok=True, detail="")
+```
+
 ## Environment Variable
 
 Set `CVE_EXTRA_SOURCES_DIR` to override the default `extra/` location:

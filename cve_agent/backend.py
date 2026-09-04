@@ -4,10 +4,14 @@
 import logging
 import os
 import re
+import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 from .result import ResultOutcome
 
@@ -21,6 +25,58 @@ class BackendRuntimeUnavailableError(RuntimeError):
 
 
 _OPENAI_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.ASCII)
+
+# --- --verify-backend support -----------------------------------------
+
+#: Fixed marker string a backend must echo back verbatim to prove it can
+#: actually respond (not just that its CLI binary is on PATH).
+VERIFY_MARKER = "cve-agent-verify-v1"
+#: Wall-clock budget for a verification round trip, independent of
+#: --session-timeout (which governs real, much longer conflict-resolution
+#: sessions).
+VERIFY_TIMEOUT = 30
+VERIFY_PROMPT = f"Reply with exactly {VERIFY_MARKER} and nothing else."
+
+
+@dataclass
+class VerifyResult:
+    """Outcome of :meth:`AIBackend.verify`."""
+
+    ok: bool
+    detail: str = ""
+
+
+def _verify_cli_marker(cmd: list[str], timeout: int = VERIFY_TIMEOUT,
+                       extra_env: Optional[Mapping[str, str]] = None
+                       ) -> VerifyResult:
+    """Run a bare CLI invocation and check the fixed marker comes back.
+
+    Runs in a hermetic temporary directory — no BBPATH, no git repository,
+    no file or git operations — since this only has to prove the backend's
+    CLI can respond to a prompt at all. Uses :func:`shared.build_git_env` as
+    the base environment (safe defaults, no interactive prompts) with
+    ``extra_env`` layered on top for backend-specific auth variables that
+    ``build_git_env`` deliberately filters out.
+    """
+    env = build_git_env()
+    if extra_env:
+        env.update(extra_env)
+    with tempfile.TemporaryDirectory(prefix="cve-agent-verify-") as scratch:
+        try:
+            result = subprocess.run(
+                cmd, cwd=scratch, env=env, timeout=timeout, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                encoding=TEXT_ENCODING, errors=TEXT_ERRORS)
+        except FileNotFoundError:
+            return VerifyResult(False, f"'{cmd[0]}' not found on PATH")
+        except subprocess.TimeoutExpired:
+            return VerifyResult(False, f"timed out after {timeout}s")
+    output = result.stdout or ""
+    if result.returncode != 0:
+        return VerifyResult(False, f"exited {result.returncode}")
+    if VERIFY_MARKER not in output:
+        return VerifyResult(False, "responded without the expected marker")
+    return VerifyResult(True, "")
 
 
 @dataclass(frozen=True)
@@ -129,6 +185,20 @@ class AIBackend:
         from . import read_shared_agent_instructions
 
         return self.tool_preamble() + read_shared_agent_instructions()
+
+    def verify(self) -> VerifyResult:
+        """Run a trivial no-op check that this backend can actually respond.
+
+        Used by ``--verify-backend`` to catch a missing/misconfigured/
+        unauthenticated backend before a real (much longer) CVE workflow
+        starts. The default implementation falls back to :meth:`is_available`
+        (a presence check only), so third-party ``extra/`` plugin backends
+        keep working unmodified. Built-in backends (kiro, claude, openai)
+        override this with a real invocation.
+        """
+        if not self.is_available():
+            return VerifyResult(False, "prerequisites not met (CLI missing?)")
+        return VerifyResult(True, "presence check only (no functional probe)")
 
 
 _BACKENDS: dict[str, AIBackend] = {}

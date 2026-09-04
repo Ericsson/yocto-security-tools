@@ -7,6 +7,7 @@ the default backend; :mod:`cve_agent.claude_backend` mirrors its behaviour
 for the ``claude`` CLI.
 """
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from typing import Optional
 from shared import build_git_env
 from shared.git_runner import run_capture
 
-from .backend import AIBackend, SessionResult
+from .backend import AIBackend, SessionResult, VerifyResult
 from .git import has_in_progress_operation
 from .metrics import parse_kiro_credits
 
@@ -232,3 +233,14 @@ class KiroBackend(AIBackend):
     def setup(self, **kwargs) -> None:
         from .setup import ensure_agents
         ensure_agents(interactive=kwargs.get('interactive', True))
+
+    def verify(self) -> VerifyResult:
+        """Bare, no-op kiro-cli invocation — bypasses the agent JSON/tool
+        allow-lists entirely (unlike run_session()) since this only has to
+        prove kiro-cli can respond to a prompt at all.
+        """
+        from .backend import VERIFY_PROMPT, _verify_cli_marker
+        model = self.resolve_model(None, os.environ)
+        return _verify_cli_marker(
+            ['kiro-cli', 'chat', '--no-interactive', '--model', model,
+             VERIFY_PROMPT])

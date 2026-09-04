@@ -100,6 +100,39 @@ class TestParseArgs:
         args = _parse_args()
         assert args.sign_off is True
 
+    def test_verify_backend_flag(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'kiro', '--verify-backend'])
+        args = _parse_args()
+        assert args.verify_backend is True
+        assert args.cve_id is None
+        assert args.cve_list is None
+
+    def test_verify_backend_default_false(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--cve-id', 'CVE-1', '--cve-info', '/tmp/c.json'])
+        args = _parse_args()
+        assert args.verify_backend is False
+
+    def test_verify_backend_rejects_cve_id(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--verify-backend', '--cve-id', 'CVE-1'])
+        with pytest.raises(SystemExit):
+            _parse_args()
+
+    def test_verify_backend_rejects_cve_list(self, monkeypatch, tmp_path):
+        cve_list = tmp_path / 'cves.txt'
+        cve_list.write_text('CVE-1\n')
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--verify-backend', '--cve-list', str(cve_list)])
+        with pytest.raises(SystemExit):
+            _parse_args()
+
+    def test_neither_cve_nor_verify_backend_rejected(self, monkeypatch):
+        monkeypatch.setattr('sys.argv', ['cve-agent'])
+        with pytest.raises(SystemExit):
+            _parse_args()
+
 
 class TestConfigFromArgs:
     def test_creates_config(self, monkeypatch):
@@ -184,6 +217,87 @@ class TestTrustSignOffRejected:
             main()
         err = capsys.readouterr().err
         assert '--trust and --sign-off cannot be combined' not in err
+
+
+class TestVerifyBackend:
+    """--verify-backend bypasses --cve-id/--cve-list entirely and exits
+    immediately after checking the selected backend, touching none of the
+    real CVE workflow (knowledge base, corrector, orchestrator)."""
+
+    def test_success_prints_ok_and_exits_zero(self, monkeypatch, capsys):
+        from cve_agent import EXIT_SUCCESS
+        from cve_agent.__main__ import main
+        from cve_agent.backend import VerifyResult
+
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'kiro', '--verify-backend'])
+        with patch('cve_agent.kiro_backend.KiroBackend.verify',
+                   return_value=VerifyResult(True, "")):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == EXIT_SUCCESS
+        out = capsys.readouterr().out
+        assert "Backend 'kiro' verified: OK" in out
+
+    def test_success_includes_detail(self, monkeypatch, capsys):
+        from cve_agent.__main__ import main
+        from cve_agent.backend import VerifyResult
+
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'kiro', '--verify-backend'])
+        with patch('cve_agent.kiro_backend.KiroBackend.verify',
+                   return_value=VerifyResult(True, "conformance probe passed")):
+            with pytest.raises(SystemExit):
+                main()
+        out = capsys.readouterr().out
+        assert "conformance probe passed" in out
+
+    def test_failure_prints_reason_and_exits_agent_error(self, monkeypatch, capsys):
+        from cve_agent import EXIT_AGENT_ERROR
+        from cve_agent.__main__ import main
+        from cve_agent.backend import VerifyResult
+
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'claude', '--verify-backend'])
+        with patch('cve_agent.claude_backend.ClaudeBackend.verify',
+                   return_value=VerifyResult(False, "not found on PATH")):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        assert exc_info.value.code == EXIT_AGENT_ERROR
+        err = capsys.readouterr().err
+        assert "Backend 'claude' verification failed: not found on PATH" in err
+
+    @patch('cve_agent.__main__.KnowledgeBase')
+    @patch('cve_agent.__main__.process_single_cve')
+    def test_does_not_touch_cve_workflow(
+            self, mock_process, mock_kb, monkeypatch):
+        from cve_agent.__main__ import main
+        from cve_agent.backend import VerifyResult
+
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'kiro', '--verify-backend'])
+        with patch('cve_agent.kiro_backend.KiroBackend.verify',
+                   return_value=VerifyResult(True, "")):
+            with pytest.raises(SystemExit):
+                main()
+        mock_process.assert_not_called()
+        mock_kb.assert_not_called()
+
+    def test_does_not_require_cve_info(self, monkeypatch):
+        """--verify-backend alone (no --cve-info/--fix-url) must not trip the
+        'one of --cve-info/--fix-url is required' validation that gates
+        every real CVE workflow invocation."""
+        from cve_agent.__main__ import main
+        from cve_agent.backend import VerifyResult
+
+        monkeypatch.setattr('sys.argv', [
+            'cve-agent', '--backend', 'kiro', '--verify-backend'])
+        with patch('cve_agent.kiro_backend.KiroBackend.verify',
+                   return_value=VerifyResult(True, "")):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+        from cve_agent import EXIT_SUCCESS
+        assert exc_info.value.code == EXIT_SUCCESS
 
 
 class TestMainSingleCveCostReport:

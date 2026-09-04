@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import cve_agent
-from cve_agent.backend import available_backends, get_backend
+from cve_agent.backend import VERIFY_MARKER, VerifyResult, available_backends, get_backend
 from cve_agent.claude_backend import (
     _DENIED_READ_WRITE,
     _DENIED_WRITE,
@@ -97,6 +97,51 @@ def test_is_available_true(monkeypatch):
 def test_is_available_false(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: None)
     assert ClaudeBackend().is_available() is False
+
+
+def test_claude_verify_builds_bare_command(monkeypatch):
+    """No --allowedTools/--append-system-prompt/--add-dir: verify() is a bare
+    invocation, not a real run_session()-style call.
+    """
+    captured = {}
+
+    def fake_verify_cli_marker(cmd, timeout=30, extra_env=None):
+        captured["cmd"] = cmd
+        captured["extra_env"] = extra_env
+        return VerifyResult(True, "")
+
+    monkeypatch.setattr(
+        "cve_agent.backend._verify_cli_marker", fake_verify_cli_marker)
+    result = ClaudeBackend().verify()
+    assert result.ok is True
+    cmd = captured["cmd"]
+    assert cmd[0] == "claude"
+    assert "-p" in cmd
+    assert "--model" in cmd
+    assert "--allowedTools" not in cmd
+    assert "--append-system-prompt" not in cmd
+    assert "--add-dir" not in cmd
+    assert "--" in cmd
+
+
+def test_claude_verify_passes_through_failure(monkeypatch):
+    def fake_verify_cli_marker(cmd, timeout=30, extra_env=None):
+        return VerifyResult(False, "not found on PATH")
+
+    monkeypatch.setattr(
+        "cve_agent.backend._verify_cli_marker", fake_verify_cli_marker)
+    result = ClaudeBackend().verify()
+    assert result.ok is False
+    assert result.detail == "not found on PATH"
+
+
+def test_claude_verify_end_to_end(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{VERIFY_MARKER}\n")
+
+    monkeypatch.setattr("cve_agent.backend.subprocess.run", fake_run)
+    result = ClaudeBackend().verify()
+    assert result.ok is True
 
 
 @pytest.mark.parametrize("given,expected", [
