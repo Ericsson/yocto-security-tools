@@ -460,12 +460,17 @@ def _verify_and_commit(
     message = _git(workspace, "show", "-s", "--format=%B", source_commit)
     if not message.strip() or len(message.encode("utf-8")) > 64 * 1024:
         message = f"Apply {cve_id} source transfer\n"
+    author_env = _source_author_env(workspace, source_commit)
     descriptor, name = tempfile.mkstemp(prefix="cve-transfer-message-")
     try:
         os.write(descriptor, message.encode("utf-8"))
         os.close(descriptor)
         descriptor = -1
-        result = run_cmd_capture(["git", "commit", "-F", name], cwd=workspace)
+        result = subprocess.run(
+            ["git", "commit", "-F", name], cwd=workspace,
+            env={**build_git_env(), **author_env},
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+        )
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -476,6 +481,31 @@ def _verify_and_commit(
         workspace, "diff-tree", "--no-commit-id", "--name-status", "-z", "-r", "HEAD")))
     if committed != set(paths):
         raise TransferError(TransferCode.POSTCHECK_FAILED, "commit path set differs")
+
+
+def _source_author_env(workspace: Path, source_commit: str) -> dict[str, str]:
+    """Return GIT_AUTHOR_* overrides so the transferred commit keeps its
+    source authorship and date instead of the ambient git identity.
+
+    ``git commit`` (unlike ``git cherry-pick``/``git am``) always authors a
+    new commit as the current user, so without this override the recreated
+    commit on the target branch silently loses the original contributor's
+    name, email, and date — the exported patch's ``From:``/``Date:``
+    headers would then show whoever ran the corrector instead of the
+    upstream author.
+    """
+    name = _git(workspace, "show", "-s", "--format=%an", source_commit).strip()
+    email = _git(workspace, "show", "-s", "--format=%ae", source_commit).strip()
+    date = _git(workspace, "show", "-s", "--format=%aI", source_commit).strip()
+    env: dict[str, str] = {}
+    if name:
+        env["GIT_AUTHOR_NAME"] = name
+    if email:
+        env["GIT_AUTHOR_EMAIL"] = email
+    if date:
+        env["GIT_AUTHOR_DATE"] = date
+    return env
+
 
 
 def _tree(workspace: Path, revision: str) -> dict[str, TreeEntry]:
