@@ -15,6 +15,17 @@ from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
 logger = logging.getLogger(__name__)
 
+# Batch size for chunking file lists into `git checkout`/`git reset`
+# invocations. Keeps argv comfortably under typical platform ARG_MAX limits
+# even for long absolute-ish repo-relative paths, while still collapsing
+# hundreds of per-file subprocess spawns into a handful of calls.
+_CHECKOUT_BATCH_SIZE = 200
+
+
+def _chunked(items: list[str], size: int) -> list[list[str]]:
+    """Split ``items`` into consecutive chunks of at most ``size`` entries."""
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
 
 def is_git_cmd(cmd: list[str]) -> bool:
     """Check if a command is a git command that needs the restricted env."""
@@ -253,8 +264,25 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
         return
 
     logger.info("Copying %s missing file(s) from devtool branch", len(missing))
-    for filepath in missing:
-        run_capture(['git', 'checkout', 'devtool', '--', filepath],
-                    cwd=workspace_path)
+    # A single `git checkout devtool -- <paths...>` instead of one subprocess
+    # per file: each subprocess spawn dominates the cost for trees with many
+    # missing files (generated autotools output, secondary-tarball payloads
+    # such as libxml2's xmlconf/ suite can be hundreds of files), so batching
+    # cuts this from O(files) process spawns to one. Chunked to stay under
+    # typical platform argv-length limits (ARG_MAX) for very large file sets.
+    checkout_failed: list[str] = []
+    for chunk in _chunked(missing, _CHECKOUT_BATCH_SIZE):
+        result = run_capture(
+            ['git', 'checkout', 'devtool', '--', *chunk], cwd=workspace_path)
+        if result.returncode != 0:
+            checkout_failed.extend(chunk)
+    succeeded = [f for f in missing if f not in checkout_failed]
+    if checkout_failed:
+        logger.warning(
+            "Failed to copy %s of %s missing file(s) from devtool branch",
+            len(checkout_failed), len(missing))
+    if not succeeded:
+        return
     # Unstage so they remain as untracked working-tree files
-    run_capture(['git', 'reset', 'HEAD'] + missing, cwd=workspace_path)
+    for chunk in _chunked(succeeded, _CHECKOUT_BATCH_SIZE):
+        run_capture(['git', 'reset', 'HEAD', *chunk], cwd=workspace_path)

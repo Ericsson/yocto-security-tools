@@ -246,6 +246,53 @@ class TestCopyMissingFilesFromDevtool:
         copy_missing_files_from_devtool(Path("/ws"))  # should not crash
         assert mock_run.called
 
+    @patch("shared.git_runner.run_capture")
+    def test_many_missing_files_batched_into_single_checkout_call(self, mock_run):
+        """Multiple missing files must be checked out in one subprocess call,
+        not one call per file — see shared.git_runner._CHECKOUT_BATCH_SIZE."""
+        missing = [f"gen{i}.c" for i in range(50)]
+        devtool_listing = "a.c\n" + "\n".join(missing) + "\n"
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=devtool_listing),
+            MagicMock(returncode=0, stdout="a.c\n"),
+            MagicMock(returncode=0, stdout="100644 blob abc123\ta.c\n"),
+            MagicMock(returncode=0),  # single batched checkout
+            MagicMock(returncode=0),  # single batched reset
+        ]
+        copy_missing_files_from_devtool(Path("/ws"))
+
+        calls = mock_run.call_args_list
+        checkout_calls = [c for c in calls if c[0][0][:2] == ["git", "checkout"]]
+        reset_calls = [c for c in calls if c[0][0][:2] == ["git", "reset"]]
+        assert len(checkout_calls) == 1
+        assert len(reset_calls) == 1
+        checkout_argv = checkout_calls[0][0][0]
+        assert checkout_argv[:4] == ["git", "checkout", "devtool", "--"]
+        assert set(checkout_argv[4:]) == set(missing)
+
+    @patch("shared.git_runner.run_capture")
+    def test_missing_files_beyond_batch_size_are_chunked(self, mock_run):
+        """More missing files than the batch size split into multiple calls,
+        each within the batch size limit, instead of one call per file."""
+        from shared.git_runner import _CHECKOUT_BATCH_SIZE
+        missing = [f"gen{i}.c" for i in range(_CHECKOUT_BATCH_SIZE + 10)]
+        devtool_listing = "a.c\n" + "\n".join(missing) + "\n"
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=devtool_listing),
+            MagicMock(returncode=0, stdout="a.c\n"),
+            MagicMock(returncode=0, stdout="100644 blob abc123\ta.c\n"),
+            *[MagicMock(returncode=0) for _ in range(4)],  # 2 checkout + 2 reset
+        ]
+        copy_missing_files_from_devtool(Path("/ws"))
+
+        calls = mock_run.call_args_list
+        checkout_calls = [c for c in calls if c[0][0][:2] == ["git", "checkout"]]
+        reset_calls = [c for c in calls if c[0][0][:2] == ["git", "reset"]]
+        assert len(checkout_calls) == 2
+        assert len(reset_calls) == 2
+        for call in checkout_calls:
+            assert len(call[0][0]) - 4 <= _CHECKOUT_BATCH_SIZE
+
 
 class TestApplySingleCommits:
     @patch("cve_corrector.cherry_pick.try_cherry_pick", return_value=True)
