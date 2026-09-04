@@ -462,28 +462,43 @@ def git_clean_workspace(workspace_path: Path, remove_ignored: bool = False) -> N
 
 
 def reset_submodules(workspace_path: Path) -> None:
-    """Reset registered submodules to a clean state matching the superproject.
+    """Reset submodule working trees to a clean state after a checkout.
 
     ``git clean``/``git checkout`` on the superproject never touch submodule
-    working trees: a submodule left checked out at a different commit, with
-    local modifications, or with its own untracked files still reports dirty
-    in ``git status --porcelain`` on the superproject even after those
-    commands succeed. Recipes whose upstream repo vendors dependencies as
-    submodules (e.g. coreutils' gnulib) can therefore leave the tree
-    "not clean" for a later strict check (see ``transfer.transfer_commits``)
-    despite every superproject-level cleanup step having already run.
+    working trees, and by design ``git clean`` refuses to descend into a
+    directory containing its own ``.git`` (a nested repository) unless
+    forced twice. Two distinct situations both leave the tree "not clean"
+    for a later strict check (see ``transfer.transfer_commits``) even after
+    every ordinary superproject-level cleanup step has already run:
 
-    A no-op when the repo has no registered submodules.
+    - A submodule *registered on the currently checked-out branch* left
+      checked out at a different commit, or with its own local
+      modifications/untracked files (reported by git as tracked, ``S...``
+      status).
+    - A submodule directory left behind on disk from a *previously checked
+      out* branch that initialized it, when the branch now checked out does
+      not declare it in ``.gitmodules`` at all (e.g. an upstream-history
+      branch vendors a dependency as a real submodule, but the recipe's
+      devtool branch is built from a release tarball with no submodule
+      metadata). Git reports this as a plain untracked directory
+      (``?? gnulib/``), not a submodule status, and ordinary
+      ``git clean -fdx`` silently leaves it in place because of the nested
+      ``.git`` guard above.
+
+    Handles both: first resets any submodules the current branch registers,
+    then force-removes (``-ffdx``, double force) any remaining untracked
+    nested-repository directories the ordinary clean step could not touch.
     """
-    if not _get_submodule_paths(workspace_path):
-        return
+    if _get_submodule_paths(workspace_path):
+        run_cmd_capture(
+            ['git', 'submodule', 'update', '--init', '--recursive', '--force'],
+            cwd=workspace_path)
+        run_cmd_capture(
+            ['git', 'submodule', 'foreach', '--recursive',
+             'git checkout -f . && git clean -fdx'],
+            cwd=workspace_path)
     run_cmd_capture(
-        ['git', 'submodule', 'update', '--init', '--recursive', '--force'],
-        cwd=workspace_path)
-    run_cmd_capture(
-        ['git', 'submodule', 'foreach', '--recursive',
-         'git checkout -f . && git clean -fdx'],
-        cwd=workspace_path)
+        ['git', 'clean', '-ffdx', '-e', 'oe-local-files'], cwd=workspace_path)
 
 
 def get_repo_subdir(workspace_path: Path) -> Optional[str]:

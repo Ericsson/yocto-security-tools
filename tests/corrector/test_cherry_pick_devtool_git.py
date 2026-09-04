@@ -377,3 +377,86 @@ def test_transfer_survives_dirty_submodule_on_devtool(
     assert _git(repo, 'rev-parse', '--abbrev-ref', 'HEAD') == 'devtool'
     assert _git(repo, 'status', '--porcelain') == ''
     assert (repo / 'posixtm.c').read_text() == 'line1\nline2\nfixed\n'
+
+
+def test_transfer_survives_submodule_untracked_on_devtool(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a submodule dir left behind by a branch that doesn't
+    register it must not block transfer either.
+
+    Reproduces the actual root cause found in the live CVE-2024-0684 run:
+    coreutils' upstream-history branches (where the CVE branch is checked
+    out from) vendor gnulib as a real submodule via ``.gitmodules``, but the
+    recipe's ``devtool`` branch is built from a release tarball and has no
+    submodule metadata at all -- ``gnulib`` isn't a gitlink there, it simply
+    doesn't exist as a path. When the CVE branch initializes the submodule
+    and the workflow then checks out ``devtool``, git does not remove the
+    now-untracked ``gnulib/`` directory (nested ``.git`` guard), so
+    ``git status --porcelain=v2`` reports a plain ``?? gnulib/`` untracked
+    entry -- not a submodule status -- and ordinary ``git clean -fdx``
+    silently leaves it in place. A ``.gitmodules``-presence check on the
+    *current* (devtool) branch therefore no-ops and never cleans it up.
+    """
+    from cve_corrector.state import PatchError
+
+    monkeypatch.setenv('BBPATH', str(tmp_path))
+
+    sub_repo = tmp_path / 'gnulib2'
+    sub_repo.mkdir()
+    _git(sub_repo, 'init', '-q', '-b', 'main')
+    _git(sub_repo, 'config', 'user.email', 'test@example.com')
+    _git(sub_repo, 'config', 'user.name', 'Test')
+    _git(sub_repo, 'config', 'commit.gpgsign', 'false')
+    _commit(sub_repo, 'strtod.c', 'v1\n', 'gnulib v1')
+
+    repo = tmp_path / 'coreutils2'
+    repo.mkdir()
+    _git(repo, 'init', '-q', '-b', 'main')
+    _git(repo, 'config', 'user.email', 'test@example.com')
+    _git(repo, 'config', 'user.name', 'Test')
+    _git(repo, 'config', 'commit.gpgsign', 'false')
+    _git(repo, 'config', 'protocol.file.allow', 'always')
+
+    _commit(repo, 'Makefile', 'all:\n', 'build: add Makefile')
+    _git(repo, '-c', 'protocol.file.allow=always',
+         'submodule', 'add', str(sub_repo), 'gnulib')
+    _git(repo, 'commit', '-m', 'add gnulib submodule')
+    _commit(repo, 'posixtm.c', 'line1\nline2\n', 'release v9.4')
+    _git(repo, 'tag', 'v9.4')
+
+    _commit(repo, 'posixtm.c', 'line1\nline2\nfixed\n', 'Fix: posixtm overflow')
+    fix_sha = _git(repo, 'rev-parse', 'HEAD')
+
+    # devtool-base/devtool: built from a plain release tarball, no
+    # .gitmodules and no gnulib path registered at all.
+    _git(repo, 'checkout', '-q', '--orphan', 'devtool-base')
+    _git(repo, 'rm', '-q', '-rf', '.')
+    _git(repo, 'checkout', 'v9.4', '--', 'Makefile', 'posixtm.c')
+    _git(repo, 'commit', '-m', 'Initial commit from upstream tarball')
+    _git(repo, 'checkout', '-q', '-b', 'devtool')
+
+    cve_id = 'CVE-2024-0684'
+    _git(repo, 'checkout', '-q', '-b', cve_id, 'v9.4')
+    _git(repo, 'tag', '-f', 'original-version')
+    _git(repo, 'cherry-pick', fix_sha)
+    # Simulate devtool modify's submodule init on the CVE branch, left
+    # behind on disk when the workflow later switches to devtool.
+    _git(repo, '-c', 'protocol.file.allow=always',
+         'submodule', 'update', '--init', '--recursive')
+
+    state = WorkflowState(
+        workspace_path=repo, cve_id=cve_id, recipe='coreutils',
+        commit_hash=fix_sha, hash_details=[], meta_layer=None,
+        skip_build=True, skip_ptest=True)
+
+    try:
+        cherry_pick_to_devtool(state)
+    except PatchError as error:
+        pytest.fail(
+            "cherry_pick_to_devtool must remove a submodule directory left "
+            f"behind by a branch that doesn't register it: {error}")
+
+    assert _git(repo, 'rev-parse', '--abbrev-ref', 'HEAD') == 'devtool'
+    assert _git(repo, 'status', '--porcelain') == ''
+    assert not (repo / 'gnulib').exists()
+    assert (repo / 'posixtm.c').read_text() == 'line1\nline2\nfixed\n'
