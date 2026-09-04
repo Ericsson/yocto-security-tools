@@ -697,3 +697,95 @@ def test_unexpected_tool_exception_fails_safely_and_closes_transcript(tmp_path):
     assert not result.resolved and transcript._closed is True
     assert any(event["event"] == "session_error" for event in events)
     assert "host detail must not escape" not in result.transcript_path.read_text()
+
+
+def test_transcript_create_without_console_is_silent_by_default(tmp_path):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    deadline = SessionDeadline.from_timeout(10)
+    transcript = JSONLTranscript.create(
+        agent, "model", deadline, clock_ns=lambda: 1)
+    try:
+        assert transcript._console is None
+        transcript.write("tool_request", tool="read_file")
+    finally:
+        transcript.close()
+
+
+def test_transcript_create_stores_console_writer(tmp_path):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    deadline = SessionDeadline.from_timeout(10)
+    lines: list[str] = []
+    transcript = JSONLTranscript.create(
+        agent, "model", deadline, clock_ns=lambda: 1, console=lines.append)
+    try:
+        assert transcript._console == lines.append
+    finally:
+        transcript.close()
+
+
+def test_write_streams_lines_for_streamed_kinds_only(tmp_path):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    deadline = SessionDeadline.from_timeout(10)
+    lines: list[str] = []
+    transcript = JSONLTranscript.create(
+        agent, "model", deadline, clock_ns=lambda: 1, console=lines.append)
+    try:
+        transcript.write("tool_request", tool="read_file", tool_call_id="x")
+        transcript.write(
+            "tool_result", tool="read_file", success=True, mutated=False)
+        transcript.write("model_request", turn=1, message_count=2)
+        transcript.write("assistant_response", turn=1, content="hello")
+    finally:
+        transcript.close()
+    assert lines == [
+        "[#1] tool_request: read_file",
+        "[#2] tool_result: read_file \u2192 ok",
+    ]
+
+
+def test_write_console_output_does_not_affect_jsonl_file_bytes(tmp_path):
+    agent_a = tmp_path / "agent_a"
+    agent_b = tmp_path / "agent_b"
+    agent_a.mkdir()
+    agent_b.mkdir()
+    clock = FakeClock()
+    deadline_a = SessionDeadline.from_timeout(10, clock)
+    deadline_b = SessionDeadline.from_timeout(10, clock)
+
+    silent = JSONLTranscript.create(
+        agent_a, "model", deadline_a, clock_ns=lambda: 1)
+    streaming = JSONLTranscript.create(
+        agent_b, "model", deadline_b, clock_ns=lambda: 1, console=lambda line: None)
+    try:
+        silent.write("tool_request", tool="read_file", tool_call_id="x")
+        streaming.write("tool_request", tool="read_file", tool_call_id="x")
+    finally:
+        silent.close()
+        streaming.close()
+    assert silent.path.read_bytes() == streaming.path.read_bytes()
+
+
+def test_write_console_writer_oserror_is_suppressed(tmp_path):
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    deadline = SessionDeadline.from_timeout(10)
+
+    def broken_pipe(line: str) -> None:
+        raise OSError("broken pipe")
+
+    transcript = JSONLTranscript.create(
+        agent, "model", deadline, clock_ns=lambda: 1, console=broken_pipe)
+    try:
+        # Must not raise, and the transcript must remain fully usable.
+        transcript.write("tool_request", tool="read_file")
+        transcript.write("tool_result", tool="read_file", success=True)
+    finally:
+        transcript.close()
+    events = [
+        json.loads(line)
+        for line in transcript.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event"] for event in events] == ["tool_request", "tool_result"]

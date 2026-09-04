@@ -30,6 +30,7 @@ from .openai_client import (
     OpenAIResponseSizeError,
     OpenAIRetryableServerError,
 )
+from .openai_console import format_console_line
 from .openai_deadline import SessionDeadline
 from .openai_progress import ProgressTracker
 from .openai_redaction import redact_openai_text
@@ -156,6 +157,8 @@ class JSONLTranscript:
         deadline: SessionDeadline,
         started_at: float,
         secrets: Sequence[str] = (),
+        *,
+        console: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.path = path
         self._descriptor = descriptor
@@ -167,6 +170,11 @@ class JSONLTranscript:
         self._provider_retries = 0
         self._provider_retry_offset = 0
         self._provider_attempt = "primary"
+        # Purely cosmetic, best-effort live mirror of a subset of events to
+        # the terminal. None (the default) means fully silent, matching
+        # every existing call site's behavior unchanged. See
+        # cve_agent/openai_console.py for the streamed-event policy.
+        self._console = console
 
     @property
     def provider_retries(self) -> int:
@@ -191,6 +199,7 @@ class JSONLTranscript:
         secrets: Sequence[str] = (),
         *,
         clock_ns: Callable[[], int] = time.time_ns,
+        console: Optional[Callable[[str], None]] = None,
     ) -> "JSONLTranscript":
         """Create one unique mode-0600 transcript below the trusted agent dir."""
         safe_model = _safe_filename_component(redact_openai_text(model, secrets))
@@ -232,6 +241,7 @@ class JSONLTranscript:
             deadline,
             deadline.clock(),
             secrets,
+            console=console,
         )
 
     def write(self, kind: str, **data: object) -> None:
@@ -277,6 +287,15 @@ class JSONLTranscript:
                 view = view[written:]
         except OSError as exc:
             raise TranscriptError("native transcript write failed") from exc
+        # Cosmetic, best-effort live console mirror of a subset of events.
+        # This must never affect the mandatory audit path above: a broken
+        # pipe or other OSError from the console writer is swallowed here,
+        # while the descriptor write it follows remains fatal by design.
+        if self._console is not None and isinstance(safe_event, dict):
+            line = format_console_line(kind, safe_event)
+            if line is not None:
+                with contextlib.suppress(OSError):
+                    self._console(line)
         # Mirror provider and tool events into the durable per-attempt audit.
         # Loss of that audit is fatal and prevents further privileged work.
         from .artifacts import current_run_artifacts

@@ -34,6 +34,7 @@
 │   ├── claude_backend.py        # ClaudeBackend (drives the `claude` CLI)
 │   ├── openai_backend.py        # Native OpenAI-compatible backend and config
 │   ├── openai_client.py         # Bounded Chat Completions transport
+│   ├── openai_console.py        # Terse live stdout mirror of streamed transcript events
 │   ├── openai_{tools,git_tools,host_tools,loop}.py  # Typed agent runtime
 │   ├── result.py                # Versioned workflow/build/security outcomes
 │   ├── artifacts.py             # Durable per-attempt audit artifacts
