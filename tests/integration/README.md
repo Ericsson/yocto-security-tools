@@ -78,7 +78,7 @@ CLAUDE_LIVE_TESTS=1 pytest -m live -v
 | 4 | Conflict | CVE-2026-2903 | exit 1 |
 | 5 | Single patch with ptest | CVE-2023-42363 | exit 0 |
 | 6 | Agent conflict+ptest | CVE-2026-26157 | exit 14 (correct fix deviates from upstream; see script comment) |
-| 7 | Agent build-fix | CVE-2024-0684 | exit 14 (clean corrector-only apply; workspace removed before semantic validation; see script comment) |
+| 7 | Build-fix | CVE-2024-0684 | exit 0 (corrector-only; regression test for the gnulib submodule fix) |
 | 8 | Missing autotools files | CVE-2024-0684 | exit 0 |
 | 9 | Monorepo subprojects strip | CVE-2024-47539 | exit 0 |
 | 10 | Single-patch SRC_URI += removal | CVE-2024-39689 | exit 1 |
