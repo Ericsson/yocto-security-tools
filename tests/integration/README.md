@@ -82,7 +82,7 @@ CLAUDE_LIVE_TESTS=1 pytest -m live -v
 | 8 | Missing autotools files | CVE-2024-0684 | exit 0 |
 | 9 | Monorepo subprojects strip | CVE-2024-47539 | exit 0 |
 | 10 | Single-patch SRC_URI += removal | CVE-2024-39689 | exit 1 |
-| 11 | Agent conflict + devtool finish recovery | CVE-2024-39894 | exit 0 |
+| 11 | Agent conflict + devtool finish recovery | CVE-2024-39894 | exit 14 (conflicting line is only an OpenBSD version stamp; see script comment) |
 | 12 | Skip-build-ptest baseline | CVE-2024-44331 | exit 0 |
 | 13 | Agent resolution | CVE-2024-44331 | exit 0 |
 | 14 | Binutils underscore tag | CVE-2024-53589 | exit 0 |
