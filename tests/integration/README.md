@@ -84,7 +84,7 @@ CLAUDE_LIVE_TESTS=1 pytest -m live -v
 | 10 | Single-patch SRC_URI += removal | CVE-2024-39689 | exit 1 |
 | 11 | Agent conflict + devtool finish recovery | CVE-2024-39894 | exit 14 (conflicting line is only an OpenBSD version stamp; see script comment) |
 | 12 | Skip-build-ptest baseline | CVE-2024-44331 | exit 0 |
-| 13 | Agent resolution | CVE-2024-44331 | exit 0 |
+| 13 | Agent resolution | CVE-2024-44331 | exit 14 (workspace removed before semantic validation could run; see script comment) |
 | 14 | Binutils underscore tag | CVE-2024-53589 | exit 0 |
 | 15 | Cross-recipe shared patch removal | CVE-2025-32909 | exit 1 |
 | 16 | Ignored untracked files cleanup | CVE-2025-46802 | exit 0 |
