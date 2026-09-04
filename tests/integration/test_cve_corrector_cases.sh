@@ -8,14 +8,26 @@
 #   3. Multiple patches / series with build+ptest (CVE-2026-25210 / expat)
 #   4. Conflict (CVE-2026-2903 / re2c)
 #   5. Single patch with build+ptest (CVE-2023-42363 / busybox)
-#   6. Agent conflict resolution + ptest, single patch (CVE-2026-26157 / busybox)
+#   6. Agent conflict resolution + ptest, single patch (CVE-2026-26157 /
+#      busybox) -- expect exit 14: correct fix necessarily deviates from
+#      upstream's own defective commit; see inline comment above the call.
 #   7. Agent build-fix + backport, single patch (CVE-2024-0684 / coreutils)
+#      -- coreutils vendors gnulib as a submodule; transfer_commits' clean-
+#      tree precheck can still fail (TRANSFER_APPLY_FAILED, exit 5) if a
+#      submodule is left dirty. Expected exit code is under active
+#      investigation; do not assume 0 until that is confirmed.
 #   8. Missing autotools files between git and tarball (CVE-2024-0684 / coreutils)
 #   9. Monorepo subprojects/ path stripping (CVE-2024-47539 / gstreamer1.0-plugins-good)
 #  10. Single-patch SRC_URI += removal (CVE-2024-39689 / python3-certifi)
 #  11. Agent conflict + devtool finish recovery (CVE-2024-39894 / openssh)
+#      -- expect exit 14: the only conflicting line is an OpenBSD CVS
+#      version-stamp tag, so the resolved diff can never byte-match
+#      upstream's literal patch; see inline comment above the call.
 #  12. Skip-build-ptest baseline (CVE-2024-44331 / gstreamer1.0-rtsp-server)
 #  13. Full build investigation (CVE-2024-44331 / gstreamer1.0-rtsp-server)
+#      -- expect exit 14: corrector applies cleanly with zero AI
+#      involvement, but devtool finish removes the workspace before
+#      semantic validation can run; see inline comment above the call.
 #  14. Binutils underscore tag matching (CVE-2024-53589 / binutils)
 #  15. Cross-recipe shared patch removal (CVE-2025-32909 / libsoup-2.4)
 #  16. Ignored untracked files blocking devtool checkout (CVE-2025-46802 / screen)
