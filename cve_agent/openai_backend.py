@@ -20,9 +20,11 @@ from typing import Any, Callable, Optional
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .backend import (
+    VERIFY_TIMEOUT,
     AIBackend,
     BackendConfigurationError,
     SessionResult,
+    VerifyResult,
 )
 
 DEFAULT_OPENAI_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -517,6 +519,34 @@ class OpenAICompatibleBackend(AIBackend):
     def is_available(self) -> bool:
         """Return local implementation availability without probing an endpoint."""
         return True
+
+    def verify(self) -> VerifyResult:
+        """Run the existing provider conformance probe as a standalone check.
+
+        Reuses :class:`~cve_agent.openai_probe.ProviderConformanceProbe` (the
+        same harmless, fixed-string chat + tool-call round trip already used
+        opt-in mid-session via ``[probe]``) instead of a separate minimal
+        text-only check: this backend runs tools in-process, so proving tool
+        calls round-trip correctly *is* the meaningful health check. Requires
+        :meth:`configure` to have already run.
+        """
+        if self._config is None:
+            return VerifyResult(False, "backend 'openai' is not configured")
+        from .openai_client import OpenAIChatCompletionsClient, OpenAIClientError
+        from .openai_deadline import SessionDeadline
+        from .openai_probe import ProviderConformanceProbe, ProviderProbeError
+
+        deadline = SessionDeadline.from_timeout(VERIFY_TIMEOUT)
+        if self._client_factory is None:
+            client = OpenAIChatCompletionsClient(
+                self._config, deadline, capabilities=self._capabilities)
+        else:
+            client = self._client_factory(self._config, deadline)
+        try:
+            result = ProviderConformanceProbe(client, self._capabilities).run()
+        except (ProviderProbeError, OpenAIClientError) as exc:
+            return VerifyResult(False, str(exc))
+        return VerifyResult(True, f"conformance probe {result.status}")
 
     def tool_preamble(self) -> str:
         """Describe the native closed tool contract and authority boundary."""

@@ -139,6 +139,20 @@ Pass `--model sonnet|opus|haiku` (or a full model id); the default
 `claude-sonnet-5` is mapped to `sonnet`. Both backends run under the same
 file-scope guard, so the AI can only modify the files the upstream fix touches.
 
+**Verify a backend.** Before committing to a real backport run, confirm the
+selected `--backend` is installed, authenticated, and actually responding:
+
+```bash
+cve-agent --backend kiro --verify-backend
+cve-agent --backend claude --verify-backend
+cve-agent --backend openai --verify-backend
+```
+
+`--verify-backend` runs a trivial, no-op round trip against the backend (no
+file or git operations, no CVE workflow) and exits immediately: `0` if the
+backend responded correctly, non-zero with a reason otherwise. It replaces
+`--cve-id`/`--cve-list` for the invocation — omit both when using it.
+
 ### Native OpenAI-compatible backend and Ollama
 
 The built-in `openai` backend directly calls a non-streaming

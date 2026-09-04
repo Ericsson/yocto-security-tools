@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for the stage-one native OpenAI-compatible backend contract."""
 import dataclasses
+import json
 import os
 import socket
 import subprocess
@@ -77,6 +78,83 @@ def test_is_available_does_not_probe_endpoint(monkeypatch):
 
     monkeypatch.setattr(socket, "create_connection", fail_network)
     assert OpenAICompatibleBackend().is_available() is True
+
+
+class _ScriptedProbeClient:
+    """Injectable stand-in for OpenAIChatCompletionsClient's `complete()`."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def complete(self, messages, tools):
+        self.requests.append((messages, tools))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def test_verify_fails_when_not_configured():
+    backend = OpenAICompatibleBackend()
+    result = backend.verify()
+    assert result.ok is False
+    assert "not configured" in result.detail
+
+
+def test_verify_ok_on_successful_conformance_probe(monkeypatch):
+    from cve_agent.openai_client import AssistantResponse, FunctionToolCall
+
+    marker = "cve-agent-provider-probe-v1"
+    responses = [
+        AssistantResponse("OK", (), "stop", None),
+        AssistantResponse(
+            None,
+            (FunctionToolCall(
+                "probe-1", "probe_echo", json.dumps({"value": marker})),),
+            "tool_calls", None),
+        AssistantResponse("continued", (), "stop", None),
+        AssistantResponse("DONE", (), "stop", None),
+    ]
+    client = _ScriptedProbeClient(responses)
+
+    backend = OpenAICompatibleBackend(
+        client_factory=lambda config, deadline: client)
+    backend.configure(_options())
+    result = backend.verify()
+    assert result.ok is True
+    assert "passed" in result.detail
+    assert len(client.requests) == 4
+
+
+def test_verify_fails_on_probe_error(monkeypatch):
+    from cve_agent.openai_client import AssistantResponse
+
+    # Malformed: basic chat probe returns a tool call instead of text.
+    client = _ScriptedProbeClient([
+        AssistantResponse(None, (), "stop", None),
+    ])
+    backend = OpenAICompatibleBackend(
+        client_factory=lambda config, deadline: client)
+    backend.configure(_options())
+    result = backend.verify()
+    assert result.ok is False
+    assert result.detail
+
+
+def test_verify_fails_on_client_error():
+    from cve_agent.openai_client import OpenAIClientError
+
+    class _FailingClient:
+        def complete(self, messages, tools):
+            raise OpenAIClientError("connection refused")
+
+    backend = OpenAICompatibleBackend(
+        client_factory=lambda config, deadline: _FailingClient())
+    backend.configure(_options())
+    result = backend.verify()
+    assert result.ok is False
+    assert "connection refused" in result.detail
 
 
 def test_native_tool_preamble_requires_host_verified_finish():

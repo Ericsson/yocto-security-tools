@@ -21,6 +21,7 @@ from . import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_SESSION_TIMEOUT,
     EXIT_AGENT_ERROR,
+    EXIT_SUCCESS,
     EXIT_TRUST_DECLINED,
     AgentConfig,
     CveResult,
@@ -280,6 +281,9 @@ def _parse_args() -> argparse.Namespace:
     cve_group.add_argument('--cve-id', help='Single CVE identifier')
     cve_group.add_argument('--cve-list', type=Path,
                            help='File with CVE IDs, one per line')
+    cve_group.add_argument('--verify-backend', action='store_true',
+                        help='Run a trivial no-op check that --backend '
+                             'responds, then exit. No CVE workflow is run.')
     input_group.add_argument('--cve-info', type=Path,
                         help='JSON file with CVE metadata')
     input_group.add_argument('--fix-url', action='append', default=[],
@@ -491,18 +495,29 @@ def main() -> None:
               "of the two flags.", file=sys.stderr)
         sys.exit(EXIT_AGENT_ERROR)
 
-    if not args.cve_info and not args.fix_urls:
-        print("Error: --cve-info or --fix-url is required", file=sys.stderr)
-        sys.exit(EXIT_AGENT_ERROR)
-    if args.fix_urls and not args.cve_info and not args.recipe:
-        print("Error: --recipe is required when using --fix-url without "
-              "--cve-info", file=sys.stderr)
-        sys.exit(EXIT_AGENT_ERROR)
+    if not args.verify_backend:
+        if not args.cve_info and not args.fix_urls:
+            print("Error: --cve-info or --fix-url is required", file=sys.stderr)
+            sys.exit(EXIT_AGENT_ERROR)
+        if args.fix_urls and not args.cve_info and not args.recipe:
+            print("Error: --recipe is required when using --fix-url without "
+                  "--cve-info", file=sys.stderr)
+            sys.exit(EXIT_AGENT_ERROR)
 
     try:
         backend = _configure_backend(args)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(EXIT_AGENT_ERROR)
+
+    if args.verify_backend:
+        verify_result = backend.verify()
+        if verify_result.ok:
+            detail = f" — {verify_result.detail}" if verify_result.detail else ""
+            print(f"Backend '{backend.name}' verified: OK{detail}")
+            sys.exit(EXIT_SUCCESS)
+        print(f"Backend '{backend.name}' verification failed: "
+              f"{verify_result.detail}", file=sys.stderr)
         sys.exit(EXIT_AGENT_ERROR)
 
     if backend.name == 'kiro':
