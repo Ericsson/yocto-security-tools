@@ -135,7 +135,9 @@ def transfer_commits(
     initial_head = _git(workspace, "rev-parse", "--verify", "HEAD^{commit}").strip()
     initial_status = _git(workspace, "status", "--porcelain=v2", "-z")
     if initial_status:
-        raise TransferError(TransferCode.APPLY_FAILED, "target tree is not clean")
+        raise TransferError(
+            TransferCode.APPLY_FAILED,
+            "target tree is not clean: " + _summarize_dirty_status(initial_status))
     all_entries: list[TransferEntry] = []
     parents: list[str] = []
     created_paths: set[str] = set()
@@ -707,6 +709,47 @@ def verified_transfer_paths(path: Path, current_head: str) -> tuple[str, ...] | 
     except TransferError:
         return None
     return normalized if len(normalized) == len(paths) else None
+
+
+def _summarize_dirty_status(porcelain_v2_nul: str) -> str:
+    """Render a ``git status --porcelain=v2 -z`` blob as a short diagnostic.
+
+    ``transfer_commits``'s clean-tree precheck previously discarded this
+    output entirely, so a dirty target (most commonly a submodule left
+    checked out at the wrong commit or with its own untracked files —
+    neither of which ``git clean``/``git checkout`` on the superproject
+    touch) surfaced only as the bare string "target tree is not clean",
+    with no path to start debugging from.
+
+    Each porcelain v2 record's path is the record's own NUL-separated
+    field; rename/copy records (type ``2``) are followed by a second
+    NUL-separated field holding the original path, which this only cares
+    about skipping past, not reporting.
+    """
+    fields = [f for f in porcelain_v2_nul.split("\0") if f]
+    paths: list[str] = []
+    i = 0
+    while i < len(fields):
+        field = fields[i]
+        kind = field[:1]
+        if kind in {"1", "u"}:
+            paths.append(field.split(" ")[-1])
+            i += 1
+        elif kind == "2":
+            paths.append(field.split(" ")[-1])
+            i += 2  # skip the trailing original-path field
+        elif kind in {"?", "!"}:
+            paths.append(field[2:])
+            i += 1
+        else:
+            i += 1
+    if not paths:
+        return "(no parseable status entries)"
+    shown = paths[:MAX_TRANSFER_DIAGNOSTIC_PATHS]
+    summary = ", ".join(shown)
+    if len(paths) > MAX_TRANSFER_DIAGNOSTIC_PATHS:
+        summary += f", and {len(paths) - MAX_TRANSFER_DIAGNOSTIC_PATHS} more"
+    return summary
 
 
 def _git(workspace: Path, *args: str) -> str:
