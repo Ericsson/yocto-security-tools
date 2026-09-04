@@ -285,3 +285,95 @@ def test_reset_falls_back_to_base_without_patched(tmp_path: Path) -> None:
 
     assert reset_devtool_to_base(repo) is True
     assert _git(repo, 'rev-parse', 'HEAD') == _git(repo, 'rev-parse', 'devtool-base')
+
+
+def test_transfer_survives_dirty_submodule_on_devtool(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a registered-but-dirty submodule must not block transfer.
+
+    Reproduces the real-world coreutils/CVE-2024-0684 bug: coreutils vendors
+    gnulib as a submodule. ``devtool modify`` initializes it while preparing
+    the CVE branch (``git submodule update --init --recursive``), which
+    leaves the submodule checked out and populated on whatever branch was
+    current at the time. Neither ``git clean -fdx`` nor
+    ``git checkout -f devtool`` on the superproject touch a submodule's own
+    working tree, so switching to ``devtool`` can still leave the submodule
+    checked out at the wrong commit (or with leftover untracked content) —
+    ``git status --porcelain`` on the superproject then reports it dirty, and
+    ``transfer_commits``'s strict clean-tree check aborts with
+    ``TRANSFER_APPLY_FAILED: target tree is not clean`` before any patch is
+    even planned.
+    """
+    from cve_corrector.state import PatchError
+
+    monkeypatch.setenv('BBPATH', str(tmp_path))
+
+    # Submodule repo (stands in for gnulib) with two commits, so the
+    # superproject's gitlink can point at either one.
+    sub_repo = tmp_path / 'gnulib'
+    sub_repo.mkdir()
+    _git(sub_repo, 'init', '-q', '-b', 'main')
+    _git(sub_repo, 'config', 'user.email', 'test@example.com')
+    _git(sub_repo, 'config', 'user.name', 'Test')
+    _git(sub_repo, 'config', 'commit.gpgsign', 'false')
+    _commit(sub_repo, 'strtod.c', 'v1\n', 'gnulib v1')
+    sub_v1 = _git(sub_repo, 'rev-parse', 'HEAD')
+    _commit(sub_repo, 'strtod.c', 'v2\n', 'gnulib v2')
+
+    repo = tmp_path / 'coreutils'
+    repo.mkdir()
+    _git(repo, 'init', '-q', '-b', 'main')
+    _git(repo, 'config', 'user.email', 'test@example.com')
+    _git(repo, 'config', 'user.name', 'Test')
+    _git(repo, 'config', 'commit.gpgsign', 'false')
+    _git(repo, 'config', 'protocol.file.allow', 'always')
+
+    _commit(repo, 'Makefile', 'all:\n', 'build: add Makefile')
+    _git(repo, '-c', 'protocol.file.allow=always',
+         'submodule', 'add', str(sub_repo), 'gnulib')
+    _git(repo, 'commit', '-m', 'add gnulib submodule')
+    _commit(repo, 'posixtm.c', 'line1\nline2\n', 'release v9.4')
+    _git(repo, 'tag', 'v9.4')
+
+    _commit(repo, 'posixtm.c', 'line1\nline2\nfixed\n', 'Fix: posixtm overflow')
+    fix_sha = _git(repo, 'rev-parse', 'HEAD')
+
+    _git(repo, 'checkout', '-q', '--orphan', 'devtool-base')
+    _git(repo, 'rm', '-q', '-rf', '.')
+    _git(repo, 'checkout', 'v9.4', '--', '.')
+    _git(repo, 'commit', '-m', 'Initial commit from upstream tarball')
+    _git(repo, 'checkout', '-q', '-b', 'devtool')
+    # devtool's gitlink pins gnulib at v1 (as if the recipe's tarball/SRC_URI
+    # captured an older gnulib snapshot than what the CVE branch will check
+    # out), and the submodule is left uninitialized here — exactly what
+    # devtool leaves behind after extracting a tarball.
+    _git(repo, 'update-index', '--add', '--cacheinfo',
+         f'160000,{sub_v1},gnulib')
+    _git(repo, 'commit', '-m', 'pin gnulib submodule at v1')
+
+    cve_id = 'CVE-2024-0684'
+    _git(repo, 'checkout', '-q', '-b', cve_id, 'v9.4')
+    _git(repo, 'tag', '-f', 'original-version')
+    _git(repo, 'cherry-pick', fix_sha)
+    # Simulate devtool modify's submodule init on the CVE branch, which
+    # populates the submodule working tree at whatever commit the CVE
+    # branch's gitlink points to (v2, newer than devtool's pinned v1) and
+    # leaves it behind when the workflow later switches to devtool.
+    _git(repo, '-c', 'protocol.file.allow=always',
+         'submodule', 'update', '--init', '--recursive')
+
+    state = WorkflowState(
+        workspace_path=repo, cve_id=cve_id, recipe='coreutils',
+        commit_hash=fix_sha, hash_details=[], meta_layer=None,
+        skip_build=True, skip_ptest=True)
+
+    try:
+        cherry_pick_to_devtool(state)
+    except PatchError as error:
+        pytest.fail(
+            "cherry_pick_to_devtool must reset the submodule instead of "
+            f"failing on a dirty tree caused by it: {error}")
+
+    assert _git(repo, 'rev-parse', '--abbrev-ref', 'HEAD') == 'devtool'
+    assert _git(repo, 'status', '--porcelain') == ''
+    assert (repo / 'posixtm.c').read_text() == 'line1\nline2\nfixed\n'

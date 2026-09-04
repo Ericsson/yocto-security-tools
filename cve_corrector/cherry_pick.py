@@ -10,6 +10,7 @@ from .git_ops import (
     has_conflict_state,
     is_ancestor_of_head,
     is_bad_object,
+    reset_submodules,
     try_cherry_pick,
 )
 from .meta_layer import write_cve_status
@@ -141,6 +142,10 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
     if run_cmd(['git', 'checkout', '-f', 'devtool'], cwd=state.workspace_path) != 0:
         save_progress(state, 'cherry_pick_to_devtool')
         raise GitError("Failed to checkout devtool branch")
+    # Submodule working trees (e.g. coreutils' gnulib) are not touched by the
+    # clean/checkout above and can still report dirty on the devtool branch,
+    # tripping transfer_commits' strict clean-tree check below.
+    reset_submodules(state.workspace_path)
     try:
         manifest = transfer_commits(
             state.workspace_path,
