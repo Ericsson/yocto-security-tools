@@ -88,6 +88,44 @@ def test_exact_path_transfer_and_manifest(tmp_path):
     assert repeated.omitted_already_present_paths == ("src/api.c",)
 
 
+def test_dirty_target_tree_reports_offending_paths(tmp_path):
+    """The clean-tree precheck must name the dirty paths, not just say
+    "not clean" — otherwise a submodule left checked out at the wrong
+    commit or with its own untracked files (neither of which git
+    clean/checkout on the superproject touch) is unactionable to debug.
+    """
+    repo = _new_repo(tmp_path)
+    parent, commit = _source_change(repo, "src/api.c", b"old\n", b"fixed\n")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+    (repo / "leftover.txt").write_text("untracked\n")
+
+    with pytest.raises(TransferError) as excinfo:
+        _transfer(repo, commit)
+
+    assert excinfo.value.code == TransferCode.APPLY_FAILED
+    assert "leftover.txt" in str(excinfo.value)
+
+
+def test_summarize_dirty_status_parses_porcelain_v2():
+    """Unit-level check of the porcelain v2 (-z) parser used for the
+    dirty-tree diagnostic: ordinary changes, untracked, and submodule
+    entries (which use a distinct XY-in-position-2 record shape) must all
+    surface their path."""
+    from cve_corrector.transfer import _summarize_dirty_status
+
+    modified = "1 .M N... 100644 100644 100644 " + ("0" * 40) + " " + ("0" * 40) + " a.txt\0"
+    untracked = "? b.txt\0"
+    submodule = ("1 .M SC.. 160000 160000 160000 " + ("0" * 40) + " "
+                 + ("0" * 40) + " sub\0")
+
+    assert _summarize_dirty_status(modified) == "a.txt"
+    assert _summarize_dirty_status(untracked) == "b.txt"
+    assert _summarize_dirty_status(submodule) == "sub"
+    assert _summarize_dirty_status(modified + untracked + submodule) == (
+        "a.txt, b.txt, sub")
+    assert _summarize_dirty_status("") == "(no parseable status entries)"
+
+
 def test_transferred_commit_preserves_source_author_and_date(tmp_path):
     """The recreated commit on the target branch must keep the source
     commit's author/email/date — plain `git commit` (unlike cherry-pick or
