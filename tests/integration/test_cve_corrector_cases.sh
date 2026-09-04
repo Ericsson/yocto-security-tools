@@ -12,10 +12,10 @@
 #      busybox) -- expect exit 14: correct fix necessarily deviates from
 #      upstream's own defective commit; see inline comment above the call.
 #   7. Agent build-fix + backport, single patch (CVE-2024-0684 / coreutils)
-#      -- coreutils vendors gnulib as a submodule; transfer_commits' clean-
-#      tree precheck can still fail (TRANSFER_APPLY_FAILED, exit 5) if a
-#      submodule is left dirty. Expected exit code is under active
-#      investigation; do not assume 0 until that is confirmed.
+#      -- expect exit 14: clean corrector-only apply (see reset_submodules
+#      fix for the gnulib dirty-tree bug this exercised); devtool finish
+#      removes the workspace before semantic validation can run. See inline
+#      comment above the call.
 #   8. Missing autotools files between git and tarball (CVE-2024-0684 / coreutils)
 #   9. Monorepo subprojects/ path stripping (CVE-2024-47539 / gstreamer1.0-plugins-good)
 #  10. Single-patch SRC_URI += removal (CVE-2024-39689 / python3-certifi)
@@ -321,7 +321,17 @@ run_test "Single patch with ptest" "CVE-2023-42363" "0" "false" "$CVE_METADATA"
 run_test "Agent conflict+ptest" "CVE-2026-26157" "14" "false" "$CVE_METADATA" "agent"
 
 # Test 7: Agent build-fix + backport (single patch)
-run_test "Agent build-fix" "CVE-2024-0684" "0" "false" "$CVE_METADATA" "agent"
+# coreutils vendors gnulib as a submodule. The upstream commit cherry-picks
+# and transfers cleanly (no conflict, no AI involvement at all -- see
+# cve_corrector/git_ops.py's reset_submodules for the submodule-cleanup fix
+# this case exercises). Because the corrector alone completes the workflow,
+# devtool finish removes the workspace before the agent's
+# get_workspace_path() can find it to run semantic validation, so the result
+# is security_status=not_evaluated (WORKFLOW_COMPLETED_UNVERIFIED) rather
+# than verified/equivalent, and cve-agent exits 14 (EXIT_AGENT_ERROR) under
+# the default --security-gate=equivalent -- same by-design pattern as the
+# CVE-2024-44331 case (test 13). Exit 14 is the expected outcome here.
+run_test "Agent build-fix" "CVE-2024-0684" "14" "false" "$CVE_METADATA" "agent"
 
 # Test 8: Missing autotools files between git and tarball (single patch)
 run_test "Missing autotools files" "CVE-2024-0684" "0" "false" "$CVE_METADATA"
