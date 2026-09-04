@@ -632,6 +632,15 @@ GIT_TOOL_CONTRACTS: dict[str, ToolContract] = {
         {},
         "_git_cherry_pick_skip",
     ),
+    "revert_to_baseline": ToolContract(
+        "revert_to_baseline",
+        "Discard all typed-tool file changes, restoring them to the session "
+        "baseline. Use this before finish(needs_human/not_applicable) when a "
+        "fix cannot be committed (e.g. an environment-level Git identity "
+        "error) so the terminal clean-worktree check can pass.",
+        {},
+        "_revert_to_baseline",
+    ),
 }
 
 NATIVE_TOOL_CONTRACTS: dict[str, ToolContract] = {
@@ -1259,6 +1268,35 @@ class GitToolRuntime(FileToolRuntime):
             "skipped": True,
             "head": self._current_head(),
             "discarded_paths": discarded,
+        }, mutated=True)
+
+    def _revert_to_baseline(self, arguments: dict[str, object]) -> _ExecutionResult:
+        """Discard typed file changes, restoring them to the session baseline.
+
+        A low-risk escape hatch for a session that cannot record its fix as a
+        commit (e.g. the sandboxed Git executor has no author/committer
+        identity available). It only restores paths this session itself
+        changed through typed tools (``self._typed_mutation_paths``) back to
+        ``session_root_head`` — it never touches HEAD/the branch pointer and
+        never reaches outside that already-tracked, already-authorized set.
+        """
+        del arguments  # no parameters
+        trusted_head = self._require_current_trusted_head()
+        active = sorted(
+            name for name, present in self._operation_state().items() if present)
+        if active:
+            raise ToolPolicyError(
+                "revert_to_baseline is not allowed while a Git operation "
+                "is in progress")
+        discarded_paths = sorted(self._typed_mutation_paths)
+        if self._before_operation is not None:
+            self._before_operation("revert_to_baseline", self.workspace)
+        self._discard_typed_mutations(self.trusted_git_state.session_root_head)
+        self._typed_mutation_paths.clear()
+        return _ExecutionResult({
+            "reverted": True,
+            "head": trusted_head,
+            "discarded_paths": discarded_paths,
         }, mutated=True)
 
     def _stage_commit_paths(

@@ -11,10 +11,12 @@ import json
 import os
 import signal
 import sys
+from collections.abc import MutableMapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
 
+from shared.git_runner import resolve_git_identity
 from shared.paths import data_dir
 
 from . import (
@@ -466,8 +468,46 @@ def _config_from_args(args: argparse.Namespace,
     )
 
 
+_GIT_IDENTITY_ENV_VARS = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+)
+
+
+def _seed_git_identity_env(environ: MutableMapping[str, str]) -> None:
+    """Seed git author/committer identity env vars from global git config.
+
+    Sandboxed backend sessions (e.g. the native ``openai`` backend) disable
+    per-invocation global/system git config for their git subprocesses and
+    only honor ``GIT_AUTHOR_NAME``/``GIT_AUTHOR_EMAIL``/``GIT_COMMITTER_NAME``/
+    ``GIT_COMMITTER_EMAIL`` if already present in the environment. Without
+    them, a git commit inside the sandbox fails with "Committer identity
+    unknown" even though the operator has a perfectly usable identity in
+    their own ``git config --global``.
+
+    This resolves that identity once, outside the sandbox, and seeds it into
+    ``environ`` so it flows through the existing allowlisted env vars. It
+    never overwrites identity variables the caller already set explicitly,
+    and it never widens what the sandbox itself can read — the sandbox still
+    cannot read global/system git config directly.
+    """
+    if any(name in environ for name in _GIT_IDENTITY_ENV_VARS):
+        return
+    identity = resolve_git_identity()
+    if identity is None:
+        return
+    name, email = identity
+    environ.update({
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email,
+    })
+
+
 def _configure_backend(args: argparse.Namespace) -> AIBackend:
     """Resolve generic model defaults and backend-specific configuration."""
+    _seed_git_identity_env(os.environ)
     selection = resolve_backend_selector(args.backend)
     args.backend_selector = selection.selector
     args.backend = selection.backend

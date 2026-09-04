@@ -6,6 +6,7 @@ These fixtures create real git repos in tmp_path for git operations but mock
 devtool/bitbake commands, providing fast feedback during refactoring without
 needing the full Yocto build environment.
 """
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -13,6 +14,37 @@ from typing import Optional
 import pytest
 
 from tests.helpers import devtool_finish_sim, git, git_hash
+
+# ---------------------------------------------------------------------------
+# Isolate Git author/committer identity env vars across the whole suite
+# ---------------------------------------------------------------------------
+
+_GIT_IDENTITY_ENV_VARS = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_identity_env():
+    """Snapshot and restore GIT_AUTHOR_*/GIT_COMMITTER_* around every test.
+
+    cve_agent.__main__._seed_git_identity_env() sets these directly on
+    os.environ (not via monkeypatch) so a real global git identity can flow
+    through to a real sandboxed session. Any test that exercises it (or
+    calls _configure_backend()/main() without mocking it) must not leak that
+    mutation into later tests that assert a specific committer identity.
+    """
+    saved = {name: os.environ.get(name) for name in _GIT_IDENTITY_ENV_VARS}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
 
 # ---------------------------------------------------------------------------
 # Auto-mark tests using git fixtures as integration tests

@@ -22,6 +22,7 @@ from cve_agent.__main__ import (
     _process_batch,
     _read_cve_list,
     _save_results,
+    _seed_git_identity_env,
 )
 
 
@@ -132,6 +133,50 @@ class TestParseArgs:
         monkeypatch.setattr('sys.argv', ['cve-agent'])
         with pytest.raises(SystemExit):
             _parse_args()
+
+
+class TestSeedGitIdentityEnv:
+    """Regression tests for the "Committer identity unknown" cve-agent
+    --backend openai failure: the sandboxed git tool executor disables
+    global/system git config and only honors GIT_AUTHOR_*/GIT_COMMITTER_*
+    env vars, so without this seeding step a real global git identity is
+    invisible to the sandbox.
+    """
+
+    def test_seeds_all_four_vars_from_global_config(self):
+        environ: dict[str, str] = {}
+        with patch('cve_agent.__main__.resolve_git_identity',
+                   return_value=('Global Operator', 'operator@example.com')):
+            _seed_git_identity_env(environ)
+
+        assert environ == {
+            'GIT_AUTHOR_NAME': 'Global Operator',
+            'GIT_AUTHOR_EMAIL': 'operator@example.com',
+            'GIT_COMMITTER_NAME': 'Global Operator',
+            'GIT_COMMITTER_EMAIL': 'operator@example.com',
+        }
+
+    def test_noop_when_global_config_has_no_identity(self):
+        environ: dict[str, str] = {}
+        with patch('cve_agent.__main__.resolve_git_identity', return_value=None):
+            _seed_git_identity_env(environ)
+
+        assert environ == {}
+
+    @pytest.mark.parametrize('preset_var', [
+        'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
+    ])
+    def test_never_overwrites_any_preset_identity_var(self, preset_var):
+        environ = {preset_var: 'Caller Provided'}
+        mock_resolve = MagicMock(
+            return_value=('Global Operator', 'operator@example.com'))
+        with patch('cve_agent.__main__.resolve_git_identity', mock_resolve):
+            _seed_git_identity_env(environ)
+
+        # Not touched at all: seeding is skipped entirely, not merged.
+        assert environ == {preset_var: 'Caller Provided'}
+        mock_resolve.assert_not_called()
 
 
 class TestConfigFromArgs:

@@ -167,6 +167,13 @@ export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
 cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
 ```
 
+Committing a fix requires a Git author/committer identity. `cve-agent`
+seeds `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+`GIT_COMMITTER_EMAIL` at startup from `git config --global user.name`/
+`user.email` if none of the four are already set in the environment —
+explicit environment values always win. The sandboxed session itself never
+reads global or system Git config directly.
+
 Named profiles keep a validated endpoint/model policy in
 `etc/openai-<profile>.cfg` and still use the canonical native `openai` backend:
 

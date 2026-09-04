@@ -10,6 +10,19 @@ advertised, every shell command below is a semantic workflow example only:
 perform the equivalent operation with an advertised typed tool and never emit
 shell syntax or guess an unavailable tool name.
 
+**A verified fix that cannot be committed.** If a Git commit/amend operation
+fails for an environment reason rather than a content conflict — for example
+"Committer identity unknown" or any other error that is not about the diff
+itself — do not keep retrying the same operation, and do not hand-construct a
+reverse patch to undo your own edits. When a native backend advertises
+`revert_to_baseline`, call it once to discard your typed file changes back to
+the session baseline, then call `finish` with `status` set to `needs_human`
+and a `reason` that states the fix was verified but names the exact error that
+blocked committing it. A CLI backend without `revert_to_baseline` instead
+restores the affected files with its file-editing tool to their pre-edit
+content, then records the same conclusion (see the `needs_human` conventions
+below).
+
 The rules below apply regardless of the concrete tool names:
 
 - Use your file/directory inspection tool for ALL file and directory
