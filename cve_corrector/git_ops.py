@@ -461,6 +461,31 @@ def git_clean_workspace(workspace_path: Path, remove_ignored: bool = False) -> N
     run_cmd_capture(['git', 'clean', flags, '-e', 'oe-local-files'], cwd=workspace_path)
 
 
+def reset_submodules(workspace_path: Path) -> None:
+    """Reset registered submodules to a clean state matching the superproject.
+
+    ``git clean``/``git checkout`` on the superproject never touch submodule
+    working trees: a submodule left checked out at a different commit, with
+    local modifications, or with its own untracked files still reports dirty
+    in ``git status --porcelain`` on the superproject even after those
+    commands succeed. Recipes whose upstream repo vendors dependencies as
+    submodules (e.g. coreutils' gnulib) can therefore leave the tree
+    "not clean" for a later strict check (see ``transfer.transfer_commits``)
+    despite every superproject-level cleanup step having already run.
+
+    A no-op when the repo has no registered submodules.
+    """
+    if not _get_submodule_paths(workspace_path):
+        return
+    run_cmd_capture(
+        ['git', 'submodule', 'update', '--init', '--recursive', '--force'],
+        cwd=workspace_path)
+    run_cmd_capture(
+        ['git', 'submodule', 'foreach', '--recursive',
+         'git checkout -f . && git clean -fdx'],
+        cwd=workspace_path)
+
+
 def get_repo_subdir(workspace_path: Path) -> Optional[str]:
     """Return the source subdirectory name if repo is a monorepo, else None.
 
