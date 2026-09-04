@@ -159,6 +159,104 @@ class TestPreserveOriginalCommitMessage:
         assert "Conflicts Resolved:" in final_msg
 
 
+    @patch("subprocess.run")
+    @patch("cve_agent.review.run_git_stdout")
+    def test_restores_subject_and_authorship_when_ai_fabricated_new_commit(
+        self, mock_git, mock_run
+    ):
+        """Bug: the AI ran a plain `git commit` instead of amending the
+        cherry-picked commit, producing a brand-new commit with its own
+        subject line, author, and date, and no recognized note markers at
+        all (so has_agent_notes is False). amend_commit_with_summary must
+        still detect the subject mismatch, restore the original upstream
+        subject/body, and reset authorship/date to the upstream commit's
+        so the exported patch's From:/Date: headers are not spoofed."""
+        ai_fabricated_msg = (
+            "Fix: Integer Overflow in xmlBuildQName()\n"
+            "\n"
+            "we should respect the original patch and just modify it\n"
+        )
+
+        def git_side_effect(args, cwd):
+            if '--format=%B' in args:
+                return ai_fabricated_msg
+            if '--format=%s' in args and UPSTREAM_SHA in args:
+                return UPSTREAM_SUBJECT
+            if '--format=%b' in args and UPSTREAM_SHA in args:
+                return UPSTREAM_BODY
+            if '--format=%an' in args and UPSTREAM_SHA in args:
+                return "Nick Wellnhofer"
+            if '--format=%ae' in args and UPSTREAM_SHA in args:
+                return "wellnhofer@aevum.de"
+            if '--format=%aI' in args and UPSTREAM_SHA in args:
+                return "2025-05-27T12:53:17+02:00"
+            return ""
+
+        mock_git.side_effect = git_side_effect
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+
+        amend_commit_with_summary(
+            Path("/ws"), UPSTREAM_SHA,
+            "Changes from upstream commit 97acf3dfda80:\n"
+            "  - tree.c: adapted from upstream",
+        )
+
+        mock_run.assert_called_once()
+        argv = mock_run.call_args[0][0]
+        env = mock_run.call_args.kwargs["env"]
+        final_msg = argv[-1]
+
+        # Original upstream subject restored, AI's fabricated subject gone
+        assert UPSTREAM_SUBJECT in final_msg
+        assert "Fix: Integer Overflow" not in final_msg
+        # Original body restored
+        assert "LIBSSH2_PACKET_MAXPAYLOAD" in final_msg
+        # Summary still appended
+        assert "Changes from upstream commit" in final_msg
+
+        # Authorship and date reset to the upstream commit's identity
+        assert "--author" in argv
+        author_idx = argv.index("--author")
+        assert argv[author_idx + 1] == "Nick Wellnhofer <wellnhofer@aevum.de>"
+        assert env.get("GIT_AUTHOR_DATE") == "2025-05-27T12:53:17+02:00"
+
+    @patch("subprocess.run")
+    @patch("cve_agent.review.run_git_stdout")
+    def test_no_author_override_when_original_message_preserved(
+        self, mock_git, mock_run
+    ):
+        """When the AI correctly amended in place (subject preserved), no
+        --author/GIT_AUTHOR_DATE override is injected — the existing
+        (already-correct) authorship must be left untouched."""
+        preserved_msg = (
+            UPSTREAM_SUBJECT + "\n\n" + UPSTREAM_BODY + "\n\n"
+            "Conflicts Resolved:\n\n"
+            "src/transport.c (1 conflict):\n"
+            "- adapted\n\n"
+            "Assisted-by: kiro:claude-sonnet-4.6\n"
+        )
+
+        def git_side_effect(args, cwd):
+            if '--format=%B' in args:
+                return preserved_msg
+            if '--format=%s' in args and UPSTREAM_SHA in args:
+                return UPSTREAM_SUBJECT
+            if '--format=%b' in args and UPSTREAM_SHA in args:
+                return UPSTREAM_BODY
+            return ""
+
+        mock_git.side_effect = git_side_effect
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+
+        amend_commit_with_summary(Path("/ws"), UPSTREAM_SHA, "summary")
+
+        mock_run.assert_called_once()
+        argv = mock_run.call_args[0][0]
+        env = mock_run.call_args.kwargs["env"]
+        assert "--author" not in argv
+        assert "GIT_AUTHOR_DATE" not in env
+
+
 class TestDedupeDuplicateNoteBlocks:
     """Bug: repeated AI resolution attempts duplicate the agent note block.
 

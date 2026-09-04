@@ -149,12 +149,42 @@ def _dedupe_agent_notes(commit_msg: str) -> str:
     return result
 
 
+def _normalize_subject_for_compare(subject: str) -> str:
+    """Collapse whitespace and lowercase a subject for robust comparison."""
+    return " ".join(subject.split()).lower()
+
+
+def _original_commit_identity(
+    workspace_path: Path, upstream_sha: str
+) -> tuple[str, str, str]:
+    """Return the upstream commit's ``(name, email, iso-strict date)``.
+
+    Used to restore authorship on a commit the AI created from scratch
+    instead of amending the cherry-picked commit in place — without this,
+    ``git commit --amend`` silently keeps whatever author/date the AI's
+    own commit carries, so the exported patch's ``From:``/``Date:``
+    headers would still show the AI's identity even after the message
+    text is restored.
+    """
+    name = run_git_stdout(
+        ['log', '-1', '--format=%an', upstream_sha], workspace_path
+    ).strip()
+    email = run_git_stdout(
+        ['log', '-1', '--format=%ae', upstream_sha], workspace_path
+    ).strip()
+    date = run_git_stdout(
+        ['log', '-1', '--format=%aI', upstream_sha], workspace_path
+    ).strip()
+    return name, email, date
+
+
 def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
                               summary: str) -> None:
     """Amend the HEAD commit message to append the change summary.
 
-    If the AI replaced the original upstream message with backport notes,
-    restores the original message and appends the notes after it.
+    If the AI replaced the original upstream message and/or authorship
+    with its own, restores the original subject, body, author, and date,
+    then appends the notes and summary after it.
 
     Args:
         workspace_path: Path to workspace.
@@ -176,14 +206,34 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
     # Check if original upstream message body was preserved.
     # If the first non-blank line after the subject is a note marker,
     # or the subject itself is a note, the AI replaced the body.
-    original_subject = run_git_stdout(
+    original_subject_raw = run_git_stdout(
         ['log', '-1', '--format=%s', upstream_sha], workspace_path
     ).strip()
+    # %s is documented to be a single line; guard against a multi-line
+    # value (e.g. a test double or a malformed upstream commit) so it
+    # cannot be compared against a subject-only string below.
+    original_subject = original_subject_raw.splitlines()[0] if original_subject_raw else ''
+
+    # The AI may have fabricated a brand-new commit with its own subject
+    # line and no recognized note markers at all (e.g. it ran a plain
+    # `git commit` instead of amending the cherry-picked commit). Compare
+    # the current subject against the upstream one directly — this check
+    # is independent of has_agent_notes, which only detects a *known*
+    # note-block marker and previously left an unmarked rewritten subject
+    # untouched.
+    current_subject = lines[0].strip() if lines else ''
+    subject_replaced = bool(original_subject) and (
+        _normalize_subject_for_compare(current_subject)
+        != _normalize_subject_for_compare(original_subject)
+    )
 
     body_preserved = True
-    if has_agent_notes and original_subject:
-        # Case 1: subject itself is a marker (entire message replaced)
-        if lines and lines[0].strip().startswith(_AGENT_NOTE_MARKERS):
+    if original_subject and (has_agent_notes or subject_replaced):
+        # Case 1: subject itself is a marker or was rewritten outright
+        # (entire message replaced).
+        if subject_replaced or (
+            lines and lines[0].strip().startswith(_AGENT_NOTE_MARKERS)
+        ):
             body_preserved = False
         else:
             # Case 2: subject kept but body starts with a note
@@ -195,13 +245,15 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
             ):
                 body_preserved = False
 
-    if has_agent_notes and not body_preserved and original_subject:
-        # AI replaced the body — restore original and append notes
+    replaced_wholesale = not body_preserved and original_subject
+
+    if replaced_wholesale:
+        # AI replaced the subject/body — restore original and append notes
         original_body = run_git_stdout(
             ['log', '-1', '--format=%b', upstream_sha], workspace_path
         ).rstrip()
 
-        # Extract notes from current message
+        # Extract notes from current message, if any were recognized.
         note_start = None
         for i, line in enumerate(lines):
             if line.strip().startswith(_AGENT_NOTE_MARKERS):
@@ -233,9 +285,23 @@ def amend_commit_with_summary(workspace_path: Path, upstream_sha: str,
             lines = lines[:end]
         new_msg = '\n'.join(lines).strip() + f'\n\n{summary}\n'
 
+    argv = ['git', 'commit', '--no-edit', '--amend', '-m', new_msg]
+    env = build_git_env()
+    if replaced_wholesale:
+        # The AI fabricated a brand-new commit rather than amending the
+        # cherry-picked one, so HEAD's author/date are the AI's own,
+        # not upstream's. --amend never changes authorship on its own —
+        # restore it explicitly so the exported patch's From:/Date:
+        # headers match the original upstream commit, matching the
+        # restored subject/body.
+        name, email, date = _original_commit_identity(workspace_path, upstream_sha)
+        if name and email:
+            argv[3:3] = ['--author', f'{name} <{email}>']
+        if date:
+            env['GIT_AUTHOR_DATE'] = date
+
     result = subprocess.run(
-        ['git', 'commit', '--no-edit', '--amend', '-m', new_msg],
-        cwd=workspace_path, env=build_git_env(), check=False
+        argv, cwd=workspace_path, env=env, check=False
     )
     if result.returncode != 0:
         import logging
