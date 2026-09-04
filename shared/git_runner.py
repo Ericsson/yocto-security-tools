@@ -52,6 +52,29 @@ def run_capture(cmd: list[str],
                           check=False, env=env)
 
 
+def resolve_git_identity() -> Optional[tuple[str, str]]:
+    """Resolve the operator's global git identity, if fully configured.
+
+    Reads ``user.name``/``user.email`` from the *global* git config only
+    (``git config --global``) — this never touches per-repository config
+    and never mutates process state. Callers decide whether/how to use the
+    result (e.g. seeding ``GIT_AUTHOR_NAME``/``GIT_AUTHOR_EMAIL`` env vars).
+
+    Returns:
+        ``(name, email)`` if both are configured and non-empty, else
+        ``None``.
+    """
+    name_result = run_capture(['git', 'config', '--global', 'user.name'])
+    name = name_result.stdout.strip() if name_result.returncode == 0 else ''
+    if not name:
+        return None
+    email_result = run_capture(['git', 'config', '--global', 'user.email'])
+    email = email_result.stdout.strip() if email_result.returncode == 0 else ''
+    if not email:
+        return None
+    return name, email
+
+
 def run_git_stdout(args: list[str], cwd: Path) -> str:
     """Run git command and return stdout, or empty string on failure.
 

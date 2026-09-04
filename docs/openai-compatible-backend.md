@@ -38,6 +38,29 @@ paths and creates a bounded follow-up commit.
 repository state, NUL-delimited staged set, regular-file modes, and allowed-file
 scope before execution and verifies the resulting commit afterward.
 
+`git_commit`/`git_amend` need a Git author/committer identity. The sandboxed
+Git executor never reads global or system Git config directly
+(`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` are always disabled for its
+subprocesses) — it only honors `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+`GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` if already present in the
+process environment. `cve-agent` seeds these four variables once at startup
+from the operator's own global Git configuration (`git config`'s `user.name`
+and `user.email`, read from the operator's own home directory, not the
+sandbox) if none of the four are already set; explicit values in the
+environment always take precedence and are never overwritten. If the
+operator has no global Git identity configured either, these variables stay
+unset and `git_commit`/`git_amend` fail with Git's own "identity unknown"
+error, exactly as before.
+
+If a commit/amend operation fails for an environment reason rather than a
+content conflict, the model should call `revert_to_baseline` (no arguments)
+to discard its typed file changes back to the session baseline, then call
+`finish(status=needs_human, reason=...)` naming the exact error — see
+`AGENT_INSTRUCTIONS.md`. `revert_to_baseline` only restores paths this
+session itself changed through typed tools; it never touches `HEAD` or the
+branch pointer, and it refuses to run while a cherry-pick, merge, rebase, or
+revert is in progress.
+
 Replacement and follow-up messages receive one trusted native provenance
 trailer. Message text is carried in a mode-`0600` Git-internal temporary file,
 not as model-selected argv. A commit or amend records source content without

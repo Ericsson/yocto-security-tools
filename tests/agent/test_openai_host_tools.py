@@ -873,6 +873,42 @@ def test_non_code_finish_requires_baseline_head_and_clean_source(host_repository
     assert restored.success
 
 
+def test_revert_to_baseline_then_needs_human_recovers_from_uncommittable_fix(
+        host_repository):
+    """Regression test for the observed cve-agent --backend openai session:
+    the model applies a verified fix via a typed tool, cannot record it as a
+    commit (e.g. a Git identity failure), and must escalate via
+    finish(needs_human) — which requires a clean worktree. Before
+    revert_to_baseline existed, the model had to hand-construct a reverse
+    patch and could get stuck (as it did in the real session, exhausting its
+    non-progress budget on a malformed apply_patch_hunks call).
+    """
+    repo, agent = host_repository
+    runtime = _runtime(repo, agent)
+    mutated = runtime.dispatch("replace_in_file", {
+        "path": "a.c",
+        "old_text": "base\n",
+        "new_text": "fixed but uncommittable\n",
+        "expected_count": 1,
+    })
+    assert mutated.success
+
+    # finish is correctly rejected while the fix is still uncommitted/dirty.
+    blocked = runtime.dispatch("finish", {
+        "status": "needs_human", "reason": "cannot continue"})
+    assert not blocked.success
+
+    reverted = runtime.dispatch("revert_to_baseline", {})
+    assert reverted.success
+    assert (repo / "a.c").read_text(encoding="utf-8") == "base\n"
+
+    result = runtime.dispatch("finish", {
+        "status": "needs_human",
+        "reason": "fix verified but could not be committed: no Git identity",
+    })
+    assert result.success and result.terminal
+
+
 def test_non_code_finish_rejects_committed_head_change(host_repository):
     repo, agent = host_repository
     runtime = _runtime(repo, agent)

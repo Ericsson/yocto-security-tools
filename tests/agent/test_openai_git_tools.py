@@ -1037,6 +1037,63 @@ def test_skip_discards_typed_moved_path_adaptation_before_followup(repository):
     assert not _git(repo, "status", "--porcelain").stdout
 
 
+def test_revert_to_baseline_restores_typed_mutation_to_session_root(repository):
+    """Regression test for the stuck cve-agent --backend openai session: a
+    verified fix cannot be committed (e.g. missing Git identity), and the
+    model needs a reliable way to reach a clean worktree to escalate via
+    finish(needs_human) instead of hand-constructing a reverse patch.
+    """
+    repo, base, _ = repository
+    runtime = _runtime(repo, {"a.c"})
+    mutated = runtime.dispatch("replace_in_file", {
+        "path": "a.c",
+        "old_text": "base\n",
+        "new_text": "fixed but uncommittable\n",
+        "expected_count": 1,
+    })
+    assert mutated.success
+    assert (repo / "a.c").read_text(encoding="utf-8") == "fixed but uncommittable\n"
+
+    result = runtime.dispatch("revert_to_baseline", {})
+
+    assert result.success
+    assert result.payload == {
+        "reverted": True,
+        "head": base,
+        "discarded_paths": ["a.c"],
+    }
+    assert (repo / "a.c").read_text(encoding="utf-8") == "base\n"
+    assert not _git(repo, "status", "--porcelain").stdout
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base
+
+
+def test_revert_to_baseline_is_a_noop_with_no_typed_mutations(repository):
+    repo, base, _ = repository
+    runtime = _runtime(repo, {"a.c"})
+
+    result = runtime.dispatch("revert_to_baseline", {})
+
+    assert result.success
+    assert result.payload == {"reverted": True, "head": base, "discarded_paths": []}
+    assert not _git(repo, "status", "--porcelain").stdout
+
+
+def test_revert_to_baseline_refuses_during_active_cherry_pick(repository):
+    repo, _, branch = repository
+    source = _make_source_commit(repo, branch)
+    (repo / "a.c").write_text("stable\n", encoding="utf-8")
+    _git(repo, "add", "--", "a.c")
+    _commit(repo, "stable")
+    runtime = _runtime(repo, {"a.c", "b.c"})
+    started = runtime.dispatch("git_cherry_pick_start", {"revision": source})
+    assert started.payload["conflicted"] is True
+
+    result = runtime.dispatch("revert_to_baseline", {})
+
+    assert not result.success
+    assert "in progress" in result.payload["error"]
+
+
 def test_rollback_still_refuses_external_edit_after_typed_mutation(repository):
     repo, _, branch = repository
     source = _make_source_commit(repo, branch)
