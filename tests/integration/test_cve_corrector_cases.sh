@@ -11,11 +11,9 @@
 #   6. Agent conflict resolution + ptest, single patch (CVE-2026-26157 /
 #      busybox) -- expect exit 14: correct fix necessarily deviates from
 #      upstream's own defective commit; see inline comment above the call.
-#   7. Agent build-fix + backport, single patch (CVE-2024-0684 / coreutils)
-#      -- expect exit 14: clean corrector-only apply (see reset_submodules
-#      fix for the gnulib dirty-tree bug this exercised); devtool finish
-#      removes the workspace before semantic validation can run. See inline
-#      comment above the call.
+#   7. Build-fix + backport, single patch (CVE-2024-0684 / coreutils) --
+#      corrector-only regression test for the gnulib submodule dirty-tree
+#      fix; see inline comment above the call.
 #   8. Missing autotools files between git and tarball (CVE-2024-0684 / coreutils)
 #   9. Monorepo subprojects/ path stripping (CVE-2024-47539 / gstreamer1.0-plugins-good)
 #  10. Single-patch SRC_URI += removal (CVE-2024-39689 / python3-certifi)
@@ -40,7 +38,7 @@ LOG_DIR="${SCRIPT_DIR}/test-results/cases_$(date +%Y%m%d_%H%M%S)"
 RESULTS_FILE="${LOG_DIR}/results.txt"
 RUN_TEST=""
 
-# AI backend for the agent test cases (6, 7, 11, 13). Any backend registered
+# AI backend for the agent test cases (6, 11, 13). Any backend registered
 # with cve_agent works: kiro (default), claude, or a plugin from extra/.
 # AGENT_MODEL optionally overrides the model passed to the backend.
 AGENT_BACKEND="${AGENT_BACKEND:-kiro}"
@@ -320,18 +318,17 @@ run_test "Single patch with ptest" "CVE-2023-42363" "0" "false" "$CVE_METADATA"
 # note. Exit 14 is the expected, by-design outcome here, not a failure.
 run_test "Agent conflict+ptest" "CVE-2026-26157" "14" "false" "$CVE_METADATA" "agent"
 
-# Test 7: Agent build-fix + backport (single patch)
+# Test 7: Build-fix + backport (single patch)
 # coreutils vendors gnulib as a submodule. The upstream commit cherry-picks
-# and transfers cleanly (no conflict, no AI involvement at all -- see
-# cve_corrector/git_ops.py's reset_submodules for the submodule-cleanup fix
-# this case exercises). Because the corrector alone completes the workflow,
-# devtool finish removes the workspace before the agent's
-# get_workspace_path() can find it to run semantic validation, so the result
-# is security_status=not_evaluated (WORKFLOW_COMPLETED_UNVERIFIED) rather
-# than verified/equivalent, and cve-agent exits 14 (EXIT_AGENT_ERROR) under
-# the default --security-gate=equivalent -- same by-design pattern as the
-# CVE-2024-44331 case (test 13). Exit 14 is the expected outcome here.
-run_test "Agent build-fix" "CVE-2024-0684" "14" "false" "$CVE_METADATA" "agent"
+# and transfers cleanly with no conflict -- this is the corrector-only
+# regression test for cve_corrector/git_ops.py's reset_submodules fix for
+# the gnulib dirty-tree bug (TRANSFER_APPLY_FAILED: target tree is not
+# clean: gnulib/). Runs the corrector directly (not the agent) with
+# --skip-build --skip-ptest since devtool build/ptest are not needed to
+# exercise the cherry_pick_to_devtool/transfer_commits path this covers,
+# so cve-corrector's own exit code (0) is the outcome under test here, not
+# cve-agent's post-hoc semantic-validation exit code.
+run_test "Build-fix" "CVE-2024-0684" "0" "false" "$CVE_METADATA" "corrector" "--skip-build --skip-ptest"
 
 # Test 8: Missing autotools files between git and tarball (single patch)
 run_test "Missing autotools files" "CVE-2024-0684" "0" "false" "$CVE_METADATA"
