@@ -465,16 +465,19 @@ model. The tool result reports when the on-disk log was truncated.
 Non-interactive sessions (the default; i.e. without `--interactive`) also
 stream a terse, best-effort live mirror of a subset of transcript events to
 stdout as they happen, so a long batch or CI run does not appear to hang: one
-line per tool call request/result, the terminal result, the session end, and
-provider retries or no-progress warnings. Each line is prefixed with the
-transcript's `[#<sequence>]` number so it can be cross-referenced against the
-JSONL file. Per-turn model request/response bookkeeping, HTTP attempt/response
-detail, and other lower-level events remain transcript-only. This mirror is
-always on for non-interactive sessions and cannot be suppressed; interactive
-sessions (`--interactive`/`-i`) are unaffected and print nothing on this path.
-Console output can never fail a session — if stdout is closed or piped to a
-process that exits early, the console line is silently dropped and the
-mandatory transcript write is unaffected.
+line per tool call request/result, the model's visible commentary text on
+each turn (when it produced any alongside its tool calls), the terminal
+result, the session end, and provider retries or no-progress warnings. Each
+line is prefixed with the transcript's `[#<sequence>]` number so it can be
+cross-referenced against the JSONL file. The model's hidden/opaque reasoning
+field (used only to satisfy providers that require it to be replayed on the
+next turn) is not streamed or logged anywhere; only its visible `content`
+is. Lower-level HTTP attempt/response detail remains transcript-only. This
+mirror is always on for non-interactive sessions and cannot be suppressed;
+interactive sessions (`--interactive`/`-i`) are unaffected and print nothing
+on this path. Console output can never fail a session — if stdout is closed
+or piped to a process that exits early, the console line is silently dropped
+and the mandatory transcript write is unaffected.
 
 Native Git and `devtool build` children receive a filtered locale-stable
 environment. API-key variables, proxy variables, `GIT_SSH`, and SSH-agent

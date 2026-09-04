@@ -196,10 +196,14 @@ def test_non_interactive_session_streams_tool_lines_to_stdout(tmp_path, capsys):
     repo, agent, context = _repository(tmp_path)
     runner = FakeBuildRunner(agent)
     actions = [
-        _response(
-            _call("context", "read_file", json.dumps({"path": str(context)})),
-            _call("status", "git_status"),
-            _call("build", "build_recipe")),
+        AssistantResponse(
+            "Inspecting the recipe before building.",
+            (
+                _call("context", "read_file", json.dumps({"path": str(context)})),
+                _call("status", "git_status"),
+                _call("build", "build_recipe"),
+            ),
+            "tool_calls", None),
         _response(_call(
             "finish", "finish",
             '{"status":"done","reason":"verified","summary":"build passed"}')),
@@ -215,7 +219,9 @@ def test_non_interactive_session_streams_tool_lines_to_stdout(tmp_path, capsys):
     assert "tool_result: read_file \u2192 ok" in printed
     assert "terminal_result: status=done" in printed
     assert "session_end: resolved=True" in printed
-    # Only the streamed subset appears -- per-turn model chatter must not.
+    # The model's visible commentary text streams too, prefixed as "model:".
+    assert "model: Inspecting the recipe before building." in printed
+    # Only the streamed subset appears -- raw per-turn bookkeeping must not.
     assert "model_request" not in printed
     assert "assistant_response" not in printed
 
@@ -229,7 +235,10 @@ def test_interactive_session_is_silent_on_stdout(tmp_path, capsys):
 
     repo, agent, context = _repository(tmp_path)
     actions = [
-        _response(_call("context", "read_file", json.dumps({"path": str(context)}))),
+        AssistantResponse(
+            "Reading the generated context file first.",
+            (_call("context", "read_file", json.dumps({"path": str(context)})),),
+            "tool_calls", None),
         _response(_call(
             "finish", "finish",
             '{"status":"needs_human","reason":"prerequisite is out of scope"}')),

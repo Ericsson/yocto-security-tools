@@ -738,11 +738,15 @@ def test_write_streams_lines_for_streamed_kinds_only(tmp_path):
             "tool_result", tool="read_file", success=True, mutated=False)
         transcript.write("model_request", turn=1, message_count=2)
         transcript.write("assistant_response", turn=1, content="hello")
+        # A tool-call-only turn with no visible commentary must not print
+        # an empty line.
+        transcript.write("assistant_response", turn=2, content=None)
     finally:
         transcript.close()
     assert lines == [
         "[#1] tool_request: read_file",
         "[#2] tool_result: read_file \u2192 ok",
+        "[#4] model: hello",
     ]
 
 
