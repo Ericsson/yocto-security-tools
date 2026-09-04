@@ -88,6 +88,42 @@ def test_exact_path_transfer_and_manifest(tmp_path):
     assert repeated.omitted_already_present_paths == ("src/api.c",)
 
 
+def test_transferred_commit_preserves_source_author_and_date(tmp_path):
+    """The recreated commit on the target branch must keep the source
+    commit's author/email/date — plain `git commit` (unlike cherry-pick or
+    am) always authors as the current user, so without an explicit
+    GIT_AUTHOR_* override the exported patch's From:/Date: headers would
+    show whoever ran the corrector instead of the upstream contributor."""
+    repo = _new_repo(tmp_path)
+    target = repo / "src/api.c"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"old\n")
+    parent = _commit(repo, "source base")
+    target.write_bytes(b"fixed\n")
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Nick Wellnhofer",
+        "GIT_AUTHOR_EMAIL": "wellnhofer@aevum.de",
+        "GIT_AUTHOR_DATE": "2025-05-27T12:53:17+02:00",
+    }
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "tree: fix integer overflow"],
+        cwd=repo, check=True, env=env,
+    )
+    commit = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+
+    _transfer(repo, commit)
+
+    assert _git(repo, "show", "-s", "--format=%an", "HEAD") == "Nick Wellnhofer"
+    assert _git(repo, "show", "-s", "--format=%ae", "HEAD") == "wellnhofer@aevum.de"
+    assert _git(repo, "show", "-s", "--format=%aI", "HEAD") == "2025-05-27T12:53:17+02:00"
+    # The committer identity (who ran the corrector) is untouched — only
+    # authorship of the transferred change is restored.
+    assert _git(repo, "show", "-s", "--format=%cn", "HEAD") == "Test"
+
+
 def test_configured_source_prefix_transfer(tmp_path):
     repo = _new_repo(tmp_path)
     _, commit = _source_change(
