@@ -12,6 +12,11 @@ _CASES: list[tuple[str, dict[str, object], str]] = [
         "[#5] tool_request: read_file",
     ),
     (
+        "assistant_response",
+        {"sequence": 5, "turn": 2, "content": "Inspecting the build failure."},
+        "[#5] model: Inspecting the build failure.",
+    ),
+    (
         "tool_result",
         {"sequence": 6, "tool": "read_file", "success": True},
         "[#6] tool_result: read_file \u2192 ok",
@@ -67,10 +72,31 @@ def test_format_console_line_exact_output(kind, data, expected):
 
 def test_unrecognized_kind_returns_none():
     assert format_console_line("model_request", {"sequence": 1}) is None
-    assert format_console_line("assistant_response", {"sequence": 2}) is None
     assert format_console_line("profile_loaded", {"sequence": 3}) is None
     assert format_console_line("http_attempt", {"sequence": 4}) is None
     assert format_console_line("nonexistent_kind", {"sequence": 5}) is None
+
+
+def test_assistant_response_skips_tool_call_only_turns():
+    # A turn where the model only issued tool calls with no commentary
+    # (content is None or empty) must not print an empty line.
+    assert format_console_line("assistant_response", {"sequence": 1, "content": None}) is None
+    assert format_console_line("assistant_response", {"sequence": 1, "content": ""}) is None
+    assert format_console_line("assistant_response", {"sequence": 1, "content": "   "}) is None
+    assert format_console_line("assistant_response", {"sequence": 1}) is None
+
+
+def test_assistant_response_strips_surrounding_whitespace():
+    assert format_console_line(
+        "assistant_response", {"sequence": 3, "content": "  hello world  \n"},
+    ) == "[#3] model: hello world"
+
+
+def test_assistant_response_prints_full_multiline_text():
+    text = "Line one.\nLine two.\nLine three."
+    assert format_console_line(
+        "assistant_response", {"sequence": 4, "content": text},
+    ) == f"[#4] model: {text}"
 
 
 def test_truncated_event_is_handled_without_raising():

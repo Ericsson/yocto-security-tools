@@ -17,12 +17,21 @@ interrupt the mandatory audit path in :class:`JSONLTranscript`.
 from collections.abc import Callable, Mapping
 from typing import Optional
 
-_Formatter = Callable[[Mapping[str, object]], str]
+_Formatter = Callable[[Mapping[str, object]], Optional[str]]
 
 
 def _tool_request(data: Mapping[str, object]) -> str:
     tool = data.get("tool", "?")
     return f"tool_request: {tool}"
+
+
+def _assistant_response(data: Mapping[str, object]) -> Optional[str]:
+    content = data.get("content")
+    if not isinstance(content, str) or not content.strip():
+        # Tool-call-only turns carry no visible commentary; skip the line
+        # entirely rather than printing an empty one.
+        return None
+    return f"model: {content.strip()}"
 
 
 def _tool_result(data: Mapping[str, object]) -> str:
@@ -75,6 +84,7 @@ def _http_failure(data: Mapping[str, object]) -> str:
 
 _FORMATTERS: dict[str, _Formatter] = {
     "tool_request": _tool_request,
+    "assistant_response": _assistant_response,
     "tool_result": _tool_result,
     "terminal_result": _terminal_result,
     "session_end": _session_end,
@@ -88,9 +98,11 @@ _FORMATTERS: dict[str, _Formatter] = {
 def format_console_line(kind: str, data: Mapping[str, object]) -> Optional[str]:
     """Return one terse console line for a streamed event kind, or None.
 
-    Returns ``None`` for any kind not in the streamed subset, and for any
-    input (including the transcript's compact ``{"truncated": True}``
-    fallback) that a formatter cannot render. Never raises.
+    Returns ``None`` for any kind not in the streamed subset, when a
+    formatter intentionally has nothing to show (e.g. a tool-call-only
+    assistant turn with no visible commentary), and for any input
+    (including the transcript's compact ``{"truncated": True}`` fallback)
+    that a formatter cannot render. Never raises.
     """
     formatter = _FORMATTERS.get(kind)
     if formatter is None:
