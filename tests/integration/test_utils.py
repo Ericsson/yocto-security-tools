@@ -372,7 +372,22 @@ def _extract_diff_lines(patch_file):
 
 
 def _extract_files_touched(patch_file):
-    """Extract set of files modified by a patch."""
+    """Extract set of files modified by a patch.
+
+    Most patches carried in oe-core are ``git format-patch`` output and
+    declare their files via ``diff --git a/<path> b/<path>`` headers. Some
+    reference patches imported from distro trackers (e.g. Debian/Ubuntu's
+    ``debian/patches/``) instead use the plain ``diffutils`` ``-p`` /
+    ``Index:`` style: no ``diff --git`` line at all, just a ``---``/``+++``
+    pair whose paths carry a version-numbered tarball directory instead of
+    ``a/``/``b/`` (e.g. ``--- binutils-2.38.orig/bfd/elflink.c`` / ``+++
+    binutils-2.38/bfd/elflink.c``). Falling back to the ``+++`` header for
+    those, and stripping that leading directory the same way ``patch -p1``
+    would, keeps such a patch's real touched file from being reported as an
+    empty set — which previously made ``compare_patches_detailed``
+    misreport every file in the patch as "missing" relative to a same-file
+    generated patch, even when the backport was otherwise equivalent.
+    """
     files = set()
     try:
         with open(patch_file) as f:
@@ -381,6 +396,19 @@ def _extract_files_touched(patch_file):
                     parts = line.split()
                     if len(parts) >= 4:
                         files.add(_strip_diff_prefix(parts[3]))
+                elif line.startswith('+++ '):
+                    raw = line[len('+++ '):].split('\t')[0].strip()
+                    if raw == '/dev/null':
+                        continue
+                    if raw.startswith(('a/', 'b/')):
+                        path = _strip_diff_prefix(raw)
+                    elif '/' in raw:
+                        # Not a git a/-b/ pair: assume a tarball-style
+                        # top-level directory and strip it like -p1.
+                        path = raw.split('/', 1)[1]
+                    else:
+                        path = raw
+                    files.add(path)
     except Exception:
         pass
     return files

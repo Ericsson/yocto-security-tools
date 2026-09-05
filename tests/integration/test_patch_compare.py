@@ -184,6 +184,43 @@ class TestFilesTouched:
             _write(tmp_path, "p.patch", patch))
         assert files == {"bin/other.c"}
 
+    def test_index_style_patch_without_diff_git_header(self, tmp_path):
+        """Regression: CVE-2025-1176's binutils reference patch.
+
+        Distro-tracker patches (here, imported from Ubuntu's
+        debian/patches/) use plain diffutils -p output: no ``diff --git``
+        line, and ``---``/``+++`` headers carrying the upstream tarball's
+        version-numbered top-level directory instead of git's ``a/``/``b/``.
+        Before the fix this returned an empty set, making
+        compare_patches_detailed misreport the file as "missing in
+        generated" even when a generated patch touched the exact same file.
+        """
+        patch = (
+            "Index: binutils-2.38/bfd/elflink.c\n"
+            "===================================================================\n"
+            "--- binutils-2.38.orig/bfd/elflink.c\n"
+            "+++ binutils-2.38/bfd/elflink.c\n"
+            "@@ -62,6 +62,7 @@ struct elf_find_verdep_info\n"
+            " static bool _bfd_elf_fix_symbol_flags\n"
+            "   (struct elf_link_hash_entry *, struct elf_info_failed *);\n"
+            "+static struct elf_link_hash_entry *dummy;\n"
+        )
+        files = test_utils._extract_files_touched(
+            _write(tmp_path, "p.patch", patch))
+        assert files == {"bfd/elflink.c"}
+
+    def test_dev_null_plus_header_is_ignored(self, tmp_path):
+        """A deleted file's ``+++ /dev/null`` header names no real path."""
+        patch = (
+            "--- a/removed.c\n"
+            "+++ /dev/null\n"
+            "@@ -1,3 +0,0 @@\n"
+            "-int x;\n"
+        )
+        files = test_utils._extract_files_touched(
+            _write(tmp_path, "p.patch", patch))
+        assert files == set()
+
 
 @requires_interdiff
 class TestInterdiffComparison:
