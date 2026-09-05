@@ -354,9 +354,9 @@ here). A superset of the default roster and a subset of the extended one.
 | hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
 | hard | `CVE-2025-1153` | binutils | 45 | 28 |
 
-#### Extended roster (20 CVEs)
+#### Extended roster (19 CVEs)
 
-9 `easy`, 2 `medium`, 9 `hard` — every CVE mined so far that reproduces a
+8 `easy`, 2 `medium`, 9 `hard` — every CVE mined so far that reproduces a
 recoverable exit against openembedded-core (scarthgap). A superset of the
 balanced roster.
 
@@ -367,7 +367,6 @@ balanced roster.
 | easy | `CVE-2024-52532` | libsoup-2.4 | 3 | 1 |
 | easy | `CVE-2024-6345` | python3-setuptools | 2 | 2 |
 | easy | `CVE-2024-7537` | ofono | 2 | 1 |
-| easy | `CVE-2025-47183` | gstreamer1.0-plugins-good | 1 | 1 |
 | easy | `CVE-2026-21441` | python3-urllib3 | 3 | 1 |
 | easy | `CVE-2026-24049` | python3-wheel | 2 | 2 |
 | easy | `CVE-2026-26158` | busybox | 3 | 2 |
@@ -412,7 +411,7 @@ then score it with `bench_lib.count_conflict_markers` /
 add it to every larger one too, or the nesting test in
 `test_benchmark_roster.py` will fail.
 
-### Clean-apply roster (6 CVEs)
+### Clean-apply roster (7 CVEs)
 
 ```json
 {
@@ -457,6 +456,7 @@ resolution, which is why this roster is kept separate.
 | `CVE-2025-24857` | u-boot-tools | 1 | 0 |
 | `CVE-2025-46805` | screen | 1 | 10 |
 | `CVE-2025-46836` | net-tools | 2 | 4 |
+| `CVE-2025-47183` | gstreamer1.0-plugins-good | 1 | 0 |
 
 `CVE-2025-24857` (u-boot-tools) moved here from the extended roster. It used to
 fail with an empty cherry-pick because its only recorded fix commit was
