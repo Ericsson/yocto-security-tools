@@ -789,17 +789,69 @@ for m in resolve_models('${MODELS_SELECTOR}'):
                     # location is filtered out of the Kiro child environment.
                     # Select the sole created run directory out-of-band; model
                     # text in the combined stdout/stderr log is never consulted.
-                    artifact_dir=$(python3 - "$artifact_data_root" "$cve_id" <<'PY'
+                    #
+                    # Derive the case root through shared.paths.data_dir()
+                    # instead of joining the layout by hand: data_dir() appends
+                    # the application component ('yocto-security-tools') to
+                    # CVE_TOOLS_DATA_DIR, and cve_agent.artifacts.RunArtifacts
+                    # creates runs under `data_dir()/results/cases/<cve>`.
+                    # Open-coding that path without the application component
+                    # made every selection fail in bench_20260904_165741:
+                    # artifact_dir came back empty for all 100 rows, which
+                    # silently disabled both the durable-result exit override
+                    # and the generated-vs-reference patch comparison. 93 rows
+                    # kept diff_bucket='-', and the only 7 that got a bucket
+                    # were those whose raw process exit was already 0 -- so the
+                    # judge phase saw a single judgeable row out of 100.
+                    #
+                    # Diagnostics go to stderr (appended to the run log), never
+                    # to stdout: stdout is the sole channel for the resolved
+                    # path, so anything printed there would be captured into
+                    # artifact_dir itself.
+                    artifact_dir=$(python3 - "$artifact_data_root" "$cve_id" \
+                            2>>"$run_log" <<'PY'
+import os
 import sys
+
+os.environ['CVE_TOOLS_DATA_DIR'] = sys.argv[1]
+
 from pathlib import Path
 
-case_root = Path(sys.argv[1]) / 'results' / 'cases' / sys.argv[2]
+from shared.paths import data_dir
+
+root = Path(sys.argv[1])
+case_root = data_dir() / 'results' / 'cases' / sys.argv[2]
 try:
     runs = [entry for entry in case_root.iterdir()
             if entry.is_dir() and not entry.is_symlink()]
-except OSError:
+except OSError as error:
     runs = []
+    print(f'ARTIFACT_SELECT: cannot list {case_root}: {error!r}',
+          file=sys.stderr)
 if len(runs) != 1:
+    print('ARTIFACT_SELECT_FAILED: expected exactly 1 run directory under '
+          f'{case_root}, found {len(runs)}', file=sys.stderr)
+    probe = root
+    print(f'ARTIFACT_SELECT:   exists({probe})={probe.exists()}',
+          file=sys.stderr)
+    for part in case_root.relative_to(root).parts:
+        probe = probe / part
+        print(f'ARTIFACT_SELECT:   exists({probe})={probe.exists()}',
+              file=sys.stderr)
+    deepest = root
+    for part in case_root.relative_to(root).parts:
+        candidate = deepest / part
+        if not candidate.exists():
+            break
+        deepest = candidate
+    try:
+        entries = sorted(entry.name for entry in deepest.iterdir())
+    except OSError as error:
+        entries = [f'<unlistable: {error!r}>']
+    print(f'ARTIFACT_SELECT:   deepest existing={deepest}', file=sys.stderr)
+    print(f'ARTIFACT_SELECT:   its entries={entries[:20]}', file=sys.stderr)
+    for entry in sorted(runs)[:20]:
+        print(f'ARTIFACT_SELECT:   candidate run={entry.name}', file=sys.stderr)
     raise SystemExit(1)
 print(runs[0].resolve(strict=True))
 PY
