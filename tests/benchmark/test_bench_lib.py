@@ -415,14 +415,20 @@ class TestClassifyDiffBucket:
 
 
 class TestResolveModels:
-    def test_default_returns_five(self):
+    def test_default_returns_four(self):
         models = resolve_models('default')
         names = {m['name'] for m in models}
         assert names == {
-            'claude-opus-5', 'claude-sonnet-5', 'claude-sonnet-4.6',
+            'claude-opus-5', 'claude-sonnet-5',
             'claude-haiku-4.5', 'qwen3-coder-next',
         }
         assert all(m['tier'] == 'default' for m in models)
+
+    def test_sonnet_4_6_is_not_in_the_default_set(self):
+        """Selectable by name via --models, but not benchmarked by default."""
+        assert MODELS['claude-sonnet-4.6']['tier'] == 'full'
+        assert 'claude-sonnet-4.6' not in {
+            m['name'] for m in resolve_models('default')}
 
     def test_minimax_is_not_in_the_default_set(self):
         """Poor credits-per-usable-backport; selectable by name, not by default."""
