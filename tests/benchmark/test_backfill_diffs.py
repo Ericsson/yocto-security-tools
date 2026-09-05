@@ -76,7 +76,8 @@ def _write_csv(results_dir: Path, rows):
     return path
 
 
-def _make_results_dir(tmp_path, monkeypatch, outcome, *, candidate=CANDIDATE):
+def _make_results_dir(tmp_path, monkeypatch, outcome, *, candidate=CANDIDATE,
+                      status=ResultStatus.SUCCESS):
     """Build a results directory with one real, validated artifact run."""
     results_dir = tmp_path / "bench"
     (results_dir / "agent-artifacts").mkdir(parents=True)
@@ -89,7 +90,7 @@ def _make_results_dir(tmp_path, monkeypatch, outcome, *, candidate=CANDIDATE):
     artifacts = RunArtifacts.create(CVE, "kiro", None, MODEL)
     if candidate is not None:
         artifacts.atomic_repository_text("final-commits.patch", candidate)
-    result = CveResult(CVE, ResultStatus.SUCCESS, outcome=outcome)
+    result = CveResult(CVE, status, outcome=outcome)
     result.artifact_dir = artifacts.path
     artifacts.finalize(result)
     return results_dir
@@ -213,10 +214,54 @@ def test_existing_buckets_are_preserved_unless_forced(tmp_path, monkeypatch):
         results_dir, "kiro", force=False, dry_run=False)
     assert rows[0]["diff_bucket"] == "major"
     assert buckets == {"major": 1}
-    assert "already has bucket" in "\n".join(log)
+    assert "kept existing comparison" in "\n".join(log)
 
     rows, _, _ = backfill(results_dir, "kiro", force=True, dry_run=False)
     assert rows[0]["diff_bucket"] == "identical"
+
+
+def test_backfill_recovers_the_outcome_column_from_result_json(
+        tmp_path, monkeypatch):
+    """The outcome column comes from the durable result, not the log.
+
+    It was empty for every row of bench_20260904_165741 because the log
+    parser still expected the old '✓ <cve>: <status>' line while cve-agent
+    prints '<cve>: <summary_state>'. summary_state cannot be reverse-mapped
+    (it collapses escalation into SECURITY_REVIEW_REQUIRED), so the value is
+    read from result.json's legacy_status instead.
+    """
+    outcome = ResultOutcome(
+        WorkflowStatus.ESCALATED, BuildStatus.NOT_RUN,
+        SecurityStatus.PLAUSIBLE_NEEDS_REVIEW)
+    results_dir = _make_results_dir(
+        tmp_path, monkeypatch, outcome, status=ResultStatus.ESCALATED)
+    # The log carries only the current, lossy summary line.
+    (results_dir / f"{CVE}_{MODEL}.log").write_text(
+        f"{CVE}: SECURITY_REVIEW_REQUIRED\n", encoding="utf-8")
+    _write_csv(results_dir, [_row()])
+
+    rows, _, _ = backfill(results_dir, "kiro", force=False, dry_run=False)
+
+    assert rows[0]["outcome"] == "escalated"
+
+
+def test_existing_comparison_is_kept_while_outcome_is_recovered(
+        tmp_path, monkeypatch):
+    """A row the live run compared keeps its bucket but gains its outcome.
+
+    The live comparison ran against the real OE tree, so it stays
+    authoritative; the outcome column was never populated for any row and is
+    recovered regardless.
+    """
+    results_dir = _make_results_dir(tmp_path, monkeypatch, _completed_outcome())
+    _write_csv(results_dir, [_row(diff_bucket="major", diff_lines="900")])
+
+    rows, log, _ = backfill(results_dir, "kiro", force=False, dry_run=False)
+
+    assert rows[0]["diff_bucket"] == "major"
+    assert rows[0]["diff_lines"] == "900"
+    assert rows[0]["outcome"] == "success"
+    assert "kept existing comparison" in "\n".join(log)
 
 
 def test_write_rows_backs_up_the_original_once(tmp_path):

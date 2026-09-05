@@ -1013,16 +1013,45 @@ print(count_diff_changed_lines(scope_diff_to_common_files(text)))
                 # A 'skipped' outcome has several unrelated causes, only one of
                 # which is the model's own claim -- record which, so the report
                 # cannot accuse a model of dismissing a CVE it never saw.
+                #
+                # The outcome is read from the durable result.json, not from
+                # the log: summary_state maps both a completed-but-review-
+                # required run and an escalation to SECURITY_REVIEW_REQUIRED,
+                # so the printed line cannot tell an honest escalation from a
+                # finished backport awaiting review -- the exact conflation
+                # this column exists to prevent. The log stays the source for
+                # the skip reason, which is only derivable from it.
                 local outcome="" skip_reason=""
                 if [[ -f "$run_log" ]]; then
-                    read -r outcome skip_reason < <(python3 -c "
-from tests.benchmark.bench_lib import parse_agent_outcome, parse_skip_reason
-with open('${run_log}', encoding='utf-8', errors='replace') as f:
-    text = f.read()
-outcome = parse_agent_outcome(text)
+                    read -r outcome skip_reason < <(python3 - "$run_log" \
+                            "$artifact_dir" "$cve_id" "$AGENT_BACKEND" \
+                            "$requested_model" <<'PY'
+import sys
+from pathlib import Path
+
+from tests.benchmark.bench_lib import (
+    BenchmarkArtifactExpectation,
+    parse_agent_outcome,
+    parse_skip_reason,
+)
+from tests.benchmark.benchmark_manifest import resolve_backend_identity
+
+log_path, artifact_path, cve_id, selector, requested_model = sys.argv[1:]
+identity = resolve_backend_identity(selector, requested_model or None)
+expected = BenchmarkArtifactExpectation(
+    cve_id,
+    str(identity['backend']),
+    identity['profile'] if isinstance(identity['profile'], str) else None,
+    str(identity['model']),
+)
+with open(log_path, encoding='utf-8', errors='replace') as handle:
+    text = handle.read()
+outcome = parse_agent_outcome(
+    text, Path(artifact_path) if artifact_path else None, expected)
 reason = parse_skip_reason(text) if outcome == 'skipped' else ''
 print(outcome or '-', reason or '-')
-")
+PY
+                    )
                     [[ "$outcome" == "-" ]] && outcome=""
                     [[ "$skip_reason" == "-" ]] && skip_reason=""
                 fi

@@ -49,6 +49,8 @@ from tests.benchmark.bench_lib import (  # noqa: E402
     benchmark_artifact_outcome,
     classify_diff_bucket,
     count_diff_changed_lines,
+    parse_agent_outcome,
+    parse_skip_reason,
     scope_diff_to_common_files,
 )
 from tests.benchmark.benchmark_manifest import resolve_backend_identity  # noqa: E402
@@ -75,6 +77,8 @@ class Backfilled:
     diff_bucket: str
     diff_lines: str
     note: str
+    outcome: str = ""
+    skip_reason: str = ""
 
 
 def reference_patches(results_dir: Path, cve_id: str) -> list[Path]:
@@ -106,6 +110,36 @@ def candidate_patch(artifact_dir: Path) -> Path | None:
     return None
 
 
+def expectation_for(cve_id: str, model: str,
+                    backend: str) -> BenchmarkArtifactExpectation:
+    """Build the identity an artifact's manifest must match."""
+    identity = resolve_backend_identity(backend, model or None)
+    profile = identity["profile"] if isinstance(identity["profile"], str) else None
+    return BenchmarkArtifactExpectation(
+        cve_id, str(identity["backend"]), profile, str(identity["model"]))
+
+
+def recover_outcome(results_dir: Path, artifact_dir: Path, cve_id: str,
+                    model: str, backend: str) -> tuple[str, str]:
+    """Recover the run's own outcome and, if skipped, why.
+
+    The outcome comes from the durable ``result.json`` rather than the log:
+    ``summary_state`` maps both a completed-but-review-required run and an
+    escalation to ``SECURITY_REVIEW_REQUIRED``, so the printed line cannot
+    distinguish an honest escalation from a finished backport awaiting review.
+    The skip reason is only derivable from the log, so it is still read there.
+    """
+    expected = expectation_for(cve_id, model, backend)
+    log_path = results_dir / f"{cve_id}_{model}.log"
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    outcome = parse_agent_outcome(text, artifact_dir, expected)
+    reason = parse_skip_reason(text) if outcome == "skipped" else ""
+    return outcome, reason
+
+
 def find_artifact_dir(
     results_dir: Path, cve_id: str, model: str, backend: str,
 ) -> Path | None:
@@ -116,10 +150,7 @@ def find_artifact_dir(
     Provenance is confirmed with the same manifest binding the live runner
     uses, so an unrelated or tampered directory is never consumed.
     """
-    identity = resolve_backend_identity(backend, model or None)
-    profile = identity["profile"] if isinstance(identity["profile"], str) else None
-    expected = BenchmarkArtifactExpectation(
-        cve_id, str(identity["backend"]), profile, str(identity["model"]))
+    expected = expectation_for(cve_id, model, backend)
     roots = sorted((results_dir / "agent-artifacts").glob(f"{cve_id}_{model}.*"))
     for root in roots:
         for case_root in sorted(root.glob(f"*/results/cases/{cve_id}")):
@@ -139,11 +170,8 @@ def durable_outcome(artifact_dir: Path, cve_id: str, model: str,
     other valid durable outcome reports its own summary state, and a completed
     built attempt stays comparable even when the release gate rejected it.
     """
-    identity = resolve_backend_identity(backend, model or None)
-    profile = identity["profile"] if isinstance(identity["profile"], str) else None
-    expected = BenchmarkArtifactExpectation(
-        cve_id, str(identity["backend"]), profile, str(identity["model"]))
-    outcome = benchmark_artifact_outcome(artifact_dir, expected)
+    outcome = benchmark_artifact_outcome(
+        artifact_dir, expectation_for(cve_id, model, backend))
     if outcome is None:
         return "", "", False
     summary, comparable = outcome
@@ -175,44 +203,61 @@ def compare_row(results_dir: Path, cve_id: str, model: str,
     return bucket, str(lines)
 
 
-def backfill_row(results_dir: Path, row: dict[str, str],
-                 backend: str) -> Backfilled | None:
+def backfill_row(results_dir: Path, row: dict[str, str], backend: str,
+                 *, compare: bool = True) -> Backfilled | None:
     """Recompute one row, or return ``None`` when nothing can be recovered.
 
     Reproduces the runner's own bucket rules rather than inventing new ones:
     a durable ``SKIPPED`` state has no candidate by definition, a completed
     built attempt is compared even when the release gate rejected it, and any
     other non-comparable outcome (escalated, failed) keeps ``'-'``.
+
+    With ``compare=False`` the existing bucket is left exactly as the live run
+    recorded it — that comparison ran against the real OE tree and is the more
+    authoritative of the two — while the outcome and exit status are still
+    recovered from the durable result.
     """
     cve_id, model = row["cve_id"], row["model"]
     artifact_dir = find_artifact_dir(results_dir, cve_id, model, backend)
     if artifact_dir is None:
         return Backfilled(row["exit_status"], row["diff_bucket"],
-                          row["diff_lines"], "no validated artifact directory")
+                          row["diff_lines"], "no validated artifact directory",
+                          row.get("outcome", ""), row.get("skip_reason", ""))
 
     summary, exit_status, comparable = durable_outcome(
         artifact_dir, cve_id, model, backend)
     exit_status = exit_status or row["exit_status"]
+    outcome, skip_reason = recover_outcome(
+        results_dir, artifact_dir, cve_id, model, backend)
+    outcome = outcome or row.get("outcome", "")
+    skip_reason = skip_reason or row.get("skip_reason", "")
 
+    if not compare:
+        return Backfilled(exit_status, row["diff_bucket"], row["diff_lines"],
+                          "kept existing comparison", outcome, skip_reason)
     if summary == "SKIPPED":
         return Backfilled(exit_status, "skipped", MISSING,
-                          "durable outcome is SKIPPED (no candidate)")
+                          "durable outcome is SKIPPED (no candidate)",
+                          outcome, skip_reason)
     if not comparable and exit_status != "0":
         return Backfilled(exit_status, row["diff_bucket"], row["diff_lines"],
-                          f"{summary or 'unknown'} is not comparable")
+                          f"{summary or 'unknown'} is not comparable",
+                          outcome, skip_reason)
 
     references = reference_patches(results_dir, cve_id)
     if not references:
         return Backfilled(exit_status, row["diff_bucket"], row["diff_lines"],
-                          "no saved reference patch")
+                          "no saved reference patch", outcome, skip_reason)
     candidate = candidate_patch(artifact_dir)
     if candidate is None:
         return Backfilled(exit_status, row["diff_bucket"], row["diff_lines"],
-                          "artifact holds no generated commits")
+                          "artifact holds no generated commits",
+                          outcome, skip_reason)
 
     bucket, lines = compare_row(
         results_dir, cve_id, model, references, candidate)
-    return Backfilled(exit_status, bucket, lines, f"compared via {candidate.name}")
+    return Backfilled(exit_status, bucket, lines,
+                      f"compared via {candidate.name}", outcome, skip_reason)
 
 
 def backfill(results_dir: Path, backend: str, *, force: bool,
@@ -236,27 +281,30 @@ def backfill(results_dir: Path, backend: str, *, force: bool,
 
     for row in rows:
         label = f"{row['cve_id']} / {row['model']}"
-        if row.get("diff_bucket", MISSING) != MISSING and not force:
-            log.append(f"SKIP {label}: already has bucket "
-                       f"{row['diff_bucket']} (use --force to redo)")
-            record(row.get("diff_bucket", MISSING))
-            continue
-        result = backfill_row(results_dir, row, backend)
+        # A row the live run already compared keeps that bucket: it was
+        # measured against the real OE tree. The outcome column is still
+        # recovered, since it was never populated for any row.
+        compare = row.get("diff_bucket", MISSING) == MISSING or force
+        result = backfill_row(results_dir, row, backend, compare=compare)
         if result is None:
             record(row.get("diff_bucket", MISSING))
             continue
         changed = (result.exit_status != row["exit_status"]
-                   or result.diff_bucket != row["diff_bucket"])
+                   or result.diff_bucket != row["diff_bucket"]
+                   or result.outcome != row.get("outcome", ""))
         log.append(
             f"{'WOULD ' if dry_run else ''}"
             f"{'UPDATE' if changed else 'KEEP'} {label}: "
-            f"exit={result.exit_status} bucket={result.diff_bucket} "
+            f"exit={result.exit_status} outcome={result.outcome or '?'} "
+            f"bucket={result.diff_bucket} "
             f"lines={result.diff_lines} ({result.note})")
         record(result.diff_bucket)
         if not dry_run:
             row["exit_status"] = result.exit_status
             row["diff_bucket"] = result.diff_bucket
             row["diff_lines"] = result.diff_lines
+            row["outcome"] = result.outcome
+            row["skip_reason"] = result.skip_reason
     return rows, log, buckets
 
 

@@ -848,6 +848,52 @@ class TestParseAgentOutcome:
         log = "The cherry-pick was skipped because the commit is present.\n"
         assert parse_agent_outcome(log) == ""
 
+    def test_current_summary_state_line_is_not_reverse_mapped(self):
+        """cve-agent now prints '<cve>: <summary_state>', which is lossy.
+
+        summary_state maps both a completed-but-review-required run and an
+        escalation to SECURITY_REVIEW_REQUIRED, so guessing a ResultStatus
+        from it would recreate the exact conflation this column prevents.
+        Without a durable artifact the honest answer is 'unknown'.
+        """
+        assert parse_agent_outcome("CVE-2024-7537: SECURITY_VERIFIED\n") == ""
+        assert parse_agent_outcome(
+            "CVE-2024-6387: SECURITY_REVIEW_REQUIRED\n") == ""
+
+    def test_durable_artifact_outcome_wins_over_the_log(self, tmp_path,
+                                                        monkeypatch):
+        """The artifact is authoritative; the log is only a legacy fallback."""
+        from cve_agent import CveResult, ResultStatus
+        from cve_agent.artifacts import RunArtifacts
+        from tests.benchmark.bench_lib import BenchmarkArtifactExpectation
+
+        monkeypatch.setenv("CVE_TOOLS_DATA_DIR", str(tmp_path))
+        artifacts = RunArtifacts.create("CVE-2024-1234", "kiro", None, "m1")
+        result = CveResult("CVE-2024-1234", ResultStatus.ESCALATED)
+        result.artifact_dir = artifacts.path
+        artifacts.finalize(result)
+        expected = BenchmarkArtifactExpectation(
+            "CVE-2024-1234", "kiro", None, "m1")
+
+        # The log claims success; the durable result says escalated.
+        outcome = parse_agent_outcome(
+            "\u2713 CVE-2024-1234: success\n",
+            artifacts.path.resolve(), expected)
+
+        assert outcome == "escalated"
+
+    def test_unreadable_artifact_falls_back_to_the_log(self, tmp_path):
+        """A missing artifact must not discard a usable legacy log line."""
+        from tests.benchmark.bench_lib import BenchmarkArtifactExpectation
+
+        expected = BenchmarkArtifactExpectation(
+            "CVE-2024-1234", "kiro", None, "m1")
+
+        outcome = parse_agent_outcome(
+            "\u2713 CVE-2024-1234: skipped\n", tmp_path / "absent", expected)
+
+        assert outcome == "skipped"
+
     def test_skipped_is_flagged_as_a_non_backport(self):
         """The whole point: a 'skipped' run exits 0 but produced no patch."""
         assert "skipped" in NON_BACKPORT_OUTCOMES
