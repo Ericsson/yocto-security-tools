@@ -20,6 +20,13 @@
     "recipe": "gi-docgen",
     "series_len": 1
   },
+  "CVE-2025-47183": {
+    "diff_lines": 0,
+    "exit_code": 0,
+    "phase": "clean_apply",
+    "recipe": "gstreamer1.0-plugins-good",
+    "series_len": 1
+  },
   "CVE-2025-24857": {
     "diff_lines": 0,
     "exit_code": 0,

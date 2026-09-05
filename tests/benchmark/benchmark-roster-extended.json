@@ -62,13 +62,6 @@
     "recipe": "go-runtime",
     "tier": "hard"
   },
-  "CVE-2025-47183": {
-    "conflict_markers": 1,
-    "exit_code": 1,
-    "files_involved": 1,
-    "recipe": "gstreamer1.0-plugins-good",
-    "tier": "easy"
-  },
   "CVE-2025-47203": {
     "conflict_markers": 7,
     "exit_code": 1,
