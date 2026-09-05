@@ -1265,9 +1265,35 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBas
     workspace_path = get_workspace_path(config, cve_data)
     if not workspace_path:
         if exit_code == EXIT_SUCCESS:
+            # The corrector applied cleanly with no conflict and ran
+            # devtool finish itself before cve-agent had a chance to
+            # intervene, so the source workspace (and its git history) is
+            # already gone -- there is no window in which to build a
+            # ReferenceManifest/GeneratedSnapshot for a real diff-based
+            # semantic comparison. Route through the same optional-evidence
+            # machinery the analysis-phase paths use rather than silently
+            # skipping validation: with workspace_path=None,
+            # _prepare_semantic_reference/_capture_semantic_candidate are
+            # unreachable, so validate_semantic_result's existing
+            # manifest-is-None fallback records an honest
+            # NOT_EVALUATED/comparison_artifact_missing outcome (never a
+            # fabricated pass) instead of the bare legacy shim's
+            # unreasoned NOT_EVALUATED.
+            artifacts = current_run_artifacts()
+            if artifacts is not None:
+                artifacts.atomic_json("build-summary.json", {
+                    "schema_version": 1,
+                    "status": "passed",
+                    "source": "corrector_clean_apply",
+                    "ptest_executed": not config.skip_ptest,
+                })
+            validation = _record_semantic_validation(
+                None, None, BuildStatus.PASSED,
+                tests_executed=not config.skip_ptest)
             result = _make_result(
                 config.cve_id, ResultStatus.SUCCESS, 0, start_time,
-                "Clean apply (workspace already finalized)"
+                "Clean apply (workspace already finalized)",
+                _completed_semantic_outcome(validation),
             )
         else:
             result = _make_result(

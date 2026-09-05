@@ -116,6 +116,29 @@ class TestProcessSingleCve:
         assert cve_info['series'] == [{'pull_url': '', 'commits': expected_hashes}]
 
     @patch("cve_agent.__main__._log_result")
+    @patch("cve_agent.orchestrator.get_workspace_path", return_value=None)
+    @patch("cve_agent.orchestrator.run_corrector", return_value=(0, ""))
+    @patch("cve_agent.orchestrator.load_cve_metadata",
+           return_value={"CVE-2025-0001": {"name": "r"}})
+    def test_clean_apply_already_finalized_reports_honest_outcome(
+            self, m_load, m_run, m_ws, m_log, tmp_path):
+        """A clean apply with no conflict lets the corrector run devtool
+        finish by itself, so the source workspace (and its git history) is
+        already gone by the time cve-agent inspects it -- there is no
+        remaining evidence to build a real semantic comparison from. This
+        must still report SUCCESS (nothing went wrong) but the outcome must
+        be an honest NOT_EVALUATED/comparison_artifact_missing rather than
+        the bare legacy shim's unreasoned NOT_EVALUATED with no failure
+        code, so it's distinguishable from a genuine rejection/failure by
+        anything reading the durable result (e.g. the benchmark harness)."""
+        result = process_single_cve(_cfg(), KnowledgeBase(tmp_path / "kb.json"))
+        assert result.status == ResultStatus.SUCCESS
+        assert result.outcome is not None
+        assert result.outcome.workflow_status is WorkflowStatus.COMPLETED
+        assert result.outcome.security_status.value == "not_evaluated"
+        assert result.outcome.failure_code == "comparison_artifact_missing"
+
+    @patch("cve_agent.__main__._log_result")
     def test_single_fix_url_without_recipe_fails(self, mock_log, tmp_path):
         cfg = _cfg(cve_info_path=None,
                    fix_urls=['https://github.com/o/r/commit/abc123'],
