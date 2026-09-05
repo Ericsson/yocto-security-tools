@@ -22,11 +22,22 @@ directory (produced by ``tests/benchmark/run_benchmark.sh``), joins them on
                                  whether a bad column is a weak model or a bad
                                  row is a CVE that defeats every model
 
-The central idea is the outcome collapse: neither CSV column answers "did the
+The central idea is the outcome collapse: no single CSV column answers "did the
 model do the job?" on its own. ``diff_bucket`` says how far the generated patch
 drifted from the human reference backport, and the judge says whether that
 drift is behavioral. A ``major`` diff judged ``stylistic`` is a success; a
 ``partial`` diff judged ``meaningful`` is not.
+
+``exit_status`` is deliberately *not* read as a pass/fail flag. It carries a
+durable ``ResultOutcome.summary_state`` whenever the run recorded one, so a run
+that completed and produced a comparable patch still reports a non-zero-looking
+state there when the release gate declined to accept it. Those runs are scored
+on patch equivalence; only the states in :data:`FAILED_STATUSES` mean the run
+produced nothing to compare. Two dispositions are kept separate from both
+success and failure: ``escalated`` (the model asked for a human, which is the
+correct answer for an out-of-scope fix) and ``gate-rejected`` (the host's
+semantic validation rejected the result, which can happen even for a patch
+textually identical to the reference).
 
 Colors come from the Okabe-Ito palette (distinguishable under the common forms
 of color blindness) and every bar is annotated with its value, so no chart
@@ -55,15 +66,21 @@ from pathlib import Path
 OUTCOME_EQUIVALENT = 'equivalent'
 OUTCOME_DIVERGENT = 'divergent'
 OUTCOME_UNJUDGED = 'unjudged'
+OUTCOME_GATE_REJECTED = 'gate-rejected'
+OUTCOME_ESCALATED = 'escalated'
 OUTCOME_NO_PATCH = 'no-patch'
 OUTCOME_FAILED = 'failed'
 
 # Stack/plot order: best outcome first, so every bar reads left-to-right as
-# quality descending.
+# quality descending. 'escalated' ranks above 'no-patch' because asking for a
+# human is a safe, defensible answer, whereas dismissing a CVE as
+# not-applicable can silently leave a live vulnerability.
 OUTCOME_ORDER = (
     OUTCOME_EQUIVALENT,
     OUTCOME_DIVERGENT,
     OUTCOME_UNJUDGED,
+    OUTCOME_GATE_REJECTED,
+    OUTCOME_ESCALATED,
     OUTCOME_NO_PATCH,
     OUTCOME_FAILED,
 )
@@ -72,6 +89,8 @@ OUTCOME_COLORS = {
     OUTCOME_EQUIVALENT: '#009E73',
     OUTCOME_DIVERGENT: '#E69F00',
     OUTCOME_UNJUDGED: '#999999',
+    OUTCOME_GATE_REJECTED: '#CC79A7',
+    OUTCOME_ESCALATED: '#0072B2',
     OUTCOME_NO_PATCH: '#56B4E9',
     OUTCOME_FAILED: '#D55E00',
 }
@@ -80,6 +99,8 @@ OUTCOME_LABELS = {
     OUTCOME_EQUIVALENT: 'equivalent to reference',
     OUTCOME_DIVERGENT: 'meaningfully different',
     OUTCOME_UNJUDGED: 'diverged, not judged',
+    OUTCOME_GATE_REJECTED: 'rejected by semantic validation',
+    OUTCOME_ESCALATED: 'escalated to a human',
     OUTCOME_NO_PATCH: 'no patch produced',
     OUTCOME_FAILED: 'run failed',
 }
@@ -90,9 +111,33 @@ OUTCOME_GLYPHS = {
     OUTCOME_EQUIVALENT: '=',
     OUTCOME_DIVERGENT: '\u2260',
     OUTCOME_UNJUDGED: '?',
+    OUTCOME_GATE_REJECTED: '!',
+    OUTCOME_ESCALATED: '\u2191',
     OUTCOME_NO_PATCH: '\u2013',
     OUTCOME_FAILED: 'x',
 }
+
+# ``exit_status`` holds either a durable ResultOutcome.summary_state, a raw
+# process exit code, or one of run_benchmark.sh's own markers. These states mean
+# the run never reached a result worth comparing.
+FAILED_STATUSES = (
+    'WORKFLOW_FAILED',
+    'HOST_INITIALIZATION_ERROR',
+    'PROVIDER_TIMEOUT',
+    'AGENT_NO_PROGRESS',
+    'TIMEOUT',
+    'SETUP_FAILED',
+)
+
+# The host's semantic validation actively rejected the result. Kept separate
+# from both success and failure: a rejection can accompany a patch that is
+# textually identical to the reference (e.g. a missing prerequisite), so
+# folding it into 'equivalent' would hide a real security finding while
+# folding it into 'failed' would misreport a correct patch.
+GATE_REJECTED_STATUS = 'SECURITY_REJECTED'
+
+# Durable state for a run that produced nothing to compare by design.
+SKIPPED_STATUS = 'SKIPPED'
 
 # Buckets that run_benchmark.sh never sends to the judge because the generated
 # patch is already close enough to the human reference to be a success.
@@ -163,17 +208,34 @@ def _to_float(value: str | None) -> float | None:
 def classify_outcome(agent_row: dict[str, str], judge_row: dict[str, str] | None) -> str:
     """Collapse one benchmark run into a single outcome.
 
+    Two independent signals are combined. The ``outcome`` column carries
+    cve-agent's own ``ResultStatus`` (recorded from the durable ``result.json``)
+    and says what the *run* did; ``diff_bucket`` plus the judge say how close
+    the *patch* is to the human reference.
+
+    ``exit_status`` is not a pass/fail flag: it holds a durable
+    ``summary_state`` whenever one was recorded, so a completed run that the
+    release gate declined still reports e.g. ``SECURITY_REVIEW_REQUIRED``
+    there. Such runs did produce a comparable patch — ``run_benchmark.sh``
+    deliberately keeps them comparable — so they are scored on patch
+    equivalence rather than written off.
+
     Flat rules, evaluated in order:
 
-    1. ``exit_status`` other than ``'0'`` (a raw exit code, or ``TIMEOUT``)
-       -> ``failed``.
-    2. ``diff_bucket == 'skipped'`` (cve-agent exited 0 but the corrector
-       bailed before producing a patch) -> ``no-patch``.
-    3. ``diff_bucket`` in :data:`EQUIVALENT_BUCKETS` -> ``equivalent``.
-    4. A judgeable bucket whose verdict is in :data:`EQUIVALENT_VERDICTS`
+    1. ``skipped`` -> ``no-patch``: exited without producing a patch.
+    2. ``escalated`` -> ``escalated``: the model declined to guess and asked
+       for a human. That is the correct answer for a fix it cannot make in
+       scope, so it must not score as a breakage.
+    3. ``failed``, or an ``exit_status`` in :data:`FAILED_STATUSES` -> ``failed``.
+    4. No ``outcome`` recorded and a non-``'0'`` ``exit_status`` -> ``failed``.
+       All that is known is a raw exit code, a timeout, or a setup failure.
+    5. :data:`GATE_REJECTED_STATUS` -> ``gate-rejected``.
+    6. ``diff_bucket == 'skipped'`` -> ``no-patch``.
+    7. ``diff_bucket`` in :data:`EQUIVALENT_BUCKETS` -> ``equivalent``.
+    8. A judgeable bucket whose verdict is in :data:`EQUIVALENT_VERDICTS`
        -> ``equivalent``; ``meaningful`` -> ``divergent``; missing verdict
        row -> ``unjudged``.
-    5. Anything else (e.g. ``file-mismatch``, which stays unjudged by design)
+    9. Anything else (e.g. ``file-mismatch``, which stays unjudged by design)
        -> ``unjudged``.
 
     Args:
@@ -184,8 +246,19 @@ def classify_outcome(agent_row: dict[str, str], judge_row: dict[str, str] | None
     Returns:
         One of the ``OUTCOME_*`` constants.
     """
-    if (agent_row.get('exit_status') or '').strip() != '0':
+    outcome = (agent_row.get('outcome') or '').strip()
+    status = (agent_row.get('exit_status') or '').strip()
+
+    if outcome == 'skipped' or status == SKIPPED_STATUS:
+        return OUTCOME_NO_PATCH
+    if outcome == 'escalated':
+        return OUTCOME_ESCALATED
+    if outcome == 'failed' or status in FAILED_STATUSES:
         return OUTCOME_FAILED
+    if not outcome and status != '0':
+        return OUTCOME_FAILED
+    if status == GATE_REJECTED_STATUS:
+        return OUTCOME_GATE_REJECTED
 
     bucket = (agent_row.get('diff_bucket') or '').strip()
     if bucket == 'skipped':

@@ -103,6 +103,85 @@ class TestClassifyOutcome:
         assert tool.classify_outcome(big, {"judgment": "stylistic"}) == tool.OUTCOME_EQUIVALENT
 
 
+class TestClassifyDurableOutcome:
+    """exit_status carries a durable summary_state, not a pass/fail flag.
+
+    Scoring any non-'0' value as a failure wrote off 93 of the 100 rows in
+    bench_20260904_165741, including 45 that completed and produced a
+    comparable patch.
+    """
+
+    def test_review_required_is_scored_on_the_patch(self) -> None:
+        """A completed run the release gate declined still made a patch.
+
+        run_benchmark.sh deliberately keeps these comparable, so they must be
+        judged on equivalence rather than discarded.
+        """
+        row = _agent_row(
+            exit_status="SECURITY_REVIEW_REQUIRED",
+            outcome="conflict_resolved", diff_bucket="minor")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_EQUIVALENT
+
+    def test_completed_unverified_is_scored_on_the_patch(self) -> None:
+        row = _agent_row(
+            exit_status="WORKFLOW_COMPLETED_UNVERIFIED",
+            outcome="conflict_resolved", diff_bucket="major")
+        assert tool.classify_outcome(
+            row, {"judgment": "meaningful"}) == tool.OUTCOME_DIVERGENT
+
+    def test_gate_rejection_is_its_own_outcome(self) -> None:
+        row = _agent_row(
+            exit_status="SECURITY_REJECTED",
+            outcome="conflict_resolved", diff_bucket="file-mismatch")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_GATE_REJECTED
+
+    def test_gate_rejection_outranks_an_identical_patch(self) -> None:
+        """Rejection can accompany a patch identical to the reference.
+
+        Semantic validation rejects on grounds a textual diff cannot see (e.g.
+        a missing prerequisite), so 'equivalent' would hide a real finding.
+        """
+        row = _agent_row(
+            exit_status="SECURITY_REJECTED",
+            outcome="conflict_resolved", diff_bucket="identical")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_GATE_REJECTED
+
+    def test_escalation_is_not_a_failure(self) -> None:
+        """Asking for a human is the correct answer for an out-of-scope fix."""
+        row = _agent_row(
+            exit_status="SECURITY_REVIEW_REQUIRED", outcome="escalated",
+            diff_bucket="-", diff_lines="-")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_ESCALATED
+
+    def test_workflow_failure_is_failed(self) -> None:
+        row = _agent_row(
+            exit_status="WORKFLOW_FAILED", outcome="failed",
+            diff_bucket="-", diff_lines="-")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_FAILED
+
+    def test_durable_skip_is_no_patch(self) -> None:
+        row = _agent_row(
+            exit_status="SKIPPED", outcome="skipped",
+            diff_bucket="skipped", diff_lines="-")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_NO_PATCH
+
+    def test_timeout_without_a_durable_outcome_is_failed(self) -> None:
+        row = _agent_row(
+            exit_status="TIMEOUT", outcome="", diff_bucket="-", diff_lines="-")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_FAILED
+
+    def test_raw_exit_code_without_an_outcome_stays_failed(self) -> None:
+        """Older CSVs have no outcome column; the exit code is all there is."""
+        row = _agent_row(exit_status="14", outcome="", diff_bucket="minor")
+        assert tool.classify_outcome(row, None) == tool.OUTCOME_FAILED
+
+    def test_every_outcome_has_a_color_label_and_glyph(self) -> None:
+        for name in tool.OUTCOME_ORDER:
+            assert name in tool.OUTCOME_COLORS
+            assert name in tool.OUTCOME_LABELS
+            assert name in tool.OUTCOME_GLYPHS
+
+
 class TestAggregate:
     """aggregate joins the two CSVs and accumulates per-model figures."""
 
