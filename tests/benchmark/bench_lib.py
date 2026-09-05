@@ -448,6 +448,10 @@ _OUTCOME_RE = re.compile(
     r'(success|conflict_resolved|failed|escalated|skipped)\s*$',
     re.MULTILINE)
 
+# The cve_agent.ResultStatus vocabulary the outcome column records.
+LEGACY_OUTCOMES = (
+    'success', 'conflict_resolved', 'failed', 'escalated', 'skipped')
+
 # Outcomes that exit 0 today but are NOT a successful backport.
 NON_BACKPORT_OUTCOMES = ('skipped',)
 # Outcomes that exit non-zero but are a defensible, intended result.
@@ -524,21 +528,62 @@ def parse_skip_reason(log_text: str) -> str:
     return ''
 
 
-def parse_agent_outcome(log_text: str) -> str:
-    """Extract cve-agent's own final outcome from a captured run log.
+def _artifact_legacy_status(
+    artifact_dir: Path,
+    expected: BenchmarkArtifactExpectation,
+) -> str | None:
+    """Read cve-agent's own final outcome from one host-selected artifact.
+
+    Authoritative where the run log is not. ``ResultOutcome.summary_state``
+    maps *both* a completed-but-review-required run and an escalation to
+    ``SECURITY_REVIEW_REQUIRED``, so the printed summary line cannot tell an
+    honest escalation from a finished backport awaiting review -- precisely the
+    conflation this column exists to prevent. ``result.json`` carries the
+    ``ResultStatus`` value verbatim in ``legacy_status``, so read it there.
+    """
+    owner = _validated_artifact_owner(artifact_dir, expected)
+    if owner is None:
+        return None
+    data = _artifact_json(artifact_dir, "result.json", owner)
+    if data is None or data.get("cve_id") != expected.cve_id:
+        return None
+    status = data.get("legacy_status")
+    if isinstance(status, str) and status in LEGACY_OUTCOMES:
+        return status
+    return None
+
+
+def parse_agent_outcome(
+    log_text: str,
+    artifact_dir: Path | None = None,
+    expected: BenchmarkArtifactExpectation | None = None,
+) -> str:
+    """Extract cve-agent's own final outcome for one run.
 
     Args:
         log_text: Captured combined stdout/stderr of one ``cve-agent`` run
             (may contain ANSI colour codes).
+        artifact_dir: Exact out-of-band directory selected by the host runner.
+        expected: Identity which the directory's host-written manifest must
+            match.
 
     Returns:
         The :class:`cve_agent.ResultStatus` value as a string -- one of
         ``'success'``, ``'conflict_resolved'``, ``'failed'``, ``'escalated'``,
-        ``'skipped'`` -- or ``''`` when the log has no outcome line (a
-        timeout, a kill, or an environment failure before the agent reported).
-        When a log somehow contains several outcome lines, the last one wins,
-        since that is the run's final word.
+        ``'skipped'`` -- or ``''`` when neither source reports one (a timeout,
+        a kill, or an environment failure before the agent reported).
+
+    The durable artifact wins when available. The log is only a fallback for
+    runs old enough to have printed the ``\u2713 <cve>: <status>`` line;
+    cve-agent now prints ``<cve>: <summary_state>`` instead, which is a lossy
+    label that must not be reverse-mapped into this vocabulary. Returning
+    ``''`` for an unreadable artifact is deliberate: an unknown outcome is
+    safer here than a guessed one.
     """
+    if artifact_dir is not None and expected is not None:
+        status = _artifact_legacy_status(artifact_dir, expected)
+        if status is not None:
+            return status
     if not log_text:
         return ''
     matches = _OUTCOME_RE.findall(strip_ansi(log_text))
