@@ -8,53 +8,198 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-07
+
 ### Added
 
+- **cve-agent**: Native OpenAI-compatible backend (`--backend openai`) that
+  calls a non-streaming `/chat/completions` endpoint directly, running the
+  agent loop and closed typed tools inside this project. Supports local
+  Ollama without an API key when the model reliably supports function tools.
+  Configure via `CVE_AGENT_OPENAI_MODEL` and `CVE_AGENT_OPENAI_BASE_URL`.
+- **cve-agent**: Named OpenAI profile system (`--backend openai-<profile>`)
+  with strict INI schema under `etc/openai-<profile>.cfg`. Profiles may
+  select portable Chat Completions sampling fields, opt into bounded Ollama
+  alias preparation, declare versioned `[capabilities]` dialects, define a
+  source-free `[probe]` for conformance checks, and name a `[fallback]`
+  profile for model/provider-addressable failures.
+- **cve-agent**: Provider conformance probe — validates that a backend
+  actually supports the required tool-calling dialect before a real run.
+- **cve-agent**: Provider capability evidence, dialects, and fallback
+  authority — typed policy enforcement that derives progress from trusted
+  state and preserves provider failures across retries.
+- **cve-agent**: Semantic security validation gate — an offline,
+  host-owned equivalence check that a completed build produced a patch
+  semantically matching the upstream fix before accepting it for release.
+  A successful workflow is reported as `WORKFLOW_COMPLETED_UNVERIFIED` until
+  this phase accepts it.
+- **cve-agent**: Bounded repository preflight with a typed per-attempt
+  durable artifact directory, created before any AI session starts so
+  every attempt has a redacted audit trail regardless of outcome.
+- **cve-agent**: Corrector repository handoff validation — verifies the
+  trusted repository state contract produced by `cve-corrector` before
+  handing off to an AI session.
+- **cve-agent**: Separate versioned result schema for workflow outcomes
+  (`result.json`) and security validation outcomes, decoupling build
+  evidence from security acceptance. See `docs/result-schema.md`.
+- **cve-agent**: Tracked trusted Git transitions for state-based progress
+  accounting — progress is derived from trusted repository state rather
+  than model prose or call IDs.
+- **cve-agent**: Bounded large-file patch hunk handling to stay within
+  model context budgets on large upstream diffs.
+- **cve-agent**: `--verify-backend` no-op health check — runs a trivial
+  round trip against the selected backend (no file/git operations, no CVE
+  workflow) and exits 0 on success. Replaces `--cve-id`/`--cve-list` for
+  the invocation.
 - **cve-agent**: `--no-knowledge` flag to disable the knowledge base for a
   run (no similar-pattern lookups, no pattern saved on success). Useful for
   benchmarking a model's unaided backporting performance.
-- **tests/benchmark**: new cve-agent model benchmark suite — runs cve-agent
-  across a fixed, committed 8-CVE roster (1 easy, 1 medium, 6 hard spread
-  across real conflict complexity) and a selection of models, then an AI
-  judge pass on diffs that came out moderately/majorly different from the
-  human reference backport. See `tests/benchmark/README.md`.
+- **cve-agent**: Git identity seeding — seeds `GIT_AUTHOR_NAME`,
+  `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and `GIT_COMMITTER_EMAIL` at
+  startup from `git config --global user.name`/`user.email` if none of the
+  four are already set in the environment. Explicit environment values
+  always win.
+- **cve-agent**: `revert_to_baseline` escape hatch in the OpenAI backend
+  for the model to abandon a failed attempt and return to a clean state.
+- **cve-agent**: Live streaming of OpenAI backend tool operations and model
+  commentary text to the console via `openai_console.py`.
+- **cve-agent**: Typed git tools for the native agent loop (`git show
+  HEAD:<path>` in the command allow-list, `git restore --staged`,
+  `git checkout --ours/--theirs`, cherry-pick recovery, expanded read-only
+  git allowlist).
+- **cve-agent**: Typed commit and amend tools for the native agent loop.
+- **cve-agent**: Bounded filesystem tools for the native agent loop with
+  scoped file-write enforcement.
+- **cve-agent**: Controlled build and finish tools for the native agent loop.
+- **cve-agent**: Commit-note length budget — a length checker for
+  `Conflicts Resolved:` backport notes, a commit-msg hook that rejects
+  over-length notes, and a gate that enforces the budget before approving
+  a resolution. AI instructions are aligned with the enforced budget.
+- **cve-agent**: Allow restoring a file from the original-version base to
+  give the model a clean starting point when a hunk is unsalvageable.
+- **cve-agent**: Reproducible evaluation harness (`docs/evaluation-harness.md`)
+  that enforces fresh identical snapshots, immutable same-campaign resume,
+  complete crossover cohorts, baseline-health exclusions, decomposed
+  telemetry, and semantic—not legacy union—success metrics.
+- **cve-agent**: Isolated LLM backport capability suite
+  (`docs/llm-backport-capability-suite.md`) to score a model's patch-
+  adaptation ability with host-owned builds, reproducers, semantic
+  validation, strict scope checks, and repeated-trial qualification —
+  without requiring a full Yocto environment.
+- **cve-agent**: Adversarial release gate (`docs/adversarial-release-gate.md`)
+  that maps report-derived false positives and hostile model/provider/
+  repository cases to offline deterministic tests.
+- **cve-corrector**: Cross-layout patch transfer verification with content
+  anchors, rollback, and exact path verification. Dirty paths are now
+  reported on precheck failure instead of a generic error.
+- **cve-corrector**: Merge-commit cherry-pick support — fixes given as
+  merge commit SHAs (e.g. GitHub "Merge pull request …") are now
+  cherry-picked with `-m 1`. Previously `find_least_conflict_commit()`
+  scored them as "0 conflicts" (the best candidate) because the pick never
+  started, and the workflow reported `EXIT_CONFLICT` over a pristine tree.
+- **cve-corrector**: Relative submodule URL resolution — `.gitmodules`
+  URLs like `url = ../../GNOME/gvdb.git` are now resolved against the
+  project's real upstream URL instead of the local mirror/workspace path.
+  When `--mirror-dir` holds a mirror of the submodule, that local mirror is
+  used with `protocol.file.allow=always`.
+- **cve-corrector**: Fetch canonical fixes from stale mirrors — when a
+  commit is present in a remote mirror that has drifted behind upstream,
+  the corrector now fetches it from the canonical source.
+- **cve-metadata-extractor**: Ubuntu CVE Tracker source — CVE data now
+  comes from a local shallow clone of the Ubuntu CVE Tracker
+  (`git.launchpad.net/ubuntu-cve-tracker`), controlled by `--uct-dir`
+  (default under the shared data directory). The previous Ubuntu Security
+  API source (one HTTP request per CVE) is deprecated and disabled by
+  default; re-enable with `--ubuntu-api`. `--no-ubuntu` is now a no-op
+  (warns and does nothing).
+- **tests/benchmark**: New cve-agent model benchmark suite — runs cve-agent
+  across a committed CVE roster of varying difficulty and a selection of
+  models, then an AI judge pass on diffs that differ from the human
+  reference backport. See `tests/benchmark/README.md`.
+- **tests/benchmark**: Tiered rosters (`default`, `balanced`, `extended`,
+  `clean-apply`), a chart tool, model-set updates, native OpenAI benchmark
+  runner, judge partial fileset overlap scoring, and per-case selection
+  helpers (`--list-cases`/`--run-case`).
+- **ci**: Python 3.14 added to the test matrix; Python 3.15-dev added as a
+  non-blocking experimental job.
+- **docs**: Native OpenAI-compatible backend guide
+  (`docs/openai-compatible-backend.md`), result schema
+  (`docs/result-schema.md`), agent artifacts (`docs/agent-artifacts.md`),
+  agent preflight (`docs/agent-preflight.md`), corrector-to-agent handoff
+  (`docs/corrector-agent-handoff.md`), safe patch transfer
+  (`docs/safe-patch-transfer.md`), semantic security validation
+  (`docs/semantic-security-validation.md`), agent progress and budgets
+  (`docs/agent-progress-and-budgets.md`), adversarial release gate, and
+  isolated backport capability suite.
+
+### Changed
+
+- **cve-agent**: `--verify-backend` replaces `--cve-id`/`--cve-list` for
+  the invocation — omit both when using it.
+- **cve-agent**: Reviewer feedback is quoted in the AI context to prevent
+  model confusion between instructions and feedback.
+- **cve-agent**: Stale `conclusion.json` is cleared between resolution
+  attempts to prevent a prior run's outcome from poisoning the next retry.
+- **cve-agent**: Audited state is preserved across model retries so a
+  partially validated fix is not lost when the model retries.
+- **cve-agent**: `git show HEAD:<path>` documented and allowed in the
+  command allow-list.
+- **cve-corrector**: Submodules are reset before checking the devtool tree
+  is clean, and submodule directories not registered with devtool are
+  force-cleaned, preventing spurious dirty-tree rejections.
+- **cve-corrector**: Never applies one commit of a dependent chain alone —
+  the whole chain applies or the run stops at a conflict.
+- **cve-corrector**: Complete series handoffs are preserved across retries
+  so `--continue` applies the remaining commits in the original order.
+- **cve-corrector**: Substantive commits are tried before changelog-only
+  commits in least-conflict candidate selection.
+- **cve-corrector**: Commits already present in the target history are
+  never cherry-picked again, preventing accidental double-application.
+- **cve-corrector**: A Makefile-only commit is treated as a version-bump
+  (not a substantive fix) and deprioritised in candidate selection.
+- **cve-corrector**: The real `git am` failure message is reported instead
+  of the last retry error.
+- **cve-agent**: Allowed-file scope is resolved for files that upstream has
+  moved since the backport base, so the session guard does not reject edits
+  to legitimately in-scope files.
+- **benchmark**: Declined release gates are no longer scored as failed runs;
+  the run outcome is read from `result.json` rather than the exit code alone.
+- **benchmark**: Durable artifacts are backfilled for patch comparison when
+  a prior run left results but no diff.
+- **shared**: Git checkout/reset in `copy_missing_files_from_devtool` is
+  batched to reduce subprocess overhead.
 
 ### Fixed
 
-- **cve-corrector**: submodules whose `.gitmodules` URL is *relative*
-  (glib's `url = ../../GNOME/gvdb.git`) are now resolved against the
-  project's real upstream URL. Git resolves relative submodule URLs against
-  the superproject's remote, which in a cve-corrector workspace is a local
-  bare mirror (`--mirror-dir`) or the workspace path itself — yielding a
-  nonexistent sibling directory, e.g. `<workspace>/GNOME/gvdb.git`.
-  Submodule init then failed and, for glib, so did the *pre-patch* build,
-  because `meson.build` bootstraps the submodule itself ("git submodule
-  failed to init"); the run ended as exit 10 (pre-existing build failure)
-  and every glib CVE was reported as skipped. When `--mirror-dir` holds a
-  mirror of the submodule too, that local mirror is used instead of the
-  network URL (with `protocol.file.allow=always`, which git blocks for
-  submodules by default).
-- **cve-corrector**: CVE fixes referenced by a *merge* commit (a GitHub
-  "Merge pull request …" SHA, e.g. setuptools' CVE-2024-6345 fix
-  `88807c70`) are now cherry-picked with `-m 1`. `git cherry-pick <merge>`
-  is refused outright ("is a merge but no -m option was given") and leaves
-  no cherry-pick in progress, so `find_least_conflict_commit()` scored such
-  a commit as "0 conflicts" — the best possible candidate — and the
-  workflow then reported `EXIT_CONFLICT` over a pristine workspace.
-  `find_least_conflict_commit()` now discards candidates whose pick never
-  started, and `_handle_no_clean_apply()` verifies real conflict state
-  (`CHERRY_PICK_HEAD`/unmerged entries) before reporting a conflict,
-  raising `PatchError` (exit 5) otherwise instead of sending a resolver
-  after a conflict that does not exist.
-- **cve-agent**: the session file scope (`Allowed Files`, the pre-commit
-  scope guard, review/interdiff output) is now merge-commit aware. `git
-  show` prints no diff for a merge, so a merge fix SHA produced an *empty*
-  allowed-files list: the guard rejected every write and the model could
-  only escalate. Scope is computed once in `compute_allowed_files()` and
-  shared by `context.md` and the guard, so the two can no longer disagree.
-- **cve-agent**: when the file scope still cannot be determined, the CVE is
-  escalated to human review *before* an AI session is launched, instead of
-  paying for a session that has nothing it is permitted to change.
+- **cve-corrector**: Submodules whose `.gitmodules` URL is relative (e.g.
+  `url = ../../GNOME/gvdb.git`) no longer fail to initialise — the URL is
+  resolved against the real upstream before submodule init.
+- **cve-corrector**: Merge-commit fix SHAs no longer falsely score as
+  "0 conflicts" in `find_least_conflict_commit()`. Candidates whose pick
+  never started are discarded, and `_handle_no_clean_apply()` verifies real
+  conflict state before reporting `EXIT_CONFLICT`.
+- **cve-agent**: Session file scope is now merge-commit aware.
+  `git show` on a merge prints no diff, so a merge fix SHA previously
+  produced an empty allowed-files list and the guard rejected every write.
+  Scope is computed once in `compute_allowed_files()` and shared between
+  `context.md` and the guard.
+- **cve-agent**: When file scope cannot be determined, the CVE is escalated
+  to human review before an AI session is launched, instead of spending on
+  a session that has nothing it is permitted to change.
+- **cve-agent**: Upstream commit authorship is restored when the AI
+  fabricates a new commit instead of amending the cherry-picked one —
+  prevents fabricated author identity from appearing in backport commits.
+- **cve-corrector**: Source authorship is preserved in patch transfer so
+  the original commit author is not replaced by the tool's git identity.
+- **cve-corrector**: Dirty-path details are reported on transfer precheck
+  failure instead of a generic "workspace not clean" message.
+- **benchmark**: `run_benchmark.sh` run loop hardened; agent environment
+  failures are detected and reported separately from CVE resolution failures.
+- **tests/integration**: `Index:`-style patches are now recognised in file
+  diffing; fixture initial branch is no longer assumed to be `master`.
+- **cve-agent**: Honest outcome is recorded for clean-apply cases that are
+  already finalised, preventing a successful corrector run from being
+  double-counted as an agent resolution.
 
 ## [1.0.5] - 2026-08-13
 
@@ -324,6 +469,7 @@ Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
 - Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
+[1.1.0]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.5...v1.1.0
 [1.0.5]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.2...v1.0.3
