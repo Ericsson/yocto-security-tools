@@ -27,13 +27,6 @@
     "recipe": "python3-setuptools",
     "tier": "easy"
   },
-  "CVE-2024-6387": {
-    "conflict_markers": 18,
-    "exit_code": 1,
-    "files_involved": 9,
-    "recipe": "openssh",
-    "tier": "hard"
-  },
   "CVE-2024-7537": {
     "conflict_markers": 2,
     "exit_code": 1,
