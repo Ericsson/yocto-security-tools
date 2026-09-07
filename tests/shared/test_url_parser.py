@@ -88,6 +88,21 @@ class TestExtractCommitHash:
                "a=commitdiff%3Bh=3d4cfdc1a44")
         assert extract_commit_hash(url) == "3d4cfdc1a44"
 
+    def test_gitweb_patch_action(self):
+        # gitweb's a=patch renders a single commit, so h= names that commit.
+        # OE-Core Upstream-Status trailers and the Ubuntu CVE tracker both use
+        # this shape for binutils fixes.
+        url = ("https://sourceware.org/git/?p=binutils-gdb.git;a=patch;"
+               "h=f9978defb6fab0bd8583942d97c112b0932ac814")
+        assert extract_commit_hash(url) == (
+            "f9978defb6fab0bd8583942d97c112b0932ac814")
+
+    def test_gitweb_blob_action_is_not_a_commit(self):
+        # a=blob means h= is a blob object, not something to cherry-pick.
+        url = ("https://sourceware.org/git/?p=binutils-gdb.git;a=blob;"
+               "h=f9978defb6fab0bd8583942d97c112b0932ac814")
+        assert extract_commit_hash(url) is None
+
     def test_gitweb_blob_hash_not_treated_as_commit(self):
         url = ("https://sourceware.org/git/gitweb.cgi?p=glibc.git;a=blob;"
                "h=d1458933830456e54223d9fc61f0d9b3a19256f5")
