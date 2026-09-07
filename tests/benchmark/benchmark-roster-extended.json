@@ -21,11 +21,11 @@
     "tier": "easy"
   },
   "CVE-2024-6345": {
-    "conflict_markers": 4,
+    "conflict_markers": 2,
     "exit_code": 1,
     "files_involved": 2,
     "recipe": "python3-setuptools",
-    "tier": "medium"
+    "tier": "easy"
   },
   "CVE-2024-6387": {
     "conflict_markers": 18,
@@ -42,7 +42,7 @@
     "tier": "easy"
   },
   "CVE-2025-1153": {
-    "conflict_markers": 45,
+    "conflict_markers": 52,
     "exit_code": 1,
     "files_involved": 28,
     "recipe": "binutils",
