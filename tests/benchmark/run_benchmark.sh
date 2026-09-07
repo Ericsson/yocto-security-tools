@@ -45,6 +45,16 @@ AGENT_MODEL=""
 AGENT_MODEL_SET=false
 CUSTOM_MODEL_LABEL=""
 RESUME_DIR=""
+# Per-cve-agent-invocation wall clock, in seconds (env override: RUN_TIMEOUT).
+# For the OpenAI backend, benchmark_manifest.build_run_manifest() rejects a
+# value that is too small relative to the model's connect_timeout +
+# request_timeout and --session-timeout: cve-agent's corrector retries a
+# conflict resolution up to DEFAULT_MAX_RETRIES times, each attempt opening
+# one AI session that can itself retry a single stalled HTTP call several
+# times, so a too-tight RUN_TIMEOUT can kill a run mid-attempt (e.g. mid
+# build_recipe) instead of letting it fail or retry cleanly. Raise
+# RUN_TIMEOUT (or lower the model's request_timeout/--session-timeout) if
+# ensure_campaign_manifest below reports "agent_run_timeout ... is too small".
 RUN_TIMEOUT="${RUN_TIMEOUT:-3600}"  # per cve-agent invocation, seconds
 SESSION_TIMEOUT=""
 JUDGE_BACKEND="kiro"
@@ -137,6 +147,7 @@ tests/benchmark/README.md for what is in each and how to change them.
                        for a named OpenAI profile that supplies its own model.
   --session-timeout N Agent session timeout in seconds. When omitted, use the
                        cve-agent default. The OpenAI wrapper defaults to 1800.
+                       Raising this raises the RUN_TIMEOUT floor below.
   --judge-backend <b> Judge with kiro (default), openai, or openai-<profile>
   --judge-model <m>   Judge model (default: claude-opus-4.8 for Kiro). May be
                        omitted when a named OpenAI judge profile supplies it.
