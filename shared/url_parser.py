@@ -43,6 +43,10 @@ _BARE_HASH_HOSTS = frozenset({'kernel.dance'})
 # commit view. cgit exposes the same commit as /commit/, /patch/ and /diff/.
 _COMMIT_VIEW_SEGMENTS = frozenset({'commit', 'commitdiff', 'patch', 'diff'})
 
+# gitweb ``a=`` actions that render a single commit, so ``h=`` names a commit
+# rather than a blob or tree.
+_COMMIT_VIEW_ACTIONS = frozenset({'commit', 'commitdiff', 'patch'})
+
 IGNORED_URL_PATTERNS = [
     'marc.info', 'NEWS.html#', '/blob/', 'bugzilla', 'viewtopic',
     'bugreport', 'hg.mozilla.org', 'bounties', 'bugs.launchpad.net',
@@ -60,7 +64,8 @@ def extract_commit_hash(url: str) -> Optional[str]:
     ``/commit/<hash>`` and ``/-/commit/<hash>`` (GitHub, GitLab),
     ``/commits/<hash>`` (commit within a pull request), ``/commitdiff/``,
     cgit ``/commit|patch|diff/?id=<hash>``, gitweb
-    ``?p=<repo>;a=commit;h=<hash>``, kernel.org ``/stable/c/<hash>``
+    ``?p=<repo>;a=commit|commitdiff|patch;h=<hash>``, kernel.org
+    ``/stable/c/<hash>``
     shortlinks, Pagure ``/c/<hash>``, SourceForge ``/ci/<hash>``,
     Gitiles ``/+/<hash>``, Fossil ``/info/<hash>``, 9front
     ``/<hash>/commit.html``, and patch artifacts named ``/<hash>.patch``.
@@ -101,7 +106,11 @@ def extract_commit_hash(url: str) -> Optional[str]:
     action = query.get('a')
     is_commit_view = (
         bool(path_parts & _COMMIT_VIEW_SEGMENTS)
-        or action in {'commit', 'commitdiff'}
+        # gitweb's ``a=patch`` renders one commit as a patch, exactly like
+        # ``a=commit``/``a=commitdiff`` — OE-Core's Upstream-Status trailers
+        # and the Ubuntu tracker both use that form (e.g. sourceware's
+        # ``/git/?p=binutils-gdb.git;a=patch;h=<sha>``).
+        or action in _COMMIT_VIEW_ACTIONS
         # Old-style gitweb links omit the action: ?p=<repo>;h=<hash>. An
         # explicit non-commit action (a=blob, a=tree) means h= is a blob or
         # tree object, not a commit, so it must not be accepted here.
