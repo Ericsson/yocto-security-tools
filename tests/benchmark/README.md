@@ -335,7 +335,7 @@ The cheap roster for quick model comparisons: 3 `easy`, 1 `medium`, 2 `hard`.
 | medium | `CVE-2025-50181` | python3-urllib3 | 4 | 2 |
 | hard | `CVE-2025-47203` | dropbear | 7 | 5 |
 | hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
-| hard | `CVE-2025-1153` | binutils | 45 | 28 |
+| hard | `CVE-2025-1153` | binutils | 52 | 28 |
 
 #### Balanced roster (8 CVEs)
 
@@ -352,7 +352,7 @@ here). A superset of the default roster and a subset of the extended one.
 | medium | `CVE-2026-27459` | python3-pyopenssl | 6 | 3 |
 | hard | `CVE-2025-47203` | dropbear | 7 | 5 |
 | hard | `CVE-2026-27135` | nghttp2 | 6 | 5 |
-| hard | `CVE-2025-1153` | binutils | 45 | 28 |
+| hard | `CVE-2025-1153` | binutils | 52 | 28 |
 
 #### Extended roster (19 CVEs)
 
@@ -380,7 +380,7 @@ balanced roster.
 | hard | `CVE-2026-26007` | python3-cryptography | 16 | 13 |
 | hard | `CVE-2024-6387` | openssh | 23 | 14 |
 | hard | `CVE-2025-1176` | binutils | 33 | 22 |
-| hard | `CVE-2025-1153` | binutils | 45 | 28 |
+| hard | `CVE-2025-1153` | binutils | 52 | 28 |
 
 `python3-setuptools` and `binutils` each appear twice (a 2-per-recipe cap
 still holds); every other recipe appears once.
