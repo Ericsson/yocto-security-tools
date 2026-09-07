@@ -35,9 +35,9 @@
     "tier": "medium"
   },
   "CVE-2026-26158": {
-    "conflict_markers": 3,
+    "conflict_markers": 2,
     "exit_code": 1,
-    "files_involved": 2,
+    "files_involved": 1,
     "recipe": "busybox",
     "tier": "easy"
   },
