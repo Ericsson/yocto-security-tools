@@ -12,11 +12,18 @@ import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from cve_agent import DEFAULT_SESSION_TIMEOUT
+from cve_agent import DEFAULT_MAX_RETRIES, DEFAULT_SESSION_TIMEOUT
 from cve_agent.backend import get_backend, resolve_backend_selector
 
 MANIFEST_SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 256 * 1024
+
+# Default OpenAIRetryPolicy.max_attempts (cve_agent/openai_client.py): the
+# number of HTTP tries a single Chat Completions call gets before giving up.
+# Kept as a local constant (rather than imported) since it is not part of the
+# public cve_agent surface and importing the OpenAI-only module would force
+# it onto every caller of this file, including non-OpenAI backends.
+_OPENAI_HTTP_MAX_ATTEMPTS = 3
 
 
 class BenchmarkManifestError(ValueError):
@@ -101,6 +108,42 @@ def resolve_backend_identity(
     return identity
 
 
+def _min_openai_run_timeout(
+    identity: Mapping[str, object], effective_session_timeout: int,
+) -> int | None:
+    """Lower bound on ``agent_run_timeout`` implied by one OpenAI agent identity.
+
+    ``RUN_TIMEOUT`` (run_benchmark.sh) wraps the *entire* ``cve-agent``
+    invocation for one CVE, which cve_corrector retries up to
+    ``DEFAULT_MAX_RETRIES`` times (see orchestrator.py's "Resolution attempt
+    N/max_retries"). Each attempt opens one AI session bounded by
+    ``effective_session_timeout`` (``--session-timeout``, or cve-agent's own
+    default when unset), and within that session a single stalled Chat
+    Completions call can itself be retried ``_OPENAI_HTTP_MAX_ATTEMPTS`` times,
+    each try waiting up to ``connect_timeout + request_timeout`` seconds
+    (openai_client.py's ``OpenAIChatCompletionsClient.complete``).
+
+    A run_timeout smaller than one full retry-exhausted session risks killing
+    the agent mid-attempt instead of letting cve_corrector's own retry loop
+    (or the session deadline) end it cleanly -- observed in practice as a run
+    that is still making verified progress (e.g. mid ``build_recipe``) when
+    the wall-clock `timeout` in run_benchmark.sh fires. Returns ``None`` for
+    non-OpenAI backends, which do not expose these fields.
+    """
+    if identity.get("backend") != "openai":
+        return None
+    configuration = identity.get("configuration")
+    if not isinstance(configuration, Mapping):
+        return None
+    connect_timeout = configuration.get("connect_timeout")
+    request_timeout = configuration.get("request_timeout")
+    if not isinstance(connect_timeout, int) or not isinstance(request_timeout, int):
+        return None
+    one_stalled_call = _OPENAI_HTTP_MAX_ATTEMPTS * (connect_timeout + request_timeout)
+    one_session = min(one_stalled_call, effective_session_timeout)
+    return DEFAULT_MAX_RETRIES * one_session
+
+
 def build_run_manifest(
     roster_path: Path,
     metadata_path: Path,
@@ -120,13 +163,27 @@ def build_run_manifest(
         for model in agent_models
     ]
     judge = resolve_backend_identity(judge_selector, judge_model, environment)
+    effective_session_timeout = (
+        DEFAULT_SESSION_TIMEOUT if session_timeout is None else session_timeout)
+    for identity in agent:
+        minimum = _min_openai_run_timeout(identity, effective_session_timeout)
+        if minimum is not None and run_timeout < minimum:
+            raise BenchmarkManifestError(
+                "agent_run_timeout "
+                f"({run_timeout}s) is too small for model "
+                f"'{identity.get('model')}': its configured connect_timeout+"
+                "request_timeout and session_timeout would need up to "
+                f"{minimum}s across cve-agent's {DEFAULT_MAX_RETRIES} "
+                "resolution attempts to fail safely instead of being killed "
+                "mid-attempt. Raise RUN_TIMEOUT to at least "
+                f"{minimum}, or lower the model's request_timeout/"
+                "connect_timeout/--session-timeout.")
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "roster_sha256": hashlib.sha256(roster_path.read_bytes()).hexdigest(),
         "cve_metadata_sha256": hashlib.sha256(metadata_path.read_bytes()).hexdigest(),
         "agent": agent,
-        "agent_session_timeout": (
-            DEFAULT_SESSION_TIMEOUT if session_timeout is None else session_timeout),
+        "agent_session_timeout": effective_session_timeout,
         "agent_run_timeout": run_timeout,
         "judge": judge,
     }

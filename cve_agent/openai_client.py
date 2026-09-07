@@ -407,9 +407,25 @@ class OpenAIChatCompletionsClient:
                     timeout_error.evidence = ProviderFailureEvidence(
                         timeout_error.code,
                         request_features=self._last_request_features)
-                    self._emit(OpenAIClientEvent(
-                        "failure", attempt, failure=timeout_error.evidence))
-                    raise timeout_error from None
+                    if attempt >= self.retry_policy.max_attempts:
+                        self._emit(OpenAIClientEvent(
+                            "failure", attempt, failure=timeout_error.evidence))
+                        raise timeout_error from None
+                    # A stalled read/connect (e.g. a slow local model server
+                    # occasionally exceeding request_timeout) is retried like
+                    # a connection error instead of ending the whole session:
+                    # the request is a stateless, side-effect-free chat
+                    # completion, so resending it is safe. Observed in
+                    # practice (bench_20260906_074657): raising immediately
+                    # here made a single ~900s stall tear down the entire AI
+                    # session (full preflight + provider probe + replaying
+                    # every prior turn from scratch), when the model was
+                    # otherwise responding normally within seconds on most
+                    # turns. Retrying the one HTTP call instead avoids that
+                    # costly restart and only surfaces PROVIDER_TIMEOUT once
+                    # retries are exhausted or the session deadline is short.
+                    self._retry_sleep(attempt, None)
+                    continue
                 self._emit(OpenAIClientEvent("connection_error", attempt))
                 if response is not None or attempt >= self.retry_policy.max_attempts:
                     connection_error = OpenAIConnectionError(
