@@ -107,3 +107,47 @@ def test_judge_model_change_rejects_resume(tmp_path):
     second = _dry_resume(
         results, environment, "--judge-model", "judge-model-b")
     _assert_mismatch(second, "judge")
+
+
+def test_run_timeout_too_small_for_slow_model_is_rejected(tmp_path):
+    """A RUN_TIMEOUT far below the model's own retry budget must be rejected.
+
+    Reproduces the observed failure mode from bench_20260906_074657: an
+    OpenAI-backed model configured with a large request_timeout (e.g. 900s,
+    matching a slow local/self-hosted endpoint) combined with the default
+    RUN_TIMEOUT=3600 leaves no room for cve-agent's own retry/session-timeout
+    logic to end an attempt cleanly, so the outer `timeout` kills the run
+    mid-attempt instead. build_run_manifest() must refuse to build a manifest
+    in that configuration rather than silently accepting a run_timeout too
+    small to ever fail safely.
+    """
+    results = tmp_path / "results"
+    result = _dry_resume(
+        results,
+        _environment(
+            tmp_path,
+            CVE_AGENT_OPENAI_MODEL="slow-model",
+            CVE_AGENT_OPENAI_REQUEST_TIMEOUT="900",
+            RUN_TIMEOUT="120",
+        ),
+        "--backend", "openai",
+    )
+    assert result.returncode != 0
+    assert "agent_run_timeout" in result.stderr
+    assert "too small" in result.stderr
+
+
+def test_run_timeout_large_enough_for_slow_model_is_accepted(tmp_path):
+    """The same slow-model configuration succeeds once RUN_TIMEOUT is raised."""
+    results = tmp_path / "results"
+    result = _dry_resume(
+        results,
+        _environment(
+            tmp_path,
+            CVE_AGENT_OPENAI_MODEL="slow-model",
+            CVE_AGENT_OPENAI_REQUEST_TIMEOUT="900",
+            RUN_TIMEOUT="10800",
+        ),
+        "--backend", "openai",
+    )
+    assert result.returncode == 0, result.stderr

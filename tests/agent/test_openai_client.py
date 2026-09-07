@@ -596,7 +596,7 @@ def test_connection_failure_and_timeout_are_distinct():
 
     timeout = _client(
         FakeTransport(requests.Timeout("secret timeout detail")),
-        retry=OpenAIRetryPolicy(max_attempts=3))
+        retry=OpenAIRetryPolicy(max_attempts=1))
     with pytest.raises(OpenAIRequestTimeoutError) as timeout_exc:
         timeout.complete([{"role": "user", "content": "hello"}], [])
     assert "secret timeout detail" not in str(timeout_exc.value)
@@ -611,7 +611,7 @@ def test_connection_failure_and_timeout_are_distinct():
 def test_connect_and_read_timeout_have_precise_codes(exception, error_type, code):
     events: list[OpenAIClientEvent] = []
     client = _client(
-        FakeTransport(exception), events=events,
+        FakeTransport(exception, exception, exception), events=events,
         retry=OpenAIRetryPolicy(max_attempts=3))
 
     with pytest.raises(error_type) as exc_info:
@@ -619,20 +619,42 @@ def test_connect_and_read_timeout_have_precise_codes(exception, error_type, code
 
     assert exc_info.value.code is code
     assert exc_info.value.evidence.code is code
-    assert len([event for event in events if event.kind == "attempt"]) == 1
+    # A persistent connect/read timeout is retried like a connection error
+    # (see openai_client.complete()) instead of failing on the first stall,
+    # so all max_attempts are spent before the error surfaces.
+    assert len([event for event in events if event.kind == "attempt"]) == 3
 
 
-def test_streamed_read_timeout_wrapper_is_not_retried():
+def test_transient_read_timeout_is_retried_within_one_call():
+    """A single stalled read must not need a whole new session to recover.
+
+    Reproduces bench_20260906_074657: the model server occasionally exceeded
+    request_timeout on one turn while answering normally on every other
+    turn. Before this fix, that one stall raised immediately and tore down
+    the entire AI session (full preflight + provider probe + replaying every
+    prior turn). complete() must instead retry the stalled HTTP call itself,
+    the same way it already retries a bare connection error.
+    """
+    events: list[OpenAIClientEvent] = []
+    transport = FakeTransport(requests.ReadTimeout("stalled"), FakeResponse())
+    result = _client(transport, events=events).complete(
+        [{"role": "user", "content": "hello"}], [])
+    assert result.content == "ok"
+    assert len(transport.calls) == 2
+    assert any(event.kind == "timeout" for event in events)
+    assert not any(event.kind == "failure" for event in events)
+
+
+def test_streamed_read_timeout_wrapper_is_retried():
     read_timeout_type = type("ReadTimeoutError", (Exception,), {})
     wrapped = requests.ConnectionError(read_timeout_type("secret detail"))
     response = FakeResponse(stream_error=wrapped)
     transport = FakeTransport(response, FakeResponse())
-    with pytest.raises(OpenAIRequestTimeoutError) as exc_info:
-        _client(transport).complete(
-            [{"role": "user", "content": "hello"}], [])
-    assert "secret detail" not in str(exc_info.value)
+    result = _client(transport).complete(
+        [{"role": "user", "content": "hello"}], [])
+    assert result.content == "ok"
     assert response.closed == 1
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 2
 
 
 @pytest.mark.parametrize("status", [429, 502, 503, 504])
