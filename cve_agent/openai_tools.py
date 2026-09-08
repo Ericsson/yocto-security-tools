@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Optional, TypeVar
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 
@@ -39,6 +39,8 @@ MAX_MODEL_RESULT_BYTES = 64 * 1024
 MAX_EXPECTED_OCCURRENCES = 1_000_000
 MAX_QUERY_BYTES = 1024
 MAX_PATCH_FILE_BYTES = 8 * 1024 * 1024
+MAX_RANGE_LINES = 400
+MAX_RANGE_LINE_CHARS = 2048
 MAX_PATCH_HUNKS = 8
 MAX_PATCH_CONTEXT_BYTES = 64 * 1024
 MAX_PATCH_REPLACEMENT_BYTES = 64 * 1024
@@ -58,12 +60,42 @@ def _is_git_internal_component(component: str) -> bool:
     return unicodedata.normalize("NFKC", component).casefold() == ".git"
 
 
+def _split_lines(text: str) -> tuple[list[str], bool]:
+    """Split on LF only so line numbers match Git and the editing tools.
+
+    ``str.splitlines`` would also break on CR, form feed, and Unicode line
+    separators, which would silently renumber a source file that legitimately
+    contains them.
+    """
+    final_newline = text.endswith("\n")
+    lines = text.split("\n")
+    if final_newline:
+        lines.pop()
+    elif lines == [""]:
+        lines = []
+    return lines, final_newline
+
+
+def _line_offsets(lines: Sequence[str]) -> list[int]:
+    """Return the byte offset of every line start plus the end sentinel."""
+    offsets = [0]
+    for line in lines:
+        offsets.append(
+            offsets[-1]
+            + len(line.encode(TEXT_ENCODING, errors="surrogatepass")) + 1)
+    return offsets
+
+
 class ToolValidationError(ValueError):
     """Decoded tool arguments do not match the declared contract."""
+
+    payload: Optional[dict[str, object]] = None
 
 
 class ToolPolicyError(PermissionError):
     """A valid request is outside the runtime's authorization policy."""
+
+    payload: Optional[dict[str, object]] = None
 
 
 class ToolOperationalError(RuntimeError):
@@ -74,6 +106,25 @@ class ToolOperationalError(RuntimeError):
 
 class ToolApprovalError(PermissionError):
     """A host operator denied an otherwise valid side effect."""
+
+
+_SizedError = TypeVar("_SizedError", ToolValidationError, ToolOperationalError)
+
+
+def _sized_error(error: _SizedError, *, size: int, limit: int,
+                 alternative: str) -> _SizedError:
+    """Attach an actionable size diagnostic to a bounded tool error.
+
+    A model that only learns "too large" has to guess which tool to try next.
+    Naming the exact size, the exact limit, and the tool that does accept the
+    operation turns a dead end into a single deterministic retry.
+    """
+    error.payload = {
+        "file_size": size,
+        "size_limit": limit,
+        "alternative": alternative,
+    }
+    return error
 
 
 @dataclass(frozen=True)
@@ -94,6 +145,8 @@ class FileToolLimits:
     max_model_result_bytes: int = MAX_MODEL_RESULT_BYTES
     max_query_bytes: int = MAX_QUERY_BYTES
     max_patch_file_bytes: int = MAX_PATCH_FILE_BYTES
+    max_range_lines: int = MAX_RANGE_LINES
+    max_range_line_chars: int = MAX_RANGE_LINE_CHARS
 
     def __post_init__(self) -> None:
         ceilings = {
@@ -111,6 +164,8 @@ class FileToolLimits:
             "max_model_result_bytes": MAX_MODEL_RESULT_BYTES,
             "max_query_bytes": MAX_QUERY_BYTES,
             "max_patch_file_bytes": MAX_PATCH_FILE_BYTES,
+            "max_range_lines": MAX_RANGE_LINES,
+            "max_range_line_chars": MAX_RANGE_LINE_CHARS,
         }
         for name, ceiling in ceilings.items():
             value = getattr(self, name)
@@ -291,12 +346,33 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         },
         "_read_file",
     ),
+    "read_file_range": ToolContract(
+        "read_file_range",
+        "Read exact numbered lines with byte-exact whitespace, plus the "
+        "complete file SHA-256. Prefer this over repeated searching when a "
+        "line number or region is already known.",
+        {
+            "path": FieldContract(
+                "string", "Workspace-relative path or authorized absolute context path.",
+                required=True),
+            "start_line": FieldContract(
+                "integer", "One-based first line to return.", minimum=1,
+                maximum=MAX_INSPECTABLE_FILE_BYTES),
+            "line_count": FieldContract(
+                "integer", "Maximum number of lines to return.", minimum=1,
+                maximum=MAX_RANGE_LINES),
+        },
+        "_read_file_range",
+    ),
     "search_text": ToolContract(
         "search_text",
-        "Search for a literal string in an explicit list of authorized files.",
+        "Search for a literal single-line string in an explicit list of "
+        "authorized files. Matching happens within one line, so a query may "
+        "not contain a newline; use read_file_range for multi-line content.",
         {
             "query": FieldContract(
-                "string", "Non-empty literal text, never a regular expression.",
+                "string", "Non-empty literal single-line text, never a regular "
+                "expression and never containing a newline.",
                 required=True, min_length=1),
             "paths": FieldContract(
                 "array", "Explicit authorized file paths.", required=True,
@@ -330,6 +406,32 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
                 minimum=0, maximum=MAX_EXPECTED_OCCURRENCES),
         },
         "_replace_in_file",
+    ),
+    "replace_lines": ToolContract(
+        "replace_lines",
+        "Replace an exact one-based line range in one authorized LF-only "
+        "UTF-8 file, guarded by the complete current SHA-256. Needs no exact "
+        "text context and accepts files above the full-rewrite limit; an "
+        "empty replacement deletes the range.",
+        {
+            "path": FieldContract(
+                "string", "Exact authorized workspace-relative file path.",
+                required=True),
+            "start_line": FieldContract(
+                "integer", "One-based first line to replace.", required=True,
+                minimum=1, maximum=MAX_INSPECTABLE_FILE_BYTES),
+            "end_line": FieldContract(
+                "integer", "One-based last line to replace, inclusive.",
+                required=True, minimum=1, maximum=MAX_INSPECTABLE_FILE_BYTES),
+            "expected_sha256": FieldContract(
+                "string", "Lowercase SHA-256 of the complete current file.",
+                required=True, min_length=64, max_length=64),
+            "replacement": FieldContract(
+                "string", "Complete LF-only replacement text for the range; "
+                "empty deletes the range.", required=True,
+                max_length=MAX_PATCH_REPLACEMENT_BYTES),
+        },
+        "_replace_lines",
     ),
     "apply_patch_hunks": ToolContract(
         "apply_patch_hunks",
@@ -1004,8 +1106,13 @@ class FileToolRuntime:
         fd, info = self.policy.open_regular(authorized)
         try:
             if info.st_size > self.limits.max_inspectable_file_bytes:
-                raise ToolOperationalError(
-                    "file exceeds the configured inspection size limit")
+                raise _sized_error(
+                    ToolOperationalError(
+                        "file exceeds the configured inspection size limit"),
+                    size=info.st_size,
+                    limit=self.limits.max_inspectable_file_bytes,
+                    alternative="search_text for a distinctive line",
+                )
             if offset > info.st_size:
                 raise ToolOperationalError("read offset is beyond end of file")
             data = self._read_up_to(fd, info.st_size + 1)
@@ -1036,10 +1143,98 @@ class FileToolRuntime:
             "sha256": hashlib.sha256(data).hexdigest(),
         })
 
+    def _read_file_range(self, arguments: dict[str, object]) -> _ExecutionResult:
+        path = self._required_string(arguments, "path")
+        start_line = self._optional_integer(arguments, "start_line", 1)
+        line_count = self._optional_integer(
+            arguments, "line_count", self.limits.max_range_lines)
+        if line_count > self.limits.max_range_lines:
+            raise ToolValidationError(
+                "field 'line_count' exceeds the session line limit")
+        authorized = self._reauthorize("read_file_range", path, write=False)
+        data, info = self._read_whole_file(authorized, "read_file_range")
+        if self._looks_binary(data):
+            raise ToolOperationalError("binary file content is not returned")
+        text = data.decode(TEXT_ENCODING, errors=TEXT_ERRORS)
+        try:
+            data.decode(TEXT_ENCODING, errors="strict")
+            replacements = False
+        except UnicodeDecodeError:
+            replacements = True
+        file_lines, final_newline = _split_lines(text)
+        total = len(file_lines)
+        if start_line > total and total:
+            raise ToolOperationalError("start_line is beyond end of file")
+
+        lines: list[dict[str, object]] = []
+        budget = self.limits.max_file_read_bytes
+        next_line: Optional[int] = None
+        index = start_line
+        while index <= min(total, start_line + line_count - 1):
+            content = file_lines[index - 1]
+            truncated_line = len(content) > self.limits.max_range_line_chars
+            if truncated_line:
+                content = content[:self.limits.max_range_line_chars]
+            cost = len(content.encode(TEXT_ENCODING, errors="surrogatepass")) + 1
+            if lines and cost > budget:
+                next_line = index
+                break
+            budget -= cost
+            lines.append({
+                "line": index,
+                "text": content,
+                "truncated": truncated_line,
+            })
+            index += 1
+        if next_line is None and index <= total:
+            next_line = index
+        return _ExecutionResult({
+            "path": path,
+            "start_line": start_line,
+            "end_line": lines[-1]["line"] if lines else None,
+            "line_count": len(lines),
+            "lines": lines,
+            "file_lines": total,
+            "final_newline": final_newline,
+            "truncated": next_line is not None,
+            "next_line": next_line,
+            "file_size": info.st_size,
+            "decode_replacements": replacements,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+
+    def _read_whole_file(self, authorized: AuthorizedPath,
+                         tool: str) -> tuple[bytes, os.stat_result]:
+        """Read one complete inspectable file with a stable size guarantee."""
+        fd, info = self.policy.open_regular(authorized)
+        try:
+            if info.st_size > self.limits.max_inspectable_file_bytes:
+                raise _sized_error(
+                    ToolOperationalError(
+                        "file exceeds the configured inspection size limit"),
+                    size=info.st_size,
+                    limit=self.limits.max_inspectable_file_bytes,
+                    alternative="search_text for a distinctive line",
+                )
+            data = self._read_up_to(fd, info.st_size + 1)
+        finally:
+            os.close(fd)
+        if len(data) != info.st_size:
+            raise ToolOperationalError("file changed while it was being read")
+        return data, info
     def _search_text(self, arguments: dict[str, object]) -> _ExecutionResult:
         query = self._required_string(arguments, "query")
         if not query:
             raise ToolValidationError("field 'query' must not be empty")
+        if "\n" in query or "\r" in query:
+            # Matching is per line, so a multi-line query can never match. A
+            # silent zero-match answer here reads as "the text is not present"
+            # and sends models into long, useless probing loops.
+            raise ToolValidationError(
+                "field 'query' must be a single line: search_text matches "
+                "within one line, so a query containing a newline can never "
+                "match. Search one distinctive line, or use read_file_range "
+                "to read exact multi-line content")
         if (len(query.encode(TEXT_ENCODING, errors="surrogatepass"))
                 > self.limits.max_query_bytes):
             raise ToolValidationError("field 'query' exceeds its size limit")
@@ -1169,13 +1364,13 @@ class FileToolRuntime:
         authorized = self._reauthorize("replace_in_file", path, write=True)
         fd, info = self.policy.open_regular(authorized)
         try:
-            if info.st_size > self.limits.max_write_bytes:
-                raise ToolOperationalError("file exceeds the configured write size limit")
-            data = self._read_up_to(fd, self.limits.max_write_bytes + 1)
+            if info.st_size > self.limits.max_patch_file_bytes:
+                raise self._replace_size_error(info.st_size)
+            data = self._read_up_to(fd, self.limits.max_patch_file_bytes + 1)
         finally:
             os.close(fd)
-        if len(data) > self.limits.max_write_bytes:
-            raise ToolOperationalError("file exceeds the configured write size limit")
+        if len(data) > self.limits.max_patch_file_bytes:
+            raise self._replace_size_error(len(data))
         if b"\x00" in data:
             raise ToolOperationalError("binary files cannot be replaced as text")
         try:
@@ -1188,7 +1383,8 @@ class FileToolRuntime:
             raise ToolOperationalError(
                 f"occurrence count mismatch: expected {expected}, found {actual}")
         replaced = text.replace(old_text, new_text)
-        encoded = self._encode_write(replaced)
+        encoded = self._encode_write(
+            replaced, limit=self.limits.max_patch_file_bytes)
         if encoded == data:
             return _ExecutionResult({
                 "path": path,
@@ -1198,7 +1394,8 @@ class FileToolRuntime:
             })
         authorized = self.policy.authorize_write(path)
         self._atomic_write(
-            authorized, encoded, mode="replace_only", expected_info=info)
+            authorized, encoded, mode="replace_only", expected_info=info,
+            max_bytes=self.limits.max_patch_file_bytes)
         return _ExecutionResult({
             "path": path,
             "occurrences": actual,
@@ -1206,8 +1403,29 @@ class FileToolRuntime:
             "changed": True,
         }, mutated=True)
 
+    def _replace_size_error(self, size: int) -> ToolOperationalError:
+        return _sized_error(
+            ToolOperationalError("file exceeds the configured write size limit"),
+            size=size,
+            limit=self.limits.max_patch_file_bytes,
+            alternative="replace_lines or apply_patch_hunks",
+        )
+
     def _apply_patch_hunks(self, arguments: dict[str, object]) -> _ExecutionResult:
         plan = self._prepare_patch_hunks(arguments)
+        payload = self._commit_patch_plan(plan)
+        payload["hunks_applied"] = plan.hunks_applied
+        return _ExecutionResult(payload, mutated=True)
+
+    def _replace_lines(self, arguments: dict[str, object]) -> _ExecutionResult:
+        plan, start_line, end_line = self._prepare_line_replacement(arguments)
+        payload = self._commit_patch_plan(plan)
+        payload["start_line"] = start_line
+        payload["end_line"] = end_line
+        return _ExecutionResult(payload, mutated=True)
+
+    def _commit_patch_plan(self, plan: _PatchPlan) -> dict[str, object]:
+        """Write one verified plan atomically, restoring bytes on failure."""
         self._atomic_write(
             plan.authorized,
             plan.replacement,
@@ -1220,27 +1438,135 @@ class FileToolRuntime:
         except (ToolOperationalError, ToolPolicyError):
             self._restore_failed_patch(plan)
             raise
-        return _ExecutionResult({
+        return {
             "path": plan.authorized.repository_path,
             "old_sha256": plan.old_sha256,
             "new_sha256": plan.new_sha256,
-            "hunks_applied": plan.hunks_applied,
             "lines_added": plan.lines_added,
             "lines_removed": plan.lines_removed,
             "diff_excerpt": plan.diff_excerpt,
             "diff_truncated": (
                 len(plan.diff_excerpt.encode("utf-8")) >= MAX_PATCH_DIFF_BYTES),
             "mutation_generation": self.mutation_generation + 1,
-        }, mutated=True)
+        }
 
-    def _prepare_patch_hunks(self, arguments: Mapping[str, object]) -> _PatchPlan:
+    def _prepare_line_replacement(
+        self, arguments: Mapping[str, object],
+    ) -> tuple[_PatchPlan, int, int]:
+        """Plan an exact line-range replacement without any text context.
+
+        Line addressing is what keeps a model from having to rediscover the
+        byte-exact indentation of every line it intends to touch; the
+        complete-file SHA-256 keeps the positional edit safe.
+        """
         path = self._required_string(arguments, "path")
+        start_line = self._required_integer(arguments, "start_line")
+        end_line = self._required_integer(arguments, "end_line")
+        expected_sha256 = self._validated_sha256(arguments)
+        replacement_text = self._required_string(arguments, "replacement")
+        if end_line < start_line:
+            raise ToolValidationError("end_line must not precede start_line")
+        try:
+            replacement = replacement_text.encode(TEXT_ENCODING, errors="strict")
+        except UnicodeEncodeError as exc:
+            raise ToolValidationError(
+                "replacement must be valid UTF-8 text") from exc
+        if b"\r" in replacement:
+            raise ToolValidationError("replacement supports LF newlines only")
+        if len(replacement) > MAX_PATCH_REPLACEMENT_BYTES:
+            raise ToolValidationError("replacement exceeds its byte limit")
+
+        authorized = self._reauthorize("replace_lines", path, write=True)
+        original, info = self._read_patch_target(authorized, expected_sha256)
+        lines, final_newline = _split_lines(
+            original.decode(TEXT_ENCODING, errors="strict"))
+        if end_line > len(lines):
+            raise ToolOperationalError(
+                f"end_line {end_line} is beyond the file's {len(lines)} lines")
+
+        offsets = _line_offsets(lines)
+        start = offsets[start_line - 1]
+        at_unterminated_end = end_line == len(lines) and not final_newline
+        end = len(original) if at_unterminated_end else offsets[end_line]
+        if replacement and not replacement.endswith(b"\n") and end < len(original):
+            # The range being replaced ended with a newline, so a replacement
+            # without one would join the following line.
+            replacement += b"\n"
+        lines_removed = end_line - start_line + 1
+        lines_added = self._patch_line_count(replacement)
+        if lines_removed + lines_added > MAX_PATCH_CHANGED_LINES:
+            raise ToolValidationError("replaced-line count exceeds its limit")
+
+        output = original[:start] + replacement + original[end:]
+        if output == original:
+            raise ToolValidationError("replacement does not change the target")
+        if len(output) > self.limits.max_patch_file_bytes:
+            raise ToolValidationError("patched output exceeds its size limit")
+        located = [(start, end, original[start:end], replacement)]
+        return _PatchPlan(
+            authorized=authorized,
+            expected_info=info,
+            original=original,
+            replacement=output,
+            old_sha256=expected_sha256,
+            new_sha256=hashlib.sha256(output).hexdigest(),
+            hunks_applied=1,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+            diff_excerpt=self._patch_diff_excerpt(path, located),
+        ), start_line, end_line
+
+    def _validated_sha256(self, arguments: Mapping[str, object]) -> str:
         expected_sha256 = self._required_string(arguments, "expected_sha256")
         if (len(expected_sha256) != 64
                 or any(character not in "0123456789abcdef"
                        for character in expected_sha256)):
             raise ToolValidationError(
                 "expected_sha256 must be 64 lowercase hexadecimal characters")
+        return expected_sha256
+
+    def _read_patch_target(
+        self, authorized: AuthorizedPath, expected_sha256: str,
+    ) -> tuple[bytes, os.stat_result]:
+        """Read one LF-only UTF-8 target and confirm the caller's SHA-256."""
+        fd, info = self.policy.open_regular(authorized)
+        try:
+            if info.st_size > self.limits.max_patch_file_bytes:
+                raise _sized_error(
+                    ToolOperationalError(
+                        "patch target exceeds its output size limit"),
+                    size=info.st_size,
+                    limit=self.limits.max_patch_file_bytes,
+                    alternative="a narrower authorized file",
+                )
+            original = self._read_up_to(fd, self.limits.max_patch_file_bytes + 1)
+        finally:
+            os.close(fd)
+        if len(original) > self.limits.max_patch_file_bytes:
+            raise _sized_error(
+                ToolOperationalError("patch target exceeds its output size limit"),
+                size=len(original),
+                limit=self.limits.max_patch_file_bytes,
+                alternative="a narrower authorized file",
+            )
+        if self._looks_binary(original):
+            raise ToolOperationalError("patch target is not supported UTF-8 text")
+        try:
+            original.decode(TEXT_ENCODING, errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ToolOperationalError("patch target is not valid UTF-8") from exc
+        if b"\r" in original:
+            raise ToolOperationalError("patch target does not use LF-only newlines")
+        actual_sha256 = hashlib.sha256(original).hexdigest()
+        if actual_sha256 != expected_sha256:
+            error = ToolOperationalError("patch target SHA-256 mismatch")
+            error.payload = {"current_sha256": actual_sha256}
+            raise error
+        return original, info
+
+    def _prepare_patch_hunks(self, arguments: Mapping[str, object]) -> _PatchPlan:
+        path = self._required_string(arguments, "path")
+        expected_sha256 = self._validated_sha256(arguments)
         hunks_value = arguments.get("hunks")
         if not isinstance(hunks_value, list) or not hunks_value:
             raise ToolValidationError("hunks must contain at least one item")
@@ -1283,26 +1609,8 @@ class FileToolRuntime:
             raise ToolValidationError("patch changed-line count exceeds its limit")
 
         authorized = self._reauthorize("apply_patch_hunks", path, write=True)
-        fd, info = self.policy.open_regular(authorized)
-        try:
-            if info.st_size > self.limits.max_patch_file_bytes:
-                raise ToolOperationalError("patch target exceeds its output size limit")
-            original = self._read_up_to(fd, self.limits.max_patch_file_bytes + 1)
-        finally:
-            os.close(fd)
-        if len(original) > self.limits.max_patch_file_bytes:
-            raise ToolOperationalError("patch target exceeds its output size limit")
-        if self._looks_binary(original):
-            raise ToolOperationalError("patch target is not supported UTF-8 text")
-        try:
-            original.decode(TEXT_ENCODING, errors="strict")
-        except UnicodeDecodeError as exc:
-            raise ToolOperationalError("patch target is not valid UTF-8") from exc
-        if b"\r" in original:
-            raise ToolOperationalError("patch target does not use LF-only newlines")
-        old_sha256 = hashlib.sha256(original).hexdigest()
-        if old_sha256 != expected_sha256:
-            raise ToolOperationalError("patch target SHA-256 mismatch")
+        original, info = self._read_patch_target(authorized, expected_sha256)
+        old_sha256 = expected_sha256
 
         located: list[tuple[int, int, bytes, bytes]] = []
         previous_end = 0
@@ -1437,7 +1745,13 @@ class FileToolRuntime:
                       max_bytes: Optional[int] = None) -> None:
         write_limit = self.limits.max_write_bytes if max_bytes is None else max_bytes
         if len(data) > write_limit:
-            raise ToolValidationError("file content exceeds the configured write limit")
+            raise _sized_error(
+                ToolValidationError(
+                    "file content exceeds the configured write limit"),
+                size=len(data),
+                limit=write_limit,
+                alternative="replace_lines or apply_patch_hunks",
+            )
         parent_fd, target_name = self.policy.open_write_parent(authorized)
         temp_name = f".cve-agent-{uuid.uuid4().hex}.tmp"
         temp_created = False
@@ -1594,13 +1908,20 @@ class FileToolRuntime:
                 raise ToolOperationalError("atomic write made no progress")
             written += count
 
-    def _encode_write(self, text: str) -> bytes:
+    def _encode_write(self, text: str, limit: Optional[int] = None) -> bytes:
+        write_limit = self.limits.max_write_bytes if limit is None else limit
         try:
             data = text.encode(TEXT_ENCODING, errors="strict")
         except UnicodeEncodeError as exc:
             raise ToolValidationError("file content is not valid UTF-8 text") from exc
-        if len(data) > self.limits.max_write_bytes:
-            raise ToolValidationError("file content exceeds the configured write limit")
+        if len(data) > write_limit:
+            raise _sized_error(
+                ToolValidationError(
+                    "file content exceeds the configured write limit"),
+                size=len(data),
+                limit=write_limit,
+                alternative="replace_lines or apply_patch_hunks",
+            )
         return data
 
     @staticmethod

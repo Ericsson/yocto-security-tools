@@ -424,6 +424,39 @@ def test_interactive_large_patch_approval_and_denial_are_bounded(host_repository
     assert target.read_text(encoding="utf-8") == "patched\n"
 
 
+def test_interactive_line_replacement_is_previewed_and_denied_safely(host_repository):
+    repo, agent = host_repository
+    target = repo / "a.c"
+    target.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    arguments = {
+        "path": "a.c", "start_line": 2, "end_line": 2,
+        "expected_sha256": digest, "replacement": "patched\n",
+    }
+    denied_approval = FakeApproval(ApprovalDecision.DENY)
+    denied_runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=denied_approval)
+
+    denied = denied_runtime.dispatch("replace_lines", arguments)
+
+    assert not denied.success and denied.error_kind == "approval"
+    assert target.read_text(encoding="utf-8") == "first\nsecond\nthird\n"
+    request = denied_approval.requests[0]
+    assert request.category == "file_mutation"
+    assert request.operation == "replace_lines"
+    assert "lines 2-2" in request.summary
+    assert digest in request.summary
+    assert "-second" in request.summary and "+patched" in request.summary
+
+    approved = FakeApproval(ApprovalDecision.APPROVE_ONCE)
+    approved_runtime = _runtime(
+        repo, agent, interactive=True, approval_provider=approved)
+    result = approved_runtime.dispatch("replace_lines", arguments)
+
+    assert result.success
+    assert target.read_text(encoding="utf-8") == "first\npatched\nthird\n"
+
+
 def test_interactive_amend_denial_is_structured_and_does_not_stage(host_repository):
     repo, agent = host_repository
     (repo / "a.c").write_text("selected fix\n", encoding="utf-8")
