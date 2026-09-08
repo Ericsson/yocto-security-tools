@@ -17,6 +17,8 @@
 │   ├── cve_sources.py           # Input loading (cve-summary.json, VEX)
 │   ├── oe_status.py             # Check CVE status in OE branches
 │   ├── debian.py / osv.py / cvelistv5.py / uct.py / ubuntu.py  # Data sources
+│   │                            # (uct.py = Ubuntu CVE Tracker local clone, default-on;
+│   │                            #  ubuntu.py = legacy per-CVE HTTP API, deprecated/opt-in via --ubuntu-api)
 │   └── config.json              # Public URLs (override via CVE_EXTRACTOR_CONFIG)
 ├── cve_corrector/               # Tool 2: apply patches via devtool
 │   ├── workflow.py              # Main state machine (largest file)
@@ -107,9 +109,9 @@ Each tool works independently. Chain via `--cve-info cve-metadata.json`.
 ## CI & Quality Gates
 
 - **Pre-commit**: ruff (lint+format) + mypy
-- **CI matrix**: Python 3.10–3.14 on ubuntu-latest
+- **CI matrix**: Python 3.10–3.14 on ubuntu-latest (required), plus 3.15-dev as an experimental `continue-on-error` job
 - **Pipeline**: ruff check → mypy → pytest --cov (threshold: 65%)
-- **Ruff rules**: E, F, W, I, UP, B, SIM (line-length 100, E501 ignored)
+- **Ruff rules**: E, F, W, I, UP, B, SIM (line-length 100, E501 ignored). Note: `target-version = "py39"` in `pyproject.toml` is stale relative to `requires-python = ">=3.10"`
 - **Mypy config**: check_untyped_defs=true, ignore_missing_imports=true, target py3.10
 
 ### Run CI Locally Before Committing

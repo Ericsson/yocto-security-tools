@@ -43,7 +43,7 @@ prose or call IDs as evidence of progress.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - Git
 - For `cve-corrector` / `cve-agent`: a sourced Yocto build environment (`BBPATH` set)
 - For `cve-agent`: [kiro-cli](https://github.com/kirodotdev/Kiro) (default), [Claude Code](https://code.claude.com) (`--backend claude`), a tool-capable OpenAI-compatible model endpoint (`--backend openai` or `openai-<profile>`), or a custom backend plugin
