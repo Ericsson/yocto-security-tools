@@ -443,7 +443,8 @@ def remove_notes_hook(workspace_path: Path) -> None:
 
 
 def revert_unauthorized_changes(workspace_path: Path,
-                                allowed: set[str]) -> None:
+                                allowed: set[str],
+                                sequence_paths: Optional[set[str]] = None) -> None:
     """Revert committed changes to unauthorized files.
 
     Working-tree changes are left alone (they are ephemeral and get
@@ -453,6 +454,10 @@ def revert_unauthorized_changes(workspace_path: Path,
     Args:
         workspace_path: Path to workspace.
         allowed: Set of file paths allowed by the upstream commit.
+        sequence_paths: Paths the corrector authorized for the commits Git's
+            sequencer creates for the rest of a fix series. They are part of the
+            selected operation even though the model may not write them, so
+            stripping them here would silently mutilate an applied series.
     """
 
     # Revert unauthorized committed changes.
@@ -482,7 +487,7 @@ def revert_unauthorized_changes(workspace_path: Path,
     committed = set(run_git_stdout(
         ['diff', '--name-only', 'original-version..HEAD'], workspace_path
     ).splitlines())
-    commit_unauthorized = committed - allowed
+    commit_unauthorized = committed - allowed - (sequence_paths or set())
 
     if not commit_unauthorized:
         return
@@ -491,8 +496,13 @@ def revert_unauthorized_changes(workspace_path: Path,
     for filepath in sorted(commit_unauthorized):
         print(f"  - {filepath}")
 
-    # Preserve commit message, then soft-reset to original-version
-    msg = run_git_stdout(['log', '-1', '--format=%B'], workspace_path)
+    # Preserve the message of the *earliest* commit being squashed: it is the
+    # one the fix is attributed to. Using HEAD's message would relabel a series
+    # with its last follow-up commit's subject.
+    revisions = run_git_stdout(
+        ['rev-list', 'original-version..HEAD'], workspace_path).split()
+    oldest = revisions[-1] if revisions else 'HEAD'
+    msg = run_git_stdout(['log', '-1', '--format=%B', oldest], workspace_path)
     saved_head_result = run_capture(
         ['git', 'rev-parse', 'HEAD'], cwd=workspace_path
     )

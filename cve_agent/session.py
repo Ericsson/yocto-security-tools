@@ -211,6 +211,9 @@ def guarded_session(context_file: Path, workspace_path: Path,
         if handoff is not None
         else compute_allowed_files(cve_info, workspace_path)
     )
+    # Authorized for Git's sequencer only (rest of a fix series), never for the
+    # model's file tools — see RepositoryHandoff.sequence_paths.
+    sequence_paths = set() if handoff is None else set(handoff.sequence_paths)
     # Snapshot upstream diffs per file before the session (single pass per SHA)
     upstream_diffs: dict[str, str] = {}
     for sha in all_shas:
@@ -381,7 +384,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
 
     if workspace_path.exists():
         try:
-            revert_unauthorized_changes(workspace_path, allowed)
+            revert_unauthorized_changes(workspace_path, allowed, sequence_paths)
         except BaseException as exc:
             cleanup_errors.append(exc)
         if pre_session_head is not None:

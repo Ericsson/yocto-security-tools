@@ -25,6 +25,43 @@ def handoff_path(state_dir: Path, recipe: str) -> Path:
     return state_dir / "handoffs" / f"{recipe}.json"
 
 
+def _pending_sequence_paths(
+    workspace: Path, reference_commits: tuple[str, ...], selected: str,
+    allowed: set[str],
+) -> tuple[str, ...]:
+    """Authorize the paths Git's sequencer will write for the rest of a series.
+
+    A conflicting series leaves the remaining commits in Git's sequencer todo,
+    and ``git cherry-pick --continue`` creates them without a model action.
+    Their paths are declared separately from ``allowed_paths`` so the model's
+    writable scope stays at the selected commit while the host can still
+    account for the commits Git makes on its behalf.
+
+    Commits whose reference diff cannot be described (unavailable object,
+    ambiguous merge mainline, empty change) are left unauthorized on purpose:
+    the sequence is then rejected rather than silently trusted.
+
+    Args:
+        workspace: Devtool workspace repository.
+        reference_commits: The full ordered fix series.
+        selected: The commit whose conflict is being handed off.
+        allowed: Already-authorized paths of the selected commit.
+
+    Returns:
+        Sorted paths authorized only for host-driven sequencer commits.
+    """
+    paths: set[str] = set()
+    for commit in reference_commits:
+        if commit == selected:
+            continue
+        try:
+            reference, _ = reference_change_paths(workspace, commit, None)
+        except HandoffError:
+            continue
+        paths.update(reference)
+    return tuple(sorted(paths - allowed))
+
+
 def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
     """Classify repository state, narrowly clean generated paths, and emit."""
     workspace = state.workspace_path.resolve(strict=True)
@@ -53,6 +90,9 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
             reference_hashes = list(dict.fromkeys(commits))
     reference_commits = tuple(
         git_object(workspace, f"{commit}^{{commit}}") for commit in reference_hashes)
+    selected_commit = git_object(workspace, f"{state.commit_hash}^{{commit}}")
+    sequence_paths = _pending_sequence_paths(
+        workspace, reference_commits, selected_commit, declared)
     manifest = RepositoryHandoff(
         schema_version=HANDOFF_SCHEMA_VERSION,
         cve=state.cve_id,
@@ -62,13 +102,14 @@ def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
         baseline_tree=git_object(workspace, "original-version^{tree}"),
         current_tree=captured.tree,
         reference_commits=reference_commits,
-        selected_commit=git_object(workspace, f"{state.commit_hash}^{{commit}}"),
+        selected_commit=selected_commit,
         mainline_parent=state.mainline_parent,
         selected_parent=selected_parent,
         git_operation="cherry-pick",
         operation_state=captured.operation_state,
         conflicted_paths=captured.conflicted_paths,
         allowed_paths=allowed,
+        sequence_paths=sequence_paths,
         known_generated_paths=generated,
         tracked_out_of_scope_paths=out_of_scope,
         index_fingerprint=captured.index_fingerprint,

@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
-HANDOFF_SCHEMA_VERSION = 1
+HANDOFF_SCHEMA_VERSION = 2
 MAX_HANDOFF_PATHS = 100_000
 MAX_HANDOFF_SAMPLE_PATHS = 32
 MAX_HANDOFF_BYTES = 1024 * 1024
@@ -48,6 +48,7 @@ class RepositoryHandoff:
     operation_state: str
     conflicted_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...]
+    sequence_paths: tuple[str, ...]
     known_generated_paths: tuple[str, ...]
     tracked_out_of_scope_paths: tuple[str, ...]
     index_fingerprint: str
@@ -71,6 +72,7 @@ class RepositoryHandoff:
             "operation_state": self.operation_state,
             "conflicted_paths": list(self.conflicted_paths),
             "allowed_paths": list(self.allowed_paths),
+            "sequence_paths": list(self.sequence_paths),
             "known_generated_paths": list(self.known_generated_paths),
             "tracked_out_of_scope_paths": list(self.tracked_out_of_scope_paths),
             "index_fingerprint": self.index_fingerprint,
@@ -115,7 +117,7 @@ class RepositoryHandoff:
                 or len(set(self.reference_commits)) != len(self.reference_commits)):
             raise HandoffError("HANDOFF_SCHEMA_INVALID", "invalid reference series")
         for values in (
-            self.conflicted_paths, self.allowed_paths,
+            self.conflicted_paths, self.allowed_paths, self.sequence_paths,
             self.known_generated_paths, self.tracked_out_of_scope_paths,
         ):
             if len(values) > MAX_HANDOFF_PATHS:
@@ -123,10 +125,19 @@ class RepositoryHandoff:
             if tuple(sorted(set(values))) != values:
                 raise HandoffError("HANDOFF_SCHEMA_INVALID", "paths must be sorted and unique")
         for path in set().union(
-            self.conflicted_paths, self.allowed_paths, self.known_generated_paths,
-            self.tracked_out_of_scope_paths,
+            self.conflicted_paths, self.allowed_paths, self.sequence_paths,
+            self.known_generated_paths, self.tracked_out_of_scope_paths,
         ):
             _validate_path(path)
+        # Sequence paths authorize only the commits Git's sequencer creates for
+        # the remaining reference commits. Overlapping the model's writable
+        # scope or the generated-file scope would blur that boundary.
+        if set(self.sequence_paths) & set(self.allowed_paths):
+            raise HandoffError(
+                "HANDOFF_PATH_CONTRADICTION", "sequence paths overlap allowed paths")
+        if set(self.sequence_paths) & set(self.known_generated_paths):
+            raise HandoffError(
+                "HANDOFF_PATH_CONTRADICTION", "sequence paths overlap generated paths")
         if self.critical_sha256 != _digest(self.critical_dict()):
             raise HandoffError("HANDOFF_DIGEST_MISMATCH", "critical fields changed")
 
@@ -137,7 +148,7 @@ class RepositoryHandoff:
             "current_head", "baseline_tree", "current_tree", "reference_commits",
             "selected_commit", "mainline_parent", "selected_parent", "git_operation",
             "operation_state", "conflicted_paths", "allowed_paths",
-            "known_generated_paths", "tracked_out_of_scope_paths",
+            "sequence_paths", "known_generated_paths", "tracked_out_of_scope_paths",
             "index_fingerprint", "worktree_fingerprint", "critical_sha256",
         }
         if set(value) != expected:
@@ -161,6 +172,7 @@ class RepositoryHandoff:
                 operation_state=_string(value["operation_state"]),
                 conflicted_paths=_strings(value["conflicted_paths"]),
                 allowed_paths=_strings(value["allowed_paths"]),
+                sequence_paths=_strings(value["sequence_paths"]),
                 known_generated_paths=_strings(value["known_generated_paths"]),
                 tracked_out_of_scope_paths=_strings(value["tracked_out_of_scope_paths"]),
                 index_fingerprint=_string(value["index_fingerprint"]),
