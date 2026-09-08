@@ -24,6 +24,15 @@ changes remain in scope. A merge commit requires `--mainline-parent N`, or a
 positive `mainline_parent` in that CVE's metadata. The parent must be a direct
 parent. The corrector never guesses parent 1, and rejects empty net changes.
 
+Upstream paths are translated onto the recipe's source root by deterministic
+source-root prefixes first. When a reference path does not exist there at all —
+an upstream directory rename after the recipe's release, for example — the
+older path is accepted only on the same evidence the patch transfer requires: a
+tracked candidate whose blob is byte-identical to the reference pre-image, whose
+trailing path components relate to the reference path, and which is the only such
+candidate. Modified or ambiguous candidates are left unmapped, so the handoff
+still fails rather than guessing which file Git will write.
+
 ## Series sequence paths
 
 A conflicting fix series leaves the remaining commits in Git's sequencer todo,
