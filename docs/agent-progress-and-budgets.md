@@ -14,6 +14,23 @@ blocker also counts. Re-reading an identical range, repeating unchanged Git
 status/diff, retrying an identical build for the same generation, provider
 retries, and differently worded model explanations do not.
 
+Novelty alone is not unlimited evidence of progress. The host counts
+inspections since the last repository change; after 16 consecutive inspection
+calls with no mutation, build, conflict reduction, or terminal state, further
+novel inspections are classified `inspection_saturated` and stop counting as
+progress, so the existing no-information ladder applies. The state message then
+names the line-addressed tools (`git_conflict_regions`, `read_file_range`,
+`replace_lines`/`apply_patch_hunks`) or explicit escalation as the required next
+action. Any mutation, build, or conflict reduction resets the count.
+
+Read-only tool payloads are re-sent on every later turn, so a long inspection
+phase inflates prefill cost and provider latency without adding information.
+Only the most recent read-only results stay expanded; older ones keep their tool
+message and metadata but have their payload replaced by its byte count and
+SHA-256, recorded in the transcript as `history_digest`. Mutation, build,
+terminal, and error results are never elided, and the model is told it may
+re-read any elided evidence.
+
 Before every provider request, the host updates one bounded state message. It
 contains conflict and changed-path counts when observed, mutation and validated
 build generations, content-free evidence digests, no-information count,

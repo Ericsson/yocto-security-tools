@@ -110,8 +110,8 @@ external connection.
   call. Merge references require explicit `mainline_parent` metadata.
 - Keep generated-file declarations exact. Unknown out-of-scope dirt is an
   initialization failure, not something the model may restore.
-- Use `apply_patch_hunks` for authorized files above the 256 KiB replacement
-  cap; it does not enlarge the global full-file limit.
+- Use `apply_patch_hunks` or `replace_lines` for authorized files above the
+  256 KiB full-file `write_file` cap; neither enlarges that full-file limit.
 - Treat named endpoint profiles as security-sensitive. Remote plain HTTP can
   disclose source/build diagnostics and requires both explicit remote and
   insecure-HTTP opt-ins.
