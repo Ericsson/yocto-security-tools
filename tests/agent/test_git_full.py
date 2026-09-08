@@ -74,7 +74,8 @@ class TestRevertUnauthorizedChanges:
         mock_git.side_effect = [
             "feature",   # rev-parse --abbrev-ref HEAD
             "a.c\nbad.c",  # diff --name-only original-version..HEAD
-            "commit msg",  # log -1 --format=%B
+            "c0ffee",      # rev-list original-version..HEAD
+            "commit msg",  # log -1 --format=%B <oldest>
         ]
         # cat-file -e returns non-zero (file didn't exist at base)
         mock_run.return_value = MagicMock(returncode=1)
@@ -89,7 +90,8 @@ class TestRevertUnauthorizedChanges:
         mock_git.side_effect = [
             "feature",   # rev-parse --abbrev-ref HEAD
             "bad.c",     # diff --name-only original-version..HEAD
-            "msg",       # log -1 --format=%B
+            "c0ffee",    # rev-list original-version..HEAD
+            "msg",       # log -1 --format=%B <oldest>
         ]
         # cat-file -e returns 0 (file exists at base)
         mock_run.return_value = MagicMock(returncode=0)

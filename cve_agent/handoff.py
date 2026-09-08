@@ -91,11 +91,14 @@ def validate_repository_handoff(
         allowed = FileToolPathPolicy(workspace, manifest.allowed_paths).allowed_files
         generated = FileToolPathPolicy(
             workspace, manifest.known_generated_paths).allowed_files
+        sequence = FileToolPathPolicy(workspace, manifest.sequence_paths).allowed_files
     except (ValueError, ToolPolicyError, ToolValidationError) as error:
         raise HandoffError("HANDOFF_PATH_AUTHORIZATION", "unsafe manifest path") from error
     if len(allowed) != len(manifest.allowed_paths):
         raise HandoffError("HANDOFF_PATH_CONTRADICTION", "duplicate allowed path")
-    if allowed & generated:
+    if len(sequence) != len(manifest.sequence_paths):
+        raise HandoffError("HANDOFF_PATH_CONTRADICTION", "duplicate sequence path")
+    if allowed & generated or sequence & (allowed | generated):
         raise HandoffError("HANDOFF_PATH_CONTRADICTION", "path roles overlap")
     if manifest.tracked_out_of_scope_paths:
         raise HandoffError(
