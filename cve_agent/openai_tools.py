@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Optional, TypeVar
+from typing import TypeVar
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 
@@ -89,19 +89,19 @@ def _line_offsets(lines: Sequence[str]) -> list[int]:
 class ToolValidationError(ValueError):
     """Decoded tool arguments do not match the declared contract."""
 
-    payload: Optional[dict[str, object]] = None
+    payload: dict[str, object] | None = None
 
 
 class ToolPolicyError(PermissionError):
     """A valid request is outside the runtime's authorization policy."""
 
-    payload: Optional[dict[str, object]] = None
+    payload: dict[str, object] | None = None
 
 
 class ToolOperationalError(RuntimeError):
     """An authorized filesystem operation could not be completed."""
 
-    payload: Optional[dict[str, object]] = None
+    payload: dict[str, object] | None = None
 
 
 class ToolApprovalError(PermissionError):
@@ -188,10 +188,10 @@ class ToolAudit:
     success: bool
     mutated: bool
     generation: int
-    error_kind: Optional[str] = None
-    path: Optional[str] = None
+    error_kind: str | None = None
+    path: str | None = None
     paths: tuple[str, ...] = ()
-    revision: Optional[str] = None
+    revision: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable audit object."""
@@ -221,7 +221,7 @@ class ToolResult:
     mutated: bool
     terminal: bool
     audit: ToolAudit
-    error_kind: Optional[str] = None
+    error_kind: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete model-visible JSON result."""
@@ -244,15 +244,15 @@ class FieldContract:
     json_type: str
     description: str
     required: bool = False
-    minimum: Optional[int] = None
-    maximum: Optional[int] = None
+    minimum: int | None = None
+    maximum: int | None = None
     enum: tuple[str, ...] = ()
-    min_length: Optional[int] = None
-    max_length: Optional[int] = None
-    min_items: Optional[int] = None
-    max_items: Optional[int] = None
-    item_type: Optional[str] = None
-    item_fields: Optional[Mapping[str, "FieldContract"]] = None
+    min_length: int | None = None
+    max_length: int | None = None
+    min_items: int | None = None
+    max_items: int | None = None
+    item_type: str | None = None
+    item_fields: Mapping[str, "FieldContract"] | None = None
 
     def schema(self) -> dict[str, object]:
         """Build the JSON schema fragment for this field."""
@@ -504,7 +504,7 @@ class AuthorizedPath:
 
     root: _AuthorizedRoot
     relative: PurePosixPath
-    repository_path: Optional[str]
+    repository_path: str | None
 
     @property
     def display_path(self) -> Path:
@@ -518,8 +518,8 @@ class FileToolPathPolicy:
     """Canonical-root and exact-write authorization for file tools."""
 
     def __init__(self, workspace_root: Path, allowed_files: Iterable[str],
-                 agent_root: Optional[Path] = None,
-                 limits: Optional[FileToolLimits] = None) -> None:
+                 agent_root: Path | None = None,
+                 limits: FileToolLimits | None = None) -> None:
         self.limits = limits or FileToolLimits()
         self._workspace = self._make_root(
             workspace_root, absolute_reads=False)
@@ -779,10 +779,10 @@ class FileToolRuntime:
         self,
         workspace_root: Path,
         allowed_files: Iterable[str],
-        agent_root: Optional[Path] = None,
-        limits: Optional[FileToolLimits] = None,
-        before_operation: Optional[Callable[[str, Path], None]] = None,
-        before_replace: Optional[Callable[[Path], None]] = None,
+        agent_root: Path | None = None,
+        limits: FileToolLimits | None = None,
+        before_operation: Callable[[str, Path], None] | None = None,
+        before_replace: Callable[[Path], None] | None = None,
     ) -> None:
         self.limits = limits or FileToolLimits()
         self.policy = FileToolPathPolicy(
@@ -890,7 +890,7 @@ class FileToolRuntime:
 
     def _error_result(self, tool: str, kind: str, message: str,
                       audit_fields: Mapping[str, object],
-                      extra_payload: Optional[dict[str, object]] = None) -> ToolResult:
+                      extra_payload: dict[str, object] | None = None) -> ToolResult:
         payload: dict[str, object] = {"error": message}
         if extra_payload:
             payload.update(extra_payload)
@@ -906,7 +906,7 @@ class FileToolRuntime:
 
     def _make_audit(self, tool: str, success: bool, mutated: bool,
                     fields: Mapping[str, object],
-                    error_kind: Optional[str] = None) -> ToolAudit:
+                    error_kind: str | None = None) -> ToolAudit:
         path = fields.get("path")
         revision = fields.get("revision")
         paths = fields.get("paths", ())
@@ -1168,7 +1168,7 @@ class FileToolRuntime:
 
         lines: list[dict[str, object]] = []
         budget = self.limits.max_file_read_bytes
-        next_line: Optional[int] = None
+        next_line: int | None = None
         index = start_line
         while index <= min(total, start_line + line_count - 1):
             content = file_lines[index - 1]
@@ -1254,7 +1254,7 @@ class FileToolRuntime:
         skipped: list[dict[str, object]] = []
         bytes_scanned = 0
         files_scanned = 0
-        continuation: Optional[dict[str, int]] = None
+        continuation: dict[str, int] | None = None
         current_line = start_line
 
         for file_index in range(start_file, len(paths)):
@@ -1741,8 +1741,8 @@ class FileToolRuntime:
 
     def _atomic_write(self, authorized: AuthorizedPath, data: bytes,
                       mode: str,
-                      expected_info: Optional[os.stat_result] = None,
-                      max_bytes: Optional[int] = None) -> None:
+                      expected_info: os.stat_result | None = None,
+                      max_bytes: int | None = None) -> None:
         write_limit = self.limits.max_write_bytes if max_bytes is None else max_bytes
         if len(data) > write_limit:
             raise _sized_error(
@@ -1810,14 +1810,14 @@ class FileToolRuntime:
             os.close(parent_fd)
 
     @staticmethod
-    def _target_info(parent_fd: int, name: str) -> Optional[os.stat_result]:
+    def _target_info(parent_fd: int, name: str) -> os.stat_result | None:
         try:
             return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             return None
 
     @staticmethod
-    def _same_file_version(current: Optional[os.stat_result],
+    def _same_file_version(current: os.stat_result | None,
                            expected: os.stat_result) -> bool:
         if current is None:
             return False
@@ -1908,7 +1908,7 @@ class FileToolRuntime:
                 raise ToolOperationalError("atomic write made no progress")
             written += count
 
-    def _encode_write(self, text: str, limit: Optional[int] = None) -> bytes:
+    def _encode_write(self, text: str, limit: int | None = None) -> bytes:
         write_limit = self.limits.max_write_bytes if limit is None else limit
         try:
             data = text.encode(TEXT_ENCODING, errors="strict")

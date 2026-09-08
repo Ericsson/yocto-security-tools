@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: MIT
 """User-facing output and instructions for CVE corrector."""
 from pathlib import Path
-from typing import Optional
 
 
 def print_conflict_instructions(workspace_path: Path, recipe: str,
-                                series_state: Optional[dict] = None) -> None:
+                                series_state: dict | None = None) -> None:
     """Print instructions for resolving conflicts."""
     print("=" * 60)
     print("CONFLICT DETECTED - Manual resolution required")

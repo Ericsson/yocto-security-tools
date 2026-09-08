@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 """Cherry-pick and series application logic for CVE corrector."""
 from pathlib import Path
-from typing import Optional
 
 from .git_ops import (
     cherry_pick_command,
@@ -196,7 +195,7 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
 
 def apply_series(workspace_path: Path,
                  series: list[dict],
-                 require_all: bool = False) -> tuple[bool, Optional[str], Optional[dict]]:
+                 require_all: bool = False) -> tuple[bool, str | None, dict | None]:
     """Apply a commit series using batch cherry-pick.
 
     A series is an ordered set of commits that must all be applied — either
@@ -276,7 +275,7 @@ def apply_series(workspace_path: Path,
     return False, None, best_series
 
 
-def dependent_chain_commits(series: Optional[list[dict]]) -> set[str]:
+def dependent_chain_commits(series: list[dict] | None) -> set[str]:
     """Commits that only make sense applied together with the rest of a series.
 
     A series with two or more commits is a dependent chain: ``apply_series``
@@ -306,8 +305,8 @@ def dependent_chain_commits(series: Optional[list[dict]]) -> set[str]:
     return chained
 
 
-def standalone_candidates(hashes: Optional[list[str]],
-                          series: Optional[list[dict]]) -> list[str]:
+def standalone_candidates(hashes: list[str] | None,
+                          series: list[dict] | None) -> list[str]:
     """``hashes`` filtered down to commits safe to apply on their own.
 
     Metadata routinely lists a chain's commits in both ``series`` and
@@ -342,9 +341,9 @@ def standalone_candidates(hashes: Optional[list[str]],
 
 
 def apply_single_commits(workspace_path: Path, hashes: list[str],
-                         subproject: Optional[str] = None,
-                         mainline_parent: Optional[int] = None,
-                         ) -> tuple[bool, Optional[str]]:
+                         subproject: str | None = None,
+                         mainline_parent: int | None = None,
+                         ) -> tuple[bool, str | None]:
     """Apply individual fix commits until one succeeds."""
     logger.info("Attempting %s commit(s)", len(hashes))
     result = run_cmd_capture(['git', 'log', '--oneline', '-10'], cwd=workspace_path)
@@ -408,8 +407,8 @@ def _is_metadata_only_commit(workspace_path: Path, commit_hash: str) -> bool:
 
 def find_least_conflict_commit(workspace_path: Path,
                                hashes: list[str],
-                               mainline_parent: Optional[int] = None,
-                               ) -> tuple[Optional[str], float]:
+                               mainline_parent: int | None = None,
+                               ) -> tuple[str | None, float]:
     """Find commit that produces the fewest merge conflicts.
 
     Prefers the first hash in the list (usually the actual fix) and

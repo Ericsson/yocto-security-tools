@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Protocol
 
 from .backend import SessionResult
 from .openai_client import (
@@ -95,11 +95,11 @@ class HostToolRuntime(Protocol):
         """Return the current build-relevant mutation generation."""
 
     @property
-    def validated_generation(self) -> Optional[int]:
+    def validated_generation(self) -> int | None:
         """Return the build-validated generation when present."""
 
     @property
-    def terminal_status(self) -> Optional[str]:
+    def terminal_status(self) -> str | None:
         """Return the trusted terminal status when present."""
 
     def dispatch(self, tool_name: object, arguments: object) -> ToolResult:
@@ -178,7 +178,7 @@ class JSONLTranscript:
         started_at: float,
         secrets: Sequence[str] = (),
         *,
-        console: Optional[Callable[[str], None]] = None,
+        console: Callable[[str], None] | None = None,
     ) -> None:
         self.path = path
         self._descriptor = descriptor
@@ -219,7 +219,7 @@ class JSONLTranscript:
         secrets: Sequence[str] = (),
         *,
         clock_ns: Callable[[], int] = time.time_ns,
-        console: Optional[Callable[[str], None]] = None,
+        console: Callable[[str], None] | None = None,
     ) -> "JSONLTranscript":
         """Create one unique mode-0600 transcript below the trusted agent dir."""
         safe_model = _safe_filename_component(redact_openai_text(model, secrets))
@@ -244,7 +244,7 @@ class JSONLTranscript:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             flags |= getattr(os, "O_CLOEXEC", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor: Optional[int] = None
+            descriptor: int | None = None
             try:
                 descriptor = os.open(filename, flags, 0o600, dir_fd=root_fd)
                 os.fchmod(descriptor, 0o600)
@@ -492,7 +492,7 @@ class OpenAIAgentLoop:
         self._progress = self._shared.progress
         self._consecutive_nonprogress = 0
         self._corrective_message_sent = False
-        self._state_message_index: Optional[int] = None
+        self._state_message_index: int | None = None
         self._mutation_calls = self._shared.mutation_calls
         self._build_calls = self._shared.build_calls
         self._digestible_reads: list[tuple[int, str]] = []
@@ -503,7 +503,7 @@ class OpenAIAgentLoop:
         resolved = False
         reason = "session ended without a verified terminal outcome"
         audit_failed = False
-        failure_outcome: Optional[ResultOutcome] = None
+        failure_outcome: ResultOutcome | None = None
         try:
             self.transcript.write(
                 "session_start",
@@ -932,7 +932,7 @@ class OpenAIAgentLoop:
             payload_keys=sorted(result.payload),
         )
 
-    def _handle_text_only_stop(self) -> Optional[str]:
+    def _handle_text_only_stop(self) -> str | None:
         if self._corrective_message_sent:
             return (
                 "The model stopped twice without calling a typed tool or finish; "

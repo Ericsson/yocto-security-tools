@@ -13,11 +13,11 @@ import re
 import stat
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Callable
+from typing import IO
 
 from shared.paths import data_dir
 

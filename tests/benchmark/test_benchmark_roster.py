@@ -97,14 +97,14 @@ class TestRosterFilesExist:
 
     def test_rosters_are_nested(self) -> None:
         """default ⊆ balanced ⊆ extended, so runs stay comparable."""
-        for smaller, larger in zip(NESTING, NESTING[1:]):
+        for smaller, larger in zip(NESTING, NESTING[1:], strict=False):
             assert set(_load(smaller)) <= set(_load(larger)), (
                 f"{smaller.name} is not a subset of {larger.name}"
             )
 
     def test_shared_entries_are_identical(self) -> None:
         """The same CVE must not carry different measured stats in each file."""
-        for smaller, larger in zip(NESTING, NESTING[1:]):
+        for smaller, larger in zip(NESTING, NESTING[1:], strict=False):
             small_data, large_data = _load(smaller), _load(larger)
             for cve, entry in small_data.items():
                 assert entry == large_data[cve], (

@@ -105,7 +105,7 @@ def _migrate(args: argparse.Namespace) -> None:
         for row in rows:
             outcome = _outcome_from_row(row, args.mode)
             normalized = {key: row.get(key, "") for key in LEGACY_COLUMNS}
-            normalized.update(dict(zip(OUTCOME_COLUMNS, _outcome_fields(outcome))))
+            normalized.update(dict(zip(OUTCOME_COLUMNS, _outcome_fields(outcome), strict=True)))
             writer.writerow(normalized)
         target.flush()
         os.fsync(target.fileno())

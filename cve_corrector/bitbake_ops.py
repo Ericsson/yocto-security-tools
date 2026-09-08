@@ -6,7 +6,6 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
 
 from .state import EXIT_METADATA_ERROR
 from .utils import run_cmd_capture
@@ -172,7 +171,7 @@ _MIRROR_ALIASES = {
 
 
 def find_mirror_repo(mirror_dir: Path, recipe_name: str,
-                     hash_details: Optional[list[dict]] = None) -> Optional[Path]:
+                     hash_details: list[dict] | None = None) -> Path | None:
     """Locate the mirror repository."""
     names = [recipe_name, _MIRROR_ALIASES.get(recipe_name, recipe_name)]
     if hash_details:
@@ -190,7 +189,7 @@ def find_mirror_repo(mirror_dir: Path, recipe_name: str,
     return None
 
 
-def deduce_meta_layer_from_recipe(recipe: str) -> Optional[Path]:
+def deduce_meta_layer_from_recipe(recipe: str) -> Path | None:
     """Deduce meta-layer path from recipe using bitbake-layers.
 
     Returns the layer directory containing the recipe, or None if it cannot
@@ -234,7 +233,7 @@ def deduce_meta_layer_from_recipe(recipe: str) -> Optional[Path]:
     return None
 
 
-def get_layerseries_corename() -> Optional[str]:
+def get_layerseries_corename() -> str | None:
     """Get the release corename from ``LAYERSERIES_CORENAMES``.
 
     Used as the ``git format-patch --subject-prefix`` when exporting a patch
@@ -255,7 +254,7 @@ def get_layerseries_corename() -> Optional[str]:
     return corenames[-1] if corenames else None
 
 
-def get_recipe_src_uri_git(recipe: str) -> Optional[str]:
+def get_recipe_src_uri_git(recipe: str) -> str | None:
     """Extract git repository URL from recipe's SRC_URI.
 
     Returns the first git:// or https:// repo URL found in SRC_URI,
@@ -276,7 +275,7 @@ def get_recipe_src_uri_git(recipe: str) -> Optional[str]:
     return None
 
 
-def check_cve_patch_in_src_uri(recipe: str, cve_id: str) -> Optional[str]:
+def check_cve_patch_in_src_uri(recipe: str, cve_id: str) -> str | None:
     """Check whether a CVE patch file is already listed in the recipe's SRC_URI.
 
     Runs ``bitbake-getvar SRC_URI -r <recipe>`` and looks for a
@@ -347,7 +346,7 @@ def _decode_cve_status_cpe(raw_value: str) -> tuple[str, str]:
     return '*', '*'
 
 
-def get_cve_product(recipe: str) -> Optional[str]:
+def get_cve_product(recipe: str) -> str | None:
     """Get the recipe's CVE_PRODUCT — the CPE product(s) it is scanned as.
 
     The recipe name is deliberately *not* used as a fallback: it is often not
@@ -398,7 +397,7 @@ def _has_cve_product_match(vendor: str, product: str, cve_products: str) -> bool
     return False
 
 
-def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
+def check_cve_status(recipe: str, cve_id: str) -> tuple[str, str] | None:
     """Check the recipe's existing CVE_STATUS flag for this CVE.
 
     Runs ``bitbake-getvar CVE_STATUS -f <cve_id> -r <recipe> --value`` and,
@@ -456,7 +455,7 @@ def check_cve_status(recipe: str, cve_id: str) -> Optional[tuple[str, str]]:
     return state, raw_value
 
 
-def get_upstream_check_uri(recipe: str) -> Optional[str]:
+def get_upstream_check_uri(recipe: str) -> str | None:
     """Get UPSTREAM_CHECK_URI from recipe if it points to a git repository.
 
     Only returns the URI if it looks like a cloneable git repo URL

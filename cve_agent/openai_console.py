@@ -15,9 +15,8 @@ about field types), because a formatting bug here must never be allowed to
 interrupt the mandatory audit path in :class:`JSONLTranscript`.
 """
 from collections.abc import Callable, Mapping
-from typing import Optional
 
-_Formatter = Callable[[Mapping[str, object]], Optional[str]]
+_Formatter = Callable[[Mapping[str, object]], str | None]
 
 
 def _tool_request(data: Mapping[str, object]) -> str:
@@ -25,7 +24,7 @@ def _tool_request(data: Mapping[str, object]) -> str:
     return f"tool_request: {tool}"
 
 
-def _assistant_response(data: Mapping[str, object]) -> Optional[str]:
+def _assistant_response(data: Mapping[str, object]) -> str | None:
     content = data.get("content")
     if not isinstance(content, str) or not content.strip():
         # Tool-call-only turns carry no visible commentary; skip the line
@@ -95,7 +94,7 @@ _FORMATTERS: dict[str, _Formatter] = {
 }
 
 
-def format_console_line(kind: str, data: Mapping[str, object]) -> Optional[str]:
+def format_console_line(kind: str, data: Mapping[str, object]) -> str | None:
     """Return one terse console line for a streamed event kind, or None.
 
     Returns ``None`` for any kind not in the streamed subset, when a

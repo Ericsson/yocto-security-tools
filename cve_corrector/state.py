@@ -6,7 +6,6 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 # Exit codes (canonical definitions in shared/exit_codes.py)
 from shared.exit_codes import (  # noqa: F401
@@ -122,21 +121,21 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
     recipe: str
     commit_hash: str
     hash_details: list
-    meta_layer: Optional[Path]
+    meta_layer: Path | None
     skip_build: bool
     skip_ptest: bool
-    ptest_before: Optional[str] = None
-    ptest_after: Optional[str] = None
-    series_state: Optional[dict] = None
-    current_step: Optional[str] = None
+    ptest_before: str | None = None
+    ptest_after: str | None = None
+    series_state: dict | None = None
+    current_step: str | None = None
     skip_confirm: bool = False
-    subproject: Optional[str] = None
+    subproject: str | None = None
     bbappend: bool = False
-    version: Optional[str] = None
+    version: str | None = None
     sign_off: bool = False
-    mainline_parent: Optional[int] = None
+    mainline_parent: int | None = None
     known_generated_paths: list[str] = field(default_factory=list)
-    transfer_source_prefix: Optional[str] = None
+    transfer_source_prefix: str | None = None
     transfer_path_map: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:

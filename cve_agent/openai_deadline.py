@@ -4,14 +4,13 @@
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
 
 
 class RuntimeTimeoutError(TimeoutError):
     """A native operation exhausted its allowed share of the session time."""
 
     def __init__(self, message: str,
-                 payload: Optional[dict[str, object]] = None) -> None:
+                 payload: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.payload = payload
 

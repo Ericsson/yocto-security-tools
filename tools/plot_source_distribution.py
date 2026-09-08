@@ -250,14 +250,14 @@ def plot_coverage_by_source(index: dict, output_dir: Path, total_cves: int) -> P
                       key=lambda s: len(index['cves_by_source'][s]), reverse=True)
     hash_counts = [len(index['cves_with_hash_by_source'].get(s, set())) for s in sources]
     total_counts = [len(index['cves_by_source'][s]) for s in sources]
-    other_counts = [t - h for t, h in zip(total_counts, hash_counts)]
+    other_counts = [t - h for t, h in zip(total_counts, hash_counts, strict=True)]
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
     labels = [display_name(s) for s in sources]
     hash_bars = ax.bar(labels, hash_counts, color=_bar_colors(sources))
     ax.bar(labels, other_counts, bottom=hash_counts, color=_bar_colors(sources), alpha=0.4)
 
-    for bar_total, total, hash_count in zip(hash_bars, total_counts, hash_counts):
+    for bar_total, total, hash_count in zip(hash_bars, total_counts, hash_counts, strict=True):
         pct_total = 100 * total / total_cves if total_cves else 0
         pct_hash = 100 * hash_count / total_cves if total_cves else 0
         ax.text(bar_total.get_x() + bar_total.get_width() / 2, total,
@@ -301,14 +301,14 @@ def plot_coverage_by_source_upstream_only(index: dict, output_dir: Path,
                       key=lambda s: len(index['cves_by_source'][s]), reverse=True)
     hash_counts = [len(index['cves_with_hash_by_source'].get(s, set())) for s in sources]
     total_counts = [len(index['cves_by_source'][s]) for s in sources]
-    other_counts = [t - h for t, h in zip(total_counts, hash_counts)]
+    other_counts = [t - h for t, h in zip(total_counts, hash_counts, strict=True)]
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
     labels = [display_name(s) for s in sources]
     hash_bars = ax.bar(labels, hash_counts, color='#1b9e77')
     ax.bar(labels, other_counts, bottom=hash_counts, color='#1b9e77', alpha=0.4)
 
-    for bar_total, total, hash_count in zip(hash_bars, total_counts, hash_counts):
+    for bar_total, total, hash_count in zip(hash_bars, total_counts, hash_counts, strict=True):
         pct_total = 100 * total / total_cves if total_cves else 0
         pct_hash = 100 * hash_count / total_cves if total_cves else 0
         ax.text(bar_total.get_x() + bar_total.get_width() / 2, total,
@@ -370,7 +370,7 @@ def plot_upstream_vs_combined_gain(index: dict, output_dir: Path, total_cves: in
     for bar in bars_up:
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
                 f"{int(bar.get_height())}", ha='center', va='bottom', fontsize=9)
-    for bar, up_val in zip(bars_comb, upstream_vals):
+    for bar, up_val in zip(bars_comb, upstream_vals, strict=True):
         gain_val = bar.get_height() - up_val
         pct = 100 * gain_val / up_val if up_val else 0
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
@@ -414,7 +414,7 @@ def plot_volume_by_source(index: dict, output_dir: Path) -> Path:
 
     fig, ax = plt.subplots(figsize=(9, 5.5))
     bars = ax.bar(labels, hash_counts, color=_bar_colors(sources))
-    for bar, count in zip(bars, hash_counts):
+    for bar, count in zip(bars, hash_counts, strict=True):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
                 f"{count}", ha='center', va='bottom', fontsize=8)
 
@@ -543,11 +543,11 @@ def plot_unique_contribution(index: dict, output_dir: Path) -> Path:
     bars_other = ax.bar(unique_labels, other_vals, color='#cccccc')
     ax.bar(unique_labels, paired_vals, bottom=other_vals, color='#6699cc')
     ax.bar(unique_labels, unique_vals,
-           bottom=[o + p for o, p in zip(other_vals, paired_vals)],
+           bottom=[o + p for o, p in zip(other_vals, paired_vals, strict=True)],
            color='#1b9e77')
 
     for bar_other, s, u, p, t in zip(bars_other, sources_sorted, unique_vals,
-                                      paired_vals, total_vals):
+                                      paired_vals, total_vals, strict=True):
         pct_u = 100 * u / t if t else 0
         partner_label = dominant_partner_label(s)
         lines = [f"{u}/{t} unique ({pct_u:.0f}%)"]

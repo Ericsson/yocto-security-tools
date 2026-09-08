@@ -427,11 +427,11 @@ def plot_outcome_by_model(ranked: list[ModelStats], out_path: Path) -> None:
             color=OUTCOME_COLORS[outcome], label=OUTCOME_LABELS[outcome],
             edgecolor='white', linewidth=0.8,
         )
-        for y, (width, start) in enumerate(zip(widths, left)):
+        for y, (width, start) in enumerate(zip(widths, left, strict=True)):
             if width:
                 ax.text(start + width / 2, y, f'{int(width)}', ha='center', va='center',
                         color='white', fontsize=9, fontweight='bold')
-        left = [a + b for a, b in zip(left, widths)]
+        left = [a + b for a, b in zip(left, widths, strict=True)]
 
     max_runs = max(left) if left else 1
     for y, stat in enumerate(ranked):
@@ -473,12 +473,12 @@ def plot_bucket_by_model(ranked: list[ModelStats], out_path: Path) -> None:
         label = 'no patch / failed' if bucket == '-' else bucket
         ax.barh(ypos, widths, left=left, height=0.62, color=BUCKET_COLORS[bucket],
                 label=label, edgecolor='white', linewidth=0.8)
-        for y, (width, start) in enumerate(zip(widths, left)):
+        for y, (width, start) in enumerate(zip(widths, left, strict=True)):
             if width:
                 ax.text(start + width / 2, y, f'{int(width)}', ha='center', va='center',
                         color='#222222' if bucket == 'moderate' else 'white',
                         fontsize=9, fontweight='bold')
-        left = [a + b for a, b in zip(left, widths)]
+        left = [a + b for a, b in zip(left, widths, strict=True)]
 
     ax.set_yticks(ypos)
     ax.set_yticklabels(models)
@@ -509,7 +509,7 @@ def plot_cost_by_model(ranked: list[ModelStats], out_path: Path) -> None:
         ('Total credits', [s.total_credits for s in ranked], '#0072B2', '{:.2f}'),
         ('Avg credits per run', [s.avg_credits for s in ranked], '#56B4E9', '{:.2f}'),
     )
-    for ax, (title, values, color, fmt) in zip(axes, panels):
+    for ax, (title, values, color, fmt) in zip(axes, panels, strict=True):
         ax.barh(ypos, values, height=0.6, color=color)
         for y, value in enumerate(values):
             ax.text(value + max(values) * 0.02, y, fmt.format(value), va='center', fontsize=9)
@@ -595,6 +595,7 @@ def plot_effort_by_model(ranked: list[ModelStats], out_path: Path) -> None:
             ('Avg duration', [s.avg_duration for s in ranked], '#0072B2', 's'),
             ('Avg tool calls', [s.avg_commands for s in ranked], '#CC79A7', ''),
         ),
+        strict=True,
     ):
         ax.barh(ypos, values, height=0.6, color=color)
         top = max(values) if values else 1.0

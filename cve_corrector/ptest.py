@@ -4,7 +4,6 @@
 import os
 import re
 import sys
-from typing import Optional
 
 from .bitbake_ops import get_build_path
 from .state import BuildPreexistingError
@@ -51,7 +50,7 @@ def check_ptest_in_recipe(recipe: str) -> bool:
 
 
 def run_ptest(recipe: str, build_timeout: int = 7200,
-              test_timeout: int = 3600) -> Optional[str]:
+              test_timeout: int = 3600) -> str | None:
     """Run ptest and return results summary.
 
     Args:

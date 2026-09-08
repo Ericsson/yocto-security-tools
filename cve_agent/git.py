@@ -13,7 +13,6 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import (
@@ -137,7 +136,7 @@ _MOVED_FILE_SKIP_DIRS = frozenset({
 _MOVED_FILE_SCAN_LIMIT = 20000
 
 
-def _find_moved_file(filename: str, workspace_path: Path) -> Optional[str]:
+def _find_moved_file(filename: str, workspace_path: Path) -> str | None:
     """Locate a uniquely-named file that upstream keeps at a different path.
 
     Stable branches and upstream master often disagree on layout. libsoup is
@@ -444,7 +443,7 @@ def remove_notes_hook(workspace_path: Path) -> None:
 
 def revert_unauthorized_changes(workspace_path: Path,
                                 allowed: set[str],
-                                sequence_paths: Optional[set[str]] = None) -> None:
+                                sequence_paths: set[str] | None = None) -> None:
     """Revert committed changes to unauthorized files.
 
     Working-tree changes are left alone (they are ephemeral and get
@@ -551,7 +550,7 @@ def revert_unauthorized_changes(workspace_path: Path,
 
 # --- Internal helpers ---
 
-def _load_corrector_state(workspace_path: Path) -> Optional[dict]:
+def _load_corrector_state(workspace_path: Path) -> dict | None:
     """Load the cve_corrector state file for this workspace.
 
     Args:

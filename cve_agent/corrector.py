@@ -7,7 +7,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 
@@ -25,7 +24,7 @@ def validate_recipe_name(name: str) -> bool:
 
 
 def run_corrector(config: AgentConfig, continue_mode: bool = False,
-                  mark_not_applicable: Optional[str] = None) -> tuple[int, str]:
+                  mark_not_applicable: str | None = None) -> tuple[int, str]:
     """Run cve_corrector and return its exit code and captured output."""
     cmd = list(CORRECTOR_CMD)
 
@@ -96,7 +95,7 @@ def run_corrector(config: AgentConfig, continue_mode: bool = False,
     return process.returncode, ''.join(output_lines)
 
 
-def load_cve_metadata(cve_info_path: Optional[Path]) -> dict:
+def load_cve_metadata(cve_info_path: Path | None) -> dict:
     """Load CVE metadata from JSON file.
 
     Raises:
@@ -117,7 +116,7 @@ def load_cve_metadata(cve_info_path: Optional[Path]) -> dict:
         raise ValueError(f"Invalid JSON in {resolved}: {err}") from err
 
 
-def get_workspace_path(config: AgentConfig, cve_data: dict) -> Optional[Path]:
+def get_workspace_path(config: AgentConfig, cve_data: dict) -> Path | None:
     """Determine workspace path from CVE metadata and environment."""
     cve_info = cve_data.get(config.cve_id, {})
     recipe = cve_info.get('name')

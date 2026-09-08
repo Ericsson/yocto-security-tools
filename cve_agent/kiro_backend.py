@@ -15,7 +15,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import run_capture
@@ -54,7 +53,7 @@ class KiroBackend(AIBackend):
                                   interactive=interactive)
         env = build_git_env()
 
-        transcript_path: Optional[Path] = None
+        transcript_path: Path | None = None
         run_cmd: list = cmd
         if interactive:
             transcript_path = self._transcript_path(workspace_path)
@@ -70,7 +69,7 @@ class KiroBackend(AIBackend):
         captured = ""
         # Interactive sessions have a human at the terminal — never kill them
         # with a timeout.  Non-interactive (CI) runs use the configured limit.
-        effective_timeout: Optional[int] = None if interactive else timeout
+        effective_timeout: int | None = None if interactive else timeout
         try:
             if interactive:
                 subprocess.run(run_cmd, cwd=workspace_path, env=env,
@@ -112,7 +111,7 @@ class KiroBackend(AIBackend):
 
     @staticmethod
     def _run_capturing_tee(cmd: list, workspace_path: Path, env: dict,
-                           timeout: Optional[int]) -> str:
+                           timeout: int | None) -> str:
         """Run ``cmd`` capturing combined stdout+stderr while streaming it live.
 
         kiro-cli's ``--no-interactive`` output is plain text (no TUI), so it
@@ -153,7 +152,7 @@ class KiroBackend(AIBackend):
         return "".join(chunks)
 
     @staticmethod
-    def _build_kiro_cmd(prompt: str, agent_name: Optional[str], model: str,
+    def _build_kiro_cmd(prompt: str, agent_name: str | None, model: str,
                         interactive: bool) -> list:
         """Build the plain (unwrapped) kiro-cli argv list.
 
@@ -177,7 +176,7 @@ class KiroBackend(AIBackend):
         return cmd
 
     @staticmethod
-    def _transcript_path(workspace_path: Path) -> Optional[Path]:
+    def _transcript_path(workspace_path: Path) -> Path | None:
         """Build a per-session transcript file path under the agent dir.
 
         Returns None (no transcript) if the directory can't be created,
@@ -195,7 +194,7 @@ class KiroBackend(AIBackend):
         return agent_dir / f"kiro-session-{int(time.time())}.log"
 
     @staticmethod
-    def _wrap_with_script(cmd: list, transcript_path: Path) -> Optional[list]:
+    def _wrap_with_script(cmd: list, transcript_path: Path) -> list | None:
         """Wrap ``cmd`` with ``script`` to capture stdin+stdout to a file.
 
         Interactive kiro-cli is a full-screen TUI that needs a real

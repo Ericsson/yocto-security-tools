@@ -14,10 +14,10 @@ import os
 import re
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from .backend import (
@@ -68,9 +68,9 @@ class OpenAIConfig:
     allow_remote_endpoint: bool
     allow_insecure_remote_http: bool
     max_consecutive_no_progress: int = DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    reasoning_effort: Optional[str] = None
+    temperature: float | None = None
+    top_p: float | None = None
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
         """Enforce the same safety contract for direct dataclass construction."""
@@ -145,10 +145,10 @@ class OpenAIConfig:
     @classmethod
     def from_sources(
         cls,
-        options: Optional[Mapping[str, object]] = None,
-        environ: Optional[Mapping[str, str]] = None,
-        profile_openai: Optional[Mapping[str, str]] = None,
-        profile_chat: Optional[Mapping[str, object]] = None,
+        options: Mapping[str, object] | None = None,
+        environ: Mapping[str, str] | None = None,
+        profile_openai: Mapping[str, str] | None = None,
+        profile_chat: Mapping[str, object] | None = None,
     ) -> "OpenAIConfig":
         """Resolve CLI, profile, environment, and defaults in that order."""
         options = options or {}
@@ -298,7 +298,7 @@ def _resolve_optional_float(
     upper: float,
     *,
     exclusive_lower: bool,
-) -> Optional[float]:
+) -> float | None:
     raw = value if value is not None else environ.get(env_name)
     if raw is None:
         return None
@@ -313,7 +313,7 @@ def _validate_optional_float(
     upper: float,
     *,
     exclusive_lower: bool,
-) -> Optional[float]:
+) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
@@ -332,7 +332,7 @@ def _validate_optional_float(
 def _resolve_reasoning_effort(
     value: object,
     environ: Mapping[str, str],
-) -> Optional[str]:
+) -> str | None:
     raw = value if value is not None else environ.get("CVE_AGENT_OPENAI_REASONING_EFFORT")
     if raw is None:
         return None
@@ -361,7 +361,7 @@ def validate_openai_model(model: str) -> str:
 
 
 def _resolve_string(value: object, environ: Mapping[str, str],
-                    private_name: str, standard_name: Optional[str],
+                    private_name: str, standard_name: str | None,
                     default: str) -> str:
     resolved = _string_value(value)
     if resolved is None:
@@ -371,7 +371,7 @@ def _resolve_string(value: object, environ: Mapping[str, str],
     return default if resolved is None else resolved.strip()
 
 
-def _string_value(value: object) -> Optional[str]:
+def _string_value(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
@@ -505,13 +505,13 @@ class OpenAICompatibleBackend(AIBackend):
     def __init__(
         self,
         *,
-        client_factory: Optional[Callable[..., Any]] = None,
-        runtime_factory: Optional[Callable[..., Any]] = None,
-        transcript_factory: Optional[Callable[..., Any]] = None,
-        ollama_factory: Optional[Callable[..., Any]] = None,
-        approval_provider: Optional[Any] = None,
+        client_factory: Callable[..., Any] | None = None,
+        runtime_factory: Callable[..., Any] | None = None,
+        transcript_factory: Callable[..., Any] | None = None,
+        ollama_factory: Callable[..., Any] | None = None,
+        approval_provider: Any | None = None,
     ) -> None:
-        self._config: Optional[OpenAIConfig] = None
+        self._config: OpenAIConfig | None = None
         self._profile: Any = None
         self._ollama_config: Any = None
         self._capabilities: Any = None
@@ -602,14 +602,14 @@ class OpenAICompatibleBackend(AIBackend):
             "creates any conclusion artifact.\n\n"
         )
 
-    def resolve_model(self, requested: Optional[str],
-                      environ: Optional[Mapping[str, str]] = None) -> str:
+    def resolve_model(self, requested: str | None,
+                      environ: Mapping[str, str] | None = None) -> str:
         """Resolve only the OpenAI-specific model sources, with no Claude default."""
         return _resolve_model(
             requested, os.environ if environ is None else environ)
 
     def configure(self, options: Mapping[str, object],
-                  environ: Optional[Mapping[str, str]] = None) -> None:
+                  environ: Mapping[str, str] | None = None) -> None:
         """Validate and retain the immutable native-backend configuration."""
         from .openai_ollama import OllamaConfig
         from .openai_profile import load_openai_profile

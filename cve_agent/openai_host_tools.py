@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import IO, Optional, Protocol
+from typing import IO, Protocol
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 
@@ -129,10 +129,8 @@ class ApprovalGate:
     """Apply interactive approval and remember approved operation classes."""
 
     def __init__(self, interactive: bool, deadline: SessionDeadline,
-                 provider: Optional[ApprovalProvider] = None,
-                 event_sink: Optional[
-                     Callable[[str, Mapping[str, object]], None]
-                 ] = None) -> None:
+                 provider: ApprovalProvider | None = None,
+                 event_sink: Callable[[str, Mapping[str, object]], None] | None = None) -> None:
         self.interactive = interactive
         self.deadline = deadline
         self.provider = provider or ConsoleApprovalProvider()
@@ -205,7 +203,7 @@ class TrustedAgentDirectory:
     """Descriptor-anchored access to host-owned agent artifacts."""
 
     def __init__(self, path: Path,
-                 before_conclusion_replace: Optional[Callable[[Path], None]] = None) -> None:
+                 before_conclusion_replace: Callable[[Path], None] | None = None) -> None:
         try:
             canonical = path.resolve(strict=True)
             info = canonical.stat()
@@ -239,7 +237,7 @@ class TrustedAgentDirectory:
         """Atomically replace the fixed build log with a host-owned inode."""
         root_fd = self.open_root()
         temporary = f".cve-build-{uuid.uuid4().hex}"
-        log_fd: Optional[int] = None
+        log_fd: int | None = None
         try:
             self._reject_symlink_or_nonregular(root_fd, BUILD_LOG_NAME)
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _CLOEXEC | _NOFOLLOW
@@ -394,7 +392,7 @@ class ControlledBuildRunner:
         total = 0
         logged = 0
         timed_out = False
-        term_sent_at: Optional[float] = None
+        term_sent_at: float | None = None
         kill_sent = False
         command_end = time.monotonic() + initial_remaining
         try:
@@ -522,7 +520,7 @@ class TerminalInvariantError(ToolPolicyError):
     """A requested finish status failed trusted repository checks."""
 
     def __init__(self, message: str,
-                 details: Optional[dict[str, object]] = None) -> None:
+                 details: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.payload = details
 
@@ -539,19 +537,17 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         model: str,
         timeout_seconds: int,
         agent_root: Path,
-        recipe: Optional[str] = None,
+        recipe: str | None = None,
         interactive: bool = False,
-        approval_provider: Optional[ApprovalProvider] = None,
-        deadline: Optional[SessionDeadline] = None,
-        build_runner: Optional[BuildRunner] = None,
-        limits: Optional[FileToolLimits] = None,
-        before_operation: Optional[Callable[[str, Path], None]] = None,
-        before_replace: Optional[Callable[[Path], None]] = None,
-        before_conclusion_replace: Optional[Callable[[Path], None]] = None,
+        approval_provider: ApprovalProvider | None = None,
+        deadline: SessionDeadline | None = None,
+        build_runner: BuildRunner | None = None,
+        limits: FileToolLimits | None = None,
+        before_operation: Callable[[str, Path], None] | None = None,
+        before_replace: Callable[[Path], None] | None = None,
+        before_conclusion_replace: Callable[[Path], None] | None = None,
         protected_secrets: Iterable[str] = (),
-        event_sink: Optional[
-            Callable[[str, Mapping[str, object]], None]
-        ] = None,
+        event_sink: Callable[[str, Mapping[str, object]], None] | None = None,
     ) -> None:
         session_deadline = deadline or SessionDeadline.from_timeout(timeout_seconds)
         self._started_at = session_deadline.clock()
@@ -589,20 +585,20 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         self._baseline_status_paths = self._current_status_paths(
             "terminal baseline Git status")
         self._build_generated_paths: set[str] = set()
-        self._validated_generation: Optional[int] = None
-        self._terminal_status: Optional[str] = None
+        self._validated_generation: int | None = None
+        self._terminal_status: str | None = None
         self._terminal_reason = ""
         self._terminal_summary = ""
         self._conclusion_written = False
         self._persist_trusted_git_state()
 
     @property
-    def validated_generation(self) -> Optional[int]:
+    def validated_generation(self) -> int | None:
         """Return the mutation generation of the latest successful build."""
         return self._validated_generation
 
     @property
-    def terminal_status(self) -> Optional[str]:
+    def terminal_status(self) -> str | None:
         """Return the accepted finish status, if any."""
         return self._terminal_status
 
@@ -782,7 +778,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         self.deadline.require("terminal outcome creation")
         self._verify_finish(status_value)
 
-        conclusion_path: Optional[Path] = None
+        conclusion_path: Path | None = None
         if status_value == "done":
             self.artifacts.clear_conclusion()
         elif status_value == "not_applicable":

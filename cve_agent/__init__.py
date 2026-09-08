@@ -9,7 +9,6 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 # Exit codes (single source of truth: shared/exit_codes.py)
 from shared.exit_codes import (
@@ -120,12 +119,12 @@ class ResultStatus(Enum):
 class AgentConfig:
     """Configuration for a single CVE agent run."""
     cve_id: str
-    cve_info_path: Optional[Path] = None
+    cve_info_path: Path | None = None
     trust_mode: bool = False
     max_retries: int = DEFAULT_MAX_RETRIES
     max_total_attempts: int = 0  # 0 = no cap beyond per-step max_retries
-    mirror_dir: Optional[Path] = None
-    meta_layer: Optional[Path] = None
+    mirror_dir: Path | None = None
+    meta_layer: Path | None = None
     skip_ptest: bool = False
     clean: bool = False
     model: str = "claude-sonnet-5"
@@ -134,14 +133,14 @@ class AgentConfig:
     bbappend: bool = False
     skip_cve_applicability: bool = False
     fix_urls: list[str] = field(default_factory=list)
-    recipe: Optional[str] = None
+    recipe: str | None = None
     backend: str = "kiro"
-    backend_profile: Optional[str] = None
-    backend_selector: Optional[str] = None
+    backend_profile: str | None = None
+    backend_selector: str | None = None
     skip_sources: list[str] = field(default_factory=list)
     sign_off: bool = False
     no_knowledge: bool = False
-    mainline_parent: Optional[int] = None
+    mainline_parent: int | None = None
     security_gate: SecurityStatus = SecurityStatus.EQUIVALENT
 
 
@@ -156,12 +155,12 @@ class CveResult:
     # Backend cost summed across all AI sessions run for this CVE (initial
     # attempt + retries + any extended-chain re-runs). ``None`` when the
     # backend reported no cost (e.g. claude, or an interrupted kiro session).
-    total_credits: Optional[float] = None
-    credits_unit: Optional[str] = None
-    outcome: Optional[ResultOutcome] = None
-    failure_class: Optional[FailureClass] = None
-    failure_code: Optional[str] = None
-    artifact_dir: Optional[Path] = None
+    total_credits: float | None = None
+    credits_unit: str | None = None
+    outcome: ResultOutcome | None = None
+    failure_class: FailureClass | None = None
+    failure_code: str | None = None
+    artifact_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is None:

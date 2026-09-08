@@ -28,7 +28,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 
@@ -61,9 +60,9 @@ class InterdiffArtifacts:
 
 def generate_interdiff(
     upstream_patch: str, backport_patch: str,
-    keep_files_dir: Optional[Path] = None,
+    keep_files_dir: Path | None = None,
     allow_empty: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """Compute the diff-of-diffs between an upstream patch and its backport.
 
     Pure helper: takes the two already-computed patch texts and shells out
@@ -99,9 +98,9 @@ def generate_interdiff(
 
 def generate_interdiff_artifacts(
     upstream_patch: str, backport_patch: str,
-    keep_files_dir: Optional[Path] = None,
+    keep_files_dir: Path | None = None,
     allow_empty: bool = False,
-) -> Optional[InterdiffArtifacts]:
+) -> InterdiffArtifacts | None:
     """Compute the diff-of-diffs and optionally persist inputs/command.
 
     Same computation as :func:`generate_interdiff`, but returns the
@@ -134,8 +133,8 @@ def generate_interdiff_artifacts(
         return None
 
     persist = keep_files_dir is not None
-    old_path: Optional[Path] = None
-    new_path: Optional[Path] = None
+    old_path: Path | None = None
+    new_path: Path | None = None
     try:
         if persist:
             assert keep_files_dir is not None

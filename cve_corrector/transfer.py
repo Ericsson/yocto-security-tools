@@ -774,7 +774,7 @@ def _suffix_related(source: str, target: str) -> bool:
     source_parts = PurePosixPath(source).parts
     target_parts = PurePosixPath(target).parts
     common = 0
-    for left, right in zip(reversed(source_parts), reversed(target_parts)):
+    for left, right in zip(reversed(source_parts), reversed(target_parts), strict=False):
         if left != right:
             break
         common += 1

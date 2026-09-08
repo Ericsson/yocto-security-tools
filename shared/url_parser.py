@@ -7,7 +7,6 @@ used by both cve_metadata_extractor (with caching) and cve_corrector/cve_agent
 (direct CLI use).
 """
 import re
-from typing import Optional
 from urllib.parse import parse_qsl, urlparse
 
 # Unanchored on purpose: consumers such as cve_metadata_extractor.debian use
@@ -57,7 +56,7 @@ IGNORED_URL_PATTERNS = [
 _PR_RE = re.compile(r'https://github\.com/([^/]+)/([^/]+)/pull/(\d+)')
 
 
-def extract_commit_hash(url: str) -> Optional[str]:
+def extract_commit_hash(url: str) -> str | None:
     """Extract a commit hash from a URL.
 
     Only extracts from URL structures that identify a commit:
@@ -124,13 +123,13 @@ def extract_commit_hash(url: str) -> Optional[str]:
     return None
 
 
-def _non_numeric_hash(candidate: str) -> Optional[str]:
+def _non_numeric_hash(candidate: str) -> str | None:
     """Return a hexadecimal hash candidate unless it is purely numeric."""
     return None if candidate.isdigit() else candidate
 
 
 def fetch_github_pr_commits(pr_url: str,
-                            token: Optional[str] = None) -> list[str]:
+                            token: str | None = None) -> list[str]:
     """Fetch commit SHAs from a GitHub pull request via the API.
 
     Args:
@@ -265,7 +264,7 @@ _GIT_INDICATORS = (
 )
 
 
-def _savannah_domain(host: str) -> Optional[str]:
+def _savannah_domain(host: str) -> str | None:
     """Return ``'gnu.org'``/``'nongnu.org'`` if host is a genuine Savannah
     host on that domain, or None otherwise (including for lookalike hosts
     such as ``savannah.gnu.org.evil.com``).
@@ -280,7 +279,7 @@ def _savannah_domain(host: str) -> Optional[str]:
     return None
 
 
-def deduce_repo_url(url: str) -> Optional[str]:
+def deduce_repo_url(url: str) -> str | None:
     """Deduce the git repository URL from a commit/patch URL.
 
     Handles GitHub, GitLab, gitweb, Savannah, Sourceware, ncurses

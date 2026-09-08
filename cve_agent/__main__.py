@@ -14,7 +14,7 @@ import sys
 from collections.abc import MutableMapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from shared.git_runner import resolve_git_identity
 from shared.paths import data_dir
@@ -104,7 +104,7 @@ def _credits(result: CveResult, sep: str = " | ") -> str:
 
 
 def _log_result(config: AgentConfig, result: CveResult,
-                workspace_path: Optional[Path] = None) -> None:
+                workspace_path: Path | None = None) -> None:
     """Append result entry to the CVE agent log file."""
     bbpath = os.environ.get('BBPATH', '')
     if not bbpath:
@@ -158,7 +158,7 @@ def _log_result(config: AgentConfig, result: CveResult,
 # --- Batch Processing ---
 
 def _process_batch(cve_list: list[str], config_template: AgentConfig,
-                   knowledge_base: Optional[KnowledgeBase]) -> list[CveResult]:
+                   knowledge_base: KnowledgeBase | None) -> list[CveResult]:
     """Process a list of CVEs sequentially."""
     results: list[CveResult] = []
     total = len(cve_list)
@@ -436,7 +436,7 @@ def _read_cve_list(cve_list_path: Path) -> list[str]:
 
 
 def _config_from_args(args: argparse.Namespace,
-                      cve_id: Optional[str] = None) -> AgentConfig:
+                      cve_id: str | None = None) -> AgentConfig:
     """Create an AgentConfig from parsed CLI arguments."""
     security_gate_value = getattr(args, "security_gate", "equivalent")
     if not isinstance(security_gate_value, str):

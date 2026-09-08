@@ -9,7 +9,6 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
@@ -47,7 +46,7 @@ class VerifyResult:
 
 
 def _verify_cli_marker(cmd: list[str], timeout: int = VERIFY_TIMEOUT,
-                       extra_env: Optional[Mapping[str, str]] = None
+                       extra_env: Mapping[str, str] | None = None
                        ) -> VerifyResult:
     """Run a bare CLI invocation and check the fixed marker comes back.
 
@@ -85,7 +84,7 @@ class BackendSelection:
 
     selector: str
     backend: str
-    profile: Optional[str] = None
+    profile: str | None = None
 
 
 def resolve_backend_selector(selector: str) -> BackendSelection:
@@ -118,11 +117,11 @@ class SessionResult:
     """
     resolved: bool
     duration: float
-    transcript_path: Optional[Path] = None
+    transcript_path: Path | None = None
     failure_reason: str = ""
-    credits: Optional[float] = None
-    credits_unit: Optional[str] = None
-    outcome: Optional[ResultOutcome] = None
+    credits: float | None = None
+    credits_unit: str | None = None
+    outcome: ResultOutcome | None = None
 
 
 class AIBackend:
@@ -132,7 +131,7 @@ class AIBackend:
     Place the file in extra/ for auto-discovery.
     """
     name: str = ""
-    default_model: Optional[str] = "claude-sonnet-5"
+    default_model: str | None = "claude-sonnet-5"
 
     def run_session(self, prompt: str, workspace_path: Path,
                    allowed_files: set, model: str,
@@ -148,7 +147,7 @@ class AIBackend:
         """Perform any one-time setup."""
 
     def configure(self, options: Mapping[str, object],
-                  environ: Optional[Mapping[str, str]] = None) -> None:
+                  environ: Mapping[str, str] | None = None) -> None:
         """Validate and store backend-specific configuration.
 
         This optional hook is deliberately concrete so existing external
@@ -156,8 +155,8 @@ class AIBackend:
         out of :meth:`run_session`, whose signature is part of the plugin API.
         """
 
-    def resolve_model(self, requested: Optional[str],
-                      environ: Optional[Mapping[str, str]] = None) -> str:
+    def resolve_model(self, requested: str | None,
+                      environ: Mapping[str, str] | None = None) -> str:
         """Resolve a requested model while preserving the historic default."""
         if requested:
             return requested

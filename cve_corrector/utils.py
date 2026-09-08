@@ -5,7 +5,6 @@ import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from shared import build_git_env
 from shared.git_runner import is_git_cmd
@@ -13,7 +12,7 @@ from shared.git_runner import run_capture as run_cmd_capture  # noqa: F401  (re-
 
 # Module-level config — set by setup_logging(), used by run_cmd()
 _verbose = True
-_log_file: Optional[Path] = None
+_log_file: Path | None = None
 
 logger = logging.getLogger('cve_corrector')
 
@@ -50,8 +49,8 @@ def setup_logging(cve_id: str, build_path: Path, verbose: bool) -> Path:
     return _log_file
 
 
-def run_cmd(cmd: list[str], cwd: Optional[Path] = None,
-            timeout: Optional[int] = None) -> int:
+def run_cmd(cmd: list[str], cwd: Path | None = None,
+            timeout: int | None = None) -> int:
     """Execute command with output directed based on verbose setting.
 
     Args:

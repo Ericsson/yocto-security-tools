@@ -8,7 +8,6 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
 
 from shared.url_parser import HASH_RE, extract_commit_hash
 
@@ -76,12 +75,12 @@ _MAX_NOTE_REJECTS = 2
 @dataclasses.dataclass
 class _AttemptOutcome:
     """Result of a single resolution attempt."""
-    result: Optional[CveResult] = None
-    next_step: Optional[int] = None
+    result: CveResult | None = None
+    next_step: int | None = None
     # Retain a typed provider failure while the trust-mode loop retries.  If
     # every retry fails, this is more accurate than inventing a generic
     # security-review outcome for a repository that was never built.
-    failure_outcome: Optional[ResultOutcome] = None
+    failure_outcome: ResultOutcome | None = None
     failure_reason: str = ""
     # True when this iteration received a result from a provider session. A
     # later non-failing provider result supersedes any retained failure from an
@@ -214,7 +213,7 @@ class _AcceptedSuggestion(Exception):
 
 def _make_result(cve_id: str, status: ResultStatus, retries: int,
                  start_time: float, summary: str,
-                 outcome: Optional[ResultOutcome] = None) -> CveResult:
+                 outcome: ResultOutcome | None = None) -> CveResult:
     """Create a CveResult with computed duration."""
     return CveResult(
         cve_id=cve_id,
@@ -226,7 +225,7 @@ def _make_result(cve_id: str, status: ResultStatus, retries: int,
     )
 
 
-def _read_conclusion(workspace_path: Path) -> Optional[str]:
+def _read_conclusion(workspace_path: Path) -> str | None:
     """Read the agent conclusion file if the CVE was deemed not applicable."""
     conclusion_file = get_agent_dir(workspace_path) / 'conclusion.json'
     if not conclusion_file.exists():
@@ -240,7 +239,7 @@ def _read_conclusion(workspace_path: Path) -> Optional[str]:
     return None
 
 
-def _read_escalation(workspace_path: Path) -> Optional[_Escalation]:
+def _read_escalation(workspace_path: Path) -> _Escalation | None:
     """Read the agent conclusion file if it asked for human review.
 
     Distinct from :func:`_read_conclusion`: a ``needs_human`` conclusion means
@@ -297,7 +296,7 @@ def _clear_conclusion(workspace_path: Path) -> None:
         pass
 
 
-def _original_fix_url(cve_info: dict) -> Optional[str]:
+def _original_fix_url(cve_info: dict) -> str | None:
     """Return the first fix-commit URL from the CVE metadata, if any.
 
     Prefers ``patches`` (the human-facing fix URLs), falling back to
@@ -315,8 +314,8 @@ def _original_fix_url(cve_info: dict) -> Optional[str]:
     return None
 
 
-def _normalize_suggestion(suggestion: str, ref_url: Optional[str],
-                          ref_hash: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def _normalize_suggestion(suggestion: str, ref_url: str | None,
+                          ref_hash: str | None) -> tuple[str | None, str | None]:
     """Resolve one agent suggestion to a ``(fix_url, hash)`` pair.
 
     A suggestion is either a full commit URL or a bare commit SHA. A URL is
@@ -465,7 +464,7 @@ def _append_note_report_to_audit_log(workspace_path: Path, cve_id: str,
 
 
 def _enforce_note_budget(config: AgentConfig, workspace_path: Path,
-                         note_rejects: int) -> Optional[_AttemptOutcome]:
+                         note_rejects: int) -> _AttemptOutcome | None:
     """Bounce the attempt back to the AI if HEAD's notes are over budget.
 
     Soft violations are reported and allowed through. A hard violation sends
@@ -541,14 +540,14 @@ def _is_empty_cherry_pick(workspace_path: Path, cve_info: dict) -> bool:
 
 def _resolution_loop(config: AgentConfig, workspace_path: Path,
                      exit_code: int, cve_info: dict,
-                     knowledge_base: Optional[KnowledgeBase]) -> CveResult:
+                     knowledge_base: KnowledgeBase | None) -> CveResult:
     """Run the resolution loop: context -> AI backend -> approval -> continue."""
     start_time = time.monotonic()
     current_step = exit_code
     attempt = 0
     total_attempts = 0
     note_rejects = 0
-    last_failure_outcome: Optional[ResultOutcome] = None
+    last_failure_outcome: ResultOutcome | None = None
     last_failure_reason = ""
     max_total = config.max_total_attempts if config.max_total_attempts > 0 else None
 
@@ -609,7 +608,7 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
 
 def _run_single_resolution_attempt(
         config: AgentConfig, workspace_path: Path, exit_code: int,
-        cve_info: dict, knowledge_base: Optional[KnowledgeBase],
+        cve_info: dict, knowledge_base: KnowledgeBase | None,
         attempt: int, start_time: float,
         note_rejects: int = 0) -> _AttemptOutcome:
     """Execute one resolution attempt: context -> session -> approval -> continue."""
@@ -763,7 +762,7 @@ def _run_single_resolution_attempt(
     )
 
 
-def _finalize_resolution(config: AgentConfig, knowledge_base: Optional[KnowledgeBase],
+def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase | None,
                          workspace_path: Path, upstream_sha: str,
                          attempt: int, start_time: float,
                          semantic_reference: ReferenceManifest | None = None,
@@ -824,10 +823,10 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: Optional[Knowledge
 
 
 def _handle_not_applicable(config: AgentConfig, cve_info: dict,
-                           knowledge_base: Optional[KnowledgeBase],
+                           knowledge_base: KnowledgeBase | None,
                            start_time: float,
-                           cve_data: Optional[dict] = None,
-                           workspace_path: Optional[Path] = None) -> CveResult:
+                           cve_data: dict | None = None,
+                           workspace_path: Path | None = None) -> CveResult:
     """Run agent analysis on an empty cherry-pick and write CVE_STATUS."""
     if cve_data is None:
         try:
@@ -879,7 +878,7 @@ def _handle_not_applicable(config: AgentConfig, cve_info: dict,
 
 
 def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
-                        cve_info: dict, knowledge_base: Optional[KnowledgeBase],
+                        cve_info: dict, knowledge_base: KnowledgeBase | None,
                         start_time: float) -> CveResult:
     """Handle the analysis phase after a clean apply (exit 0)."""
     context_file = build_context(
@@ -977,7 +976,7 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
 
 
 def _process_single_cve(config: AgentConfig,
-                        knowledge_base: Optional[KnowledgeBase]) -> CveResult:
+                        knowledge_base: KnowledgeBase | None) -> CveResult:
     """Process a single CVE through the full agent workflow.
 
     Wraps :func:`_run_cve_pipeline` in a re-run loop: when the agent suggests a
@@ -994,8 +993,8 @@ def _process_single_cve(config: AgentConfig,
 
     accepted_hashes: set[str] = set()
     extensions = 0
-    total_credits: Optional[float] = None
-    credits_unit: Optional[str] = None
+    total_credits: float | None = None
+    credits_unit: str | None = None
     while True:
         try:
             result = _run_cve_pipeline(config, knowledge_base, start_time)
@@ -1035,7 +1034,7 @@ def _process_single_cve(config: AgentConfig,
 
 
 def process_single_cve(config: AgentConfig,
-                       knowledge_base: Optional[KnowledgeBase]) -> CveResult:
+                       knowledge_base: KnowledgeBase | None) -> CveResult:
     """Run one CVE with a durable audit directory created before preflight."""
     try:
         artifacts = RunArtifacts.create(
@@ -1111,7 +1110,7 @@ def process_single_cve(config: AgentConfig,
             RunArtifacts.deactivate(token)
 
 
-def _resolve_cve_data(config: AgentConfig) -> Optional[dict]:
+def _resolve_cve_data(config: AgentConfig) -> dict | None:
     """Build the CVE metadata dict from ``--cve-info`` or ``--fix-url``.
 
     Mirrors the resolution in :func:`_run_cve_pipeline` so credit aggregation
@@ -1128,8 +1127,8 @@ def _resolve_cve_data(config: AgentConfig) -> Optional[dict]:
 
 
 def _accumulate_credits(
-        config: AgentConfig, running_total: Optional[float],
-        running_unit: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+        config: AgentConfig, running_total: float | None,
+        running_unit: str | None) -> tuple[float | None, str | None]:
     """Fold this pipeline run's session credits into the running per-CVE total.
 
     Reads ``sum_session_credits`` from the recipe's agent dir (populated by
@@ -1155,7 +1154,7 @@ def _accumulate_credits(
     return running_total + run_credits, running_unit or run_unit
 
 
-def _agent_dir_for(config: AgentConfig) -> Optional[Path]:
+def _agent_dir_for(config: AgentConfig) -> Path | None:
     """Resolve the recipe's agent dir from ``BBPATH`` + recipe name.
 
     Mirrors :func:`cve_agent.get_agent_dir`'s layout
@@ -1174,7 +1173,7 @@ def _agent_dir_for(config: AgentConfig) -> Optional[Path]:
     return Path(bbpath.split(':')[0]) / 'workspace' / 'cve_agent' / recipe
 
 
-def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBase],
+def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase | None,
                       start_time: float) -> CveResult:
     """Run the CVE pipeline once (corrector -> resolution loop).
 

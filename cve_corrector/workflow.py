@@ -6,7 +6,6 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .bitbake_ops import check_cve_patch_in_src_uri, check_cve_status, get_state_dir
 from .blame import check_vulnerability_origin
@@ -141,7 +140,7 @@ def filter_by_skip_sources(cve_info: dict, skip_sources: list[str]) -> dict:
     return new_info
 
 
-def _existing_wildcard_bbappends(meta_layer: Optional[Path], recipe: str) -> set[Path]:
+def _existing_wildcard_bbappends(meta_layer: Path | None, recipe: str) -> set[Path]:
     """Return the ``{recipe}_%.bbappend`` files already present in the layer.
 
     Snapshot this before invoking ``devtool update-recipe -w`` so newly
@@ -153,8 +152,8 @@ def _existing_wildcard_bbappends(meta_layer: Optional[Path], recipe: str) -> set
     return set(meta_layer.rglob(f'{recipe}_%.bbappend'))
 
 
-def _rename_new_wildcard_bbappends(meta_layer: Optional[Path], recipe: str,
-                                   version: Optional[str],
+def _rename_new_wildcard_bbappends(meta_layer: Path | None, recipe: str,
+                                   version: str | None,
                                    pre_existing: set[Path]) -> None:
     """Rename wildcard bbappends created by this run to a versioned name.
 
@@ -302,7 +301,7 @@ def _log_ptest_debug_conf() -> None:
         )
 
 
-def _run_ptest_step(state: WorkflowState) -> Optional[str]:
+def _run_ptest_step(state: WorkflowState) -> str | None:
     """Run ptest after patch, returning ptest output or None."""
     if state.skip_ptest:
         logger.info("Skipping ptest")
@@ -589,9 +588,9 @@ class WorkflowConfig:
             as a conflict instead of falling back to applying a single
             commit, which would leave the CVE only partially fixed.
     """
-    mirror_path: Optional[Path]
-    mirror_dir: Optional[Path]
-    meta_layer: Optional[Path]
+    mirror_path: Path | None
+    mirror_dir: Path | None
+    meta_layer: Path | None
     skip_build: bool
     clean: bool
     skip_ptest: bool
@@ -602,8 +601,8 @@ class WorkflowConfig:
     skip_confirm: bool = False
     require_all_commits: bool = False
     sign_off: bool = False
-    premirror: Optional[str] = None
-    mainline_parent: Optional[int] = None
+    premirror: str | None = None
+    mainline_parent: int | None = None
 
 
 def _handle_failed_series(workspace_path, best_series, make_state, recipe):

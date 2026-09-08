@@ -9,7 +9,6 @@ Provides two levels of abstraction:
 import logging
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
@@ -33,7 +32,7 @@ def is_git_cmd(cmd: list[str]) -> bool:
 
 
 def run_capture(cmd: list[str],
-                cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+                cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Execute command and capture output.
 
     Automatically injects the restricted git environment for git commands.
@@ -52,7 +51,7 @@ def run_capture(cmd: list[str],
                           check=False, env=env)
 
 
-def resolve_git_identity() -> Optional[tuple[str, str]]:
+def resolve_git_identity() -> tuple[str, str] | None:
     """Resolve the operator's global git identity, if fully configured.
 
     Reads ``user.name``/``user.email`` from the *global* git config only
