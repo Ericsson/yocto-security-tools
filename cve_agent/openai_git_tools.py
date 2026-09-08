@@ -30,6 +30,7 @@ from .openai_tools import (
     AuthorizedPath,
     FieldContract,
     FileToolLimits,
+    FileToolPathPolicy,
     FileToolRuntime,
     ToolContract,
     ToolOperationalError,
@@ -51,6 +52,9 @@ MAX_COMMIT_MESSAGE_BYTES = 16 * 1024
 MAX_GIT_COMMAND_SECONDS = 30
 MAX_GIT_MESSAGE_BYTES = 256 * 1024
 MAX_GIT_SEQUENCE_BYTES = 64 * 1024
+# A cherry-picked fix series is short by construction; a longer sequencer
+# advance is not something the host is willing to account for in one step.
+MAX_GIT_SEQUENCE_COMMITS = 64
 MAX_GIT_PREFLIGHT_OUTPUT_BYTES = 8 * 1024 * 1024
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -136,6 +140,7 @@ _OPERATION_VERBS: Mapping[str, str] = {
     "tracked_path": "ls-files",
     "staged_paths": "diff",
     "baseline_ancestor": "merge-base",
+    "sequence_chain": "rev-list",
     "preflight_head": "rev-parse",
     "preflight_index": "ls-files",
     "preflight_status": "status",
@@ -151,6 +156,7 @@ _OPERATION_VERBS: Mapping[str, str] = {
     "cherry_pick_abort": "cherry-pick",
     "cherry_pick_skip": "cherry-pick",
     "rollback_paths": "restore",
+    "rollback_head": "reset",
 }
 
 _FORBIDDEN_ARGV = frozenset({
@@ -197,6 +203,7 @@ class GitToolLimits:
     max_diagnostic_bytes: int = MAX_GIT_DIAGNOSTIC_BYTES
     max_resolution_note_bytes: int = MAX_RESOLUTION_NOTE_BYTES
     max_command_seconds: int = MAX_GIT_COMMAND_SECONDS
+    max_sequence_commits: int = MAX_GIT_SEQUENCE_COMMITS
 
     def __post_init__(self) -> None:
         ceilings = {
@@ -209,6 +216,7 @@ class GitToolLimits:
             "max_diagnostic_bytes": MAX_GIT_DIAGNOSTIC_BYTES,
             "max_resolution_note_bytes": MAX_RESOLUTION_NOTE_BYTES,
             "max_command_seconds": MAX_GIT_COMMAND_SECONDS,
+            "max_sequence_commits": MAX_GIT_SEQUENCE_COMMITS,
         }
         for name, ceiling in ceilings.items():
             value = getattr(self, name)
@@ -766,6 +774,14 @@ class GitToolRuntime(FileToolRuntime):
             None if handoff is None else handoff.selected_commit)
         self._handoff_selected_parent = (
             None if handoff is None else handoff.selected_parent)
+        # Paths the corrector authorized for the commits Git's sequencer creates
+        # from the remaining reference commits of a series. They are deliberately
+        # kept out of self.policy: the model may not write them, and only a
+        # host-driven sequence advance is validated against them.
+        sequence_paths = () if handoff is None else handoff.sequence_paths
+        self._sequence_policy = (
+            FileToolPathPolicy(self.workspace, sequence_paths, limits=self.policy.limits)
+            if sequence_paths else None)
         self.trusted_git_state = TrustedGitState(
             session_root_head=head,
             session_root_tree=tree,
@@ -1181,6 +1197,11 @@ class GitToolRuntime(FileToolRuntime):
             # after this check.
             staged = self._validate_staged_scope()
             before_head = self._current_head()
+            # A conflicted series leaves the remaining commits in Git's
+            # sequencer todo, and --continue applies all of them in this one
+            # command. Remember that so the resulting chain is validated as a
+            # sequence rather than rejected for adding more than one commit.
+            pending_sequence = self._has_pending_sequencer_commits()
             result = self._executor.run(
                 "cherry_pick_continue", ["cherry-pick", "--continue"])
         except Exception:
@@ -1190,8 +1211,18 @@ class GitToolRuntime(FileToolRuntime):
         after_head = self._current_head()
         if result.returncode == 0 or after_head != before_head:
             self._require_returncode(result, "Git cherry-pick continue")
-            transition = self._validate_trusted_transition(
-                "cherry_pick_continue", before_head, amend=False)
+            try:
+                if pending_sequence:
+                    transition = self._validate_trusted_sequence(
+                        "cherry_pick_continue", before_head)
+                else:
+                    transition = self._validate_trusted_transition(
+                        "cherry_pick_continue", before_head, amend=False)
+            except (GitScopeError, GitStateError):
+                # Git already created the commits; leaving them in place would
+                # strand the session on an untrusted HEAD with no typed way back.
+                self._rollback_untrusted_advance(before_head)
+                raise
             return _ExecutionResult({
                 "commit": after_head,
                 "continued": True,
@@ -1459,6 +1490,195 @@ class GitToolRuntime(FileToolRuntime):
                 },
             )
         return head
+
+    def _rollback_untrusted_advance(self, trusted_head: str) -> None:
+        """Undo commits Git created that the host refused to trust.
+
+        Without this, a rejected advance leaves HEAD ahead of
+        ``trusted_git_state.trusted_head`` forever: every typed operation —
+        including ``git_cherry_pick_abort`` and ``revert_to_baseline`` — starts
+        with :meth:`_require_current_trusted_head`, so the session can neither
+        proceed nor roll back. Restoring the recorded trusted head keeps a
+        rejected operation retryable instead of terminal.
+
+        Only ever moves the branch *back* to the host's own recorded trusted
+        head, and only when that head is an ancestor of the current HEAD.
+
+        Args:
+            trusted_head: The recorded trusted head to return to.
+        """
+        if trusted_head != self.trusted_git_state.trusted_head:
+            return
+        current = self._current_head()
+        if current == trusted_head:
+            return
+        if self._operation_state()["cherry_pick"]:
+            self._executor.run("cherry_pick_abort", ["cherry-pick", "--abort"])
+            current = self._current_head()
+            if current == trusted_head:
+                return
+        ancestor = self._executor.run(
+            "baseline_ancestor", ["merge-base", "--is-ancestor", trusted_head, current])
+        if ancestor.returncode != 0:
+            raise GitStateError(
+                "untrusted HEAD is not a descendant of the trusted head",
+                {"expected_head": trusted_head, "current_head": current},
+            )
+        # --keep, never --hard: it refuses rather than discarding uncommitted
+        # work that the rejected operation did not create.
+        reset = self._executor.run("rollback_head", ["reset", "--keep", trusted_head])
+        self._require_returncode(reset, "Git untrusted-advance rollback")
+        self._validate_cherry_pick_rollback_result(trusted_head)
+
+    def _sequence_authorized_paths(self, paths: Iterable[str]) -> set[str]:
+        """Return the subset of *paths* the corrector authorized for a sequence."""
+        if self._sequence_policy is None:
+            return set()
+        authorized: set[str] = set()
+        for path in paths:
+            try:
+                self._reject_pathspec_syntax(path)
+                self._sequence_policy.authorize_write(path)
+            except (ToolOperationalError, ToolPolicyError, ToolValidationError):
+                continue
+            authorized.add(path)
+        return authorized
+
+    def _validate_trusted_sequence(
+        self, operation: str, before_head: str,
+    ) -> dict[str, object]:
+        """Validate a host-driven multi-commit sequencer advance.
+
+        ``git cherry-pick --continue`` on a conflicted series does not stop after
+        the resolved commit: Git's sequencer applies every remaining commit in
+        the todo, in one command, without a further model action. Requiring a
+        single new commit (see :meth:`_validate_trusted_transition`) leaves those
+        commits permanently untrusted and locks the session out of its own
+        recovery tools, so the whole resulting chain is validated instead.
+
+        Each new commit must be a non-merge, first-parent descendant, and every
+        path it changes must be either in the session's allowed files or in the
+        corrector's declared ``sequence_paths``.
+
+        Args:
+            operation: Typed operation name recorded in the transition.
+            before_head: HEAD before the sequencer ran.
+
+        Returns:
+            Transition record including the accepted commit chain.
+
+        Raises:
+            GitStateError: The chain is not a clean first-parent advance, or the
+                repository was left mid-operation.
+            GitScopeError: A commit in the chain reaches unauthorized paths.
+        """
+        self._require_current_trusted_head(before_head)
+        after_head = self._current_head()
+        chain = self._first_parent_chain(before_head, after_head)
+        if not chain:
+            raise GitStateError("typed Git operation did not create a commit", {})
+        for commit in chain:
+            parents = tuple(self._commit_parents(commit))
+            if len(parents) != 1:
+                raise GitStateError(
+                    "sequencer produced a merge commit", {"commit": commit})
+            changed = self._changed_paths(commit)
+            unsupported = sorted({
+                item.path for item in changed
+                if item.old_mode in {"120000", "160000"}
+                or item.new_mode in {"120000", "160000"}
+            })
+            rejected = set(self._preflight_changed_paths(changed))
+            rejected -= self._sequence_authorized_paths(rejected)
+            rejected |= set(unsupported)
+            if rejected:
+                raise GitScopeError(
+                    "sequencer commit reaches unauthorized paths", sorted(rejected))
+        self._require_idle_resolved_state()
+        durable = self._changed_paths_between(
+            self.trusted_git_state.session_root_head, after_head)
+        unsupported = sorted({
+            item.path for item in durable
+            if item.old_mode in {"120000", "160000"}
+            or item.new_mode in {"120000", "160000"}
+        })
+        rejected = set(self._preflight_changed_paths(durable))
+        rejected -= self._sequence_authorized_paths(rejected)
+        rejected |= set(unsupported)
+        if rejected:
+            raise GitScopeError(
+                "trusted commit lineage reaches unauthorized paths", sorted(rejected))
+        old_tree = self.trusted_git_state.trusted_tree
+        new_tree = self._commit_tree(after_head)
+        transition: dict[str, object] = {
+            "operation": operation,
+            "old_head": before_head,
+            "new_head": after_head,
+            "old_tree": old_tree,
+            "new_tree": new_tree,
+            "parent_basis": [before_head],
+            "sequence_commits": list(chain),
+            "allowed_path_digest": self.trusted_git_state.allowed_path_digest,
+            "invariants": {
+                "pre_head_trusted": True,
+                "parents_match": True,
+                "durable_paths_allowed": True,
+                "operation_state_idle": True,
+                "index_resolved": True,
+            },
+        }
+        self.trusted_git_state.trusted_head = after_head
+        self.trusted_git_state.trusted_tree = new_tree
+        self.trusted_git_state.trusted_parent_basis = tuple(
+            self._commit_parents(after_head))
+        self.trusted_git_state.last_host_git_operation = operation
+        self.trusted_git_state.transition_count += 1
+        return transition
+
+    def _first_parent_chain(self, before_head: str, after_head: str) -> list[str]:
+        """Return before_head..after_head as first-parent commits, oldest first."""
+        if after_head == before_head:
+            return []
+        result = self._executor.run(
+            "sequence_chain",
+            ["rev-list", "--first-parent", "--reverse",
+             f"{before_head}..{after_head}"],
+        )
+        self._require_returncode(result, "Git sequence inspection")
+        chain = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not chain or chain[-1] != after_head:
+            raise GitStateError(
+                "typed Git operation left an unrelated HEAD",
+                {"expected_head": after_head, "chain": chain[:MAX_GIT_PATHS]},
+            )
+        if len(chain) > self.git_limits.max_sequence_commits:
+            raise GitStateError(
+                "sequencer advanced beyond its commit limit",
+                {"commits": len(chain)},
+            )
+        return chain
+
+    def _require_idle_resolved_state(self) -> None:
+        """Require no in-progress operation, no conflicts, nothing staged."""
+        operations = self._operation_state()
+        active = sorted(name for name, present in operations.items() if present)
+        if active:
+            raise GitStateError(
+                "typed Git operation left repository state in progress",
+                {"operations": active},
+            )
+        unmerged = self._unmerged_entries()
+        if unmerged:
+            raise GitStateError(
+                "typed Git operation left unresolved conflicts",
+                {"paths": [item["path"] for item in unmerged[:MAX_GIT_PATHS]]},
+            )
+        staged = self._staged_paths()
+        if staged:
+            raise GitStateError(
+                "typed Git operation left staged changes",
+                {"paths": staged[:MAX_GIT_PATHS]},
+            )
 
     def _validate_trusted_transition(
         self,
