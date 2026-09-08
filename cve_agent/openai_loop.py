@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Bounded multi-turn loop for the native OpenAI-compatible backend."""
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -40,6 +41,11 @@ from .result import BuildStatus, FailureClass, ResultOutcome, SecurityStatus, Wo
 DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE = 16
 DEFAULT_MAX_CONSECUTIVE_NONPROGRESS = 3
 MAX_CONSECUTIVE_NONPROGRESS_LIMIT = 10
+# Read-only evidence is re-sent verbatim on every later turn, so a long
+# inspection phase multiplies prefill cost and provider latency without adding
+# information. Only the most recent read-only results stay expanded.
+DEFAULT_RETAINED_READ_RESULTS = 6
+MAX_RETAINED_READ_RESULTS = 64
 MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
 MAX_TOOL_ARGUMENT_DEPTH = 32
 MAX_TOOL_ARGUMENT_NODES = 20_000
@@ -48,7 +54,8 @@ MAX_TRANSCRIPT_STRING_CHARS = 4096
 MAX_TRANSCRIPT_NODES = 512
 
 _BUILD_RELEVANT_MUTATIONS = frozenset({
-    "replace_in_file", "apply_patch_hunks", "write_file", "delete_file",
+    "replace_in_file", "replace_lines", "apply_patch_hunks", "write_file",
+    "delete_file",
     "git_restore_conflict", "git_cherry_pick_start", "git_cherry_pick_continue",
     "git_cherry_pick_abort", "git_cherry_pick_skip",
 })
@@ -58,6 +65,13 @@ _MUTATION_TOOLS = _BUILD_RELEVANT_MUTATIONS | frozenset({
 _READ_TOOLS = frozenset({
     "read_file", "read_file_range", "list_directory", "search_text",
 })
+_GIT_INSPECTION_TOOLS = frozenset({
+    "git_status", "git_diff", "git_show", "git_log", "git_unmerged_files",
+    "git_conflict_regions", "git_submodule_status",
+})
+# Superseded read-only payloads may be elided from history: they carry no
+# trusted state, and the model can always call the tool again.
+_DIGESTIBLE_TOOLS = _READ_TOOLS | _GIT_INSPECTION_TOOLS
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -107,15 +121,21 @@ class AgentLoopLimits:
     max_total_tool_calls: int
     max_tool_calls_per_response: int = DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE
     max_consecutive_nonprogress: int = DEFAULT_MAX_CONSECUTIVE_NONPROGRESS
+    retained_read_results: int = DEFAULT_RETAINED_READ_RESULTS
 
     def __post_init__(self) -> None:
         for name in (
             "max_model_turns", "max_total_tool_calls",
             "max_tool_calls_per_response", "max_consecutive_nonprogress",
+            "retained_read_results",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.retained_read_results > MAX_RETAINED_READ_RESULTS:
+            raise ValueError(
+                "retained_read_results must not exceed "
+                f"{MAX_RETAINED_READ_RESULTS}")
         if self.max_consecutive_nonprogress > MAX_CONSECUTIVE_NONPROGRESS_LIMIT:
             raise ValueError(
                 "max_consecutive_nonprogress must not exceed "
@@ -475,6 +495,7 @@ class OpenAIAgentLoop:
         self._state_message_index: Optional[int] = None
         self._mutation_calls = self._shared.mutation_calls
         self._build_calls = self._shared.build_calls
+        self._digestible_reads: list[tuple[int, str]] = []
 
     def run(self, model: str, interactive: bool) -> SessionResult:
         """Run until trusted finish or one independent session bound fires."""
@@ -675,7 +696,7 @@ class OpenAIAgentLoop:
                 if dispatched and call.name in _MUTATION_TOOLS:
                     self._mutation_calls += 1
                     self._shared.mutation_calls = self._mutation_calls
-                self._append_tool_result(call.id, result)
+                self._append_tool_result(call.id, result, call.name)
                 self._write_tool_result(call.id, call.name, result, dispatched)
                 event = self._progress.observe(
                     call.name, arguments_key, result, dispatched=dispatched)
@@ -821,7 +842,8 @@ class OpenAIAgentLoop:
             self._shared.output_tokens
             if self._shared.complete_token_usage and self._shared.model_turns else None)
 
-    def _append_tool_result(self, call_id: str, result: ToolResult) -> None:
+    def _append_tool_result(self, call_id: str, result: ToolResult,
+                            tool: str = "") -> None:
         content: dict[str, object] = {
             "success": result.success,
             "mutated": result.mutated,
@@ -842,6 +864,53 @@ class OpenAIAgentLoop:
                 allow_nan=False,
             ),
         })
+        if result.success and tool in _DIGESTIBLE_TOOLS:
+            self._digestible_reads.append((len(self.messages) - 1, tool))
+            self._digest_superseded_reads()
+
+    def _digest_superseded_reads(self) -> None:
+        """Replace older read-only payloads with a verifiable content digest.
+
+        The tool message itself has to stay in place for protocol validity, so
+        only its payload is elided. The recorded SHA-256 keeps the transcript
+        auditable, and the model is told it can re-read the evidence.
+        """
+        while len(self._digestible_reads) > self.limits.retained_read_results:
+            index, tool = self._digestible_reads.pop(0)
+            message = self.messages[index]
+            original = message.get("content")
+            if not isinstance(original, str):
+                continue
+            try:
+                decoded = json.loads(original)
+            except ValueError:
+                continue
+            if not isinstance(decoded, dict) or "data" not in decoded:
+                continue
+            elided = json.dumps(
+                decoded.pop("data"), ensure_ascii=False, separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            decoded["superseded"] = True
+            decoded["tool"] = tool
+            decoded["elided_bytes"] = len(elided)
+            decoded["content_sha256"] = hashlib.sha256(elided).hexdigest()
+            decoded["note"] = (
+                "The host elided this superseded read-only payload to keep the "
+                "context small. Call the tool again if the evidence is still "
+                "needed."
+            )
+            message["content"] = json.dumps(
+                decoded, ensure_ascii=False, separators=(",", ":"),
+                allow_nan=False)
+            self.transcript.write(
+                "history_digest",
+                tool=tool,
+                message_index=index,
+                elided_bytes=len(elided),
+                content_sha256=str(decoded["content_sha256"]),
+                retained_read_results=self.limits.retained_read_results,
+            )
 
     def _write_tool_result(
         self, call_id: str, tool: str, result: ToolResult, dispatched: bool,

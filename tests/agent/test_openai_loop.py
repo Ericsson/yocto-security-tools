@@ -793,3 +793,114 @@ def test_write_console_writer_oserror_is_suppressed(tmp_path):
         for line in transcript.path.read_text(encoding="utf-8").splitlines()
     ]
     assert [event["event"] for event in events] == ["tool_request", "tool_result"]
+
+
+def _read_payload(runtime, tool_name, arguments):
+    """Return a bulky but bounded read-only payload for history tests."""
+    if tool_name in {"read_file", "read_file_range", "search_text", "git_diff"}:
+        return runtime.result(tool_name, payload={
+            "observed": tool_name,
+            "content": "probe-" + "x" * 512,
+            "arguments": arguments,
+        })
+    return None
+
+
+def test_superseded_read_results_are_digested_but_recent_ones_stay(tmp_path):
+    retained = 2
+    reads = [
+        _response(_call(f"r{index}", "search_text",
+                        json.dumps({"query": f"probe-{index}",
+                                    "paths": ["a.c"]})))
+        for index in range(5)
+    ]
+    actions = [
+        *reads,
+        _response(_call("finish", "finish",
+                        '{"status":"needs_human","reason":"x"}')),
+    ]
+    result, client, _, loop, _, events = _run(
+        tmp_path,
+        actions,
+        runtime=FakeRuntime(_read_payload),
+        limits=AgentLoopLimits(10, 30, retained_read_results=retained),
+    )
+
+    assert result.resolved
+    tool_messages = [
+        json.loads(message["content"])
+        for message in loop.messages if message["role"] == "tool"
+    ]
+    digested = [item for item in tool_messages if item.get("superseded")]
+    expanded = [
+        item for item in tool_messages[:len(reads)] if "data" in item]
+    assert len(digested) == len(reads) - retained
+    assert len(expanded) == retained
+    for item in digested:
+        assert item["tool"] == "search_text"
+        assert item["success"] is True
+        assert "data" not in item
+        assert len(item["content_sha256"]) == 64
+        assert item["elided_bytes"] > 0
+        assert "Call the tool again" in item["note"]
+    # Digests must be per-payload, not a single shared constant.
+    assert len({item["content_sha256"] for item in digested}) == len(digested)
+
+    digest_events = [
+        event for event in events if event["event"] == "history_digest"]
+    assert len(digest_events) == len(reads) - retained
+    assert digest_events[0]["tool"] == "search_text"
+    assert digest_events[0]["retained_read_results"] == retained
+    assert digest_events[0]["content_sha256"] == digested[0]["content_sha256"]
+    # The provider only ever saw bounded history: the elided payload text is
+    # gone from every tool result, while assistant calls stay verbatim.
+    last_tool_results = [
+        message["content"] for message in client.requests[-1][0]
+        if message["role"] == "tool"
+    ]
+    assert not any("probe-" + "x" * 512 in item for item in last_tool_results[:3])
+
+
+def test_mutation_build_and_error_results_are_never_digested(tmp_path):
+    def handler(runtime, tool_name, arguments):
+        if tool_name == "unknown_tool":
+            return runtime.result(
+                tool_name, success=False, error_kind="validation",
+                payload={"error": "unknown tool name"})
+        return _read_payload(runtime, tool_name, arguments)
+
+    actions = [
+        _response(_call("edit", "write_file",
+                        '{"path":"a.c","content":"x","mode":"replace_only"}')),
+        _response(_call("bad", "unknown_tool", "{}")),
+        _response(_call("build", "build_recipe", "{}")),
+        _response(_call("r1", "read_file", '{"path":"a.c"}')),
+        _response(_call("r2", "read_file", '{"path":"b.c"}')),
+        _response(_call("finish", "finish", '{"status":"done","reason":"ok"}')),
+    ]
+    result, _, _, loop, _, events = _run(
+        tmp_path,
+        actions,
+        runtime=FakeRuntime(handler),
+        limits=AgentLoopLimits(10, 30, retained_read_results=1),
+    )
+
+    assert result.resolved
+    contents = [
+        json.loads(message["content"])
+        for message in loop.messages if message["role"] == "tool"
+    ]
+    digested_tools = {
+        item["tool"] for item in contents if item.get("superseded")}
+    assert digested_tools == {"read_file"}
+    assert any(item.get("mutated") and "data" in item for item in contents)
+    assert any(item.get("error") for item in contents)
+    assert [event["tool"] for event in events
+            if event["event"] == "history_digest"] == ["read_file"]
+
+
+def test_retained_read_result_bound_is_validated():
+    with pytest.raises(ValueError):
+        AgentLoopLimits(10, 30, retained_read_results=0)
+    with pytest.raises(ValueError):
+        AgentLoopLimits(10, 30, retained_read_results=1000)

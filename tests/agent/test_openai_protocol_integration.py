@@ -184,7 +184,8 @@ def _request_contract(body: dict[str, object]) -> None:
     assert isinstance(tools, list)
     names = {tool["function"]["name"] for tool in tools}
     assert {
-        "read_file", "replace_in_file", "apply_patch_hunks", "git_stage",
+        "read_file", "read_file_range", "replace_in_file", "replace_lines",
+        "apply_patch_hunks", "git_conflict_regions", "git_stage",
         "git_commit", "git_amend", "build_recipe", "finish",
     } <= names
     assert all(tool["type"] == "function" for tool in tools)
@@ -524,6 +525,117 @@ def test_socket_cherry_pick_conflict_resolution_has_trusted_provenance(
         for call in message.get("tool_calls", [])
     ]
     assert not ({"shell", "git_reset", "git_add_all"} & set(all_calls))
+
+
+def test_socket_line_addressed_conflict_resolution_needs_no_text_probing(
+    real_workspace: RealWorkspace,
+) -> None:
+    """Resolve a conflict positionally: inspect regions, then replace lines.
+
+    This is the shape that previously cost a benchmarked model 51 search calls:
+    it now needs one region inspection, one range read, and one positional edit.
+    """
+    workspace = real_workspace
+    runner = RecordingBuildRunner(workspace)
+    resolved_content = "value = upstream;\n"
+
+    def enqueue_positional_resolution(body: dict[str, object]) -> None:
+        conflicted = workspace.target.read_text(encoding="utf-8")
+        lines = conflicted.split("\n")
+        start_line = next(
+            index for index, line in enumerate(lines, start=1)
+            if line.startswith("<<<<<<<"))
+        end_line = next(
+            index for index, line in enumerate(lines, start=1)
+            if line.startswith(">>>>>>>"))
+        digest = hashlib.sha256(workspace.target.read_bytes()).hexdigest()
+
+        def check_reported_evidence(request: dict[str, object]) -> None:
+            results = [
+                json.loads(message["content"])
+                for message in request["messages"]
+                if message.get("role") == "tool"
+            ]
+            regions = next(
+                item["data"] for item in results
+                if isinstance(item.get("data"), dict) and "files" in item["data"])
+            ranges = next(
+                item["data"] for item in results
+                if isinstance(item.get("data"), dict) and "lines" in item["data"])
+            region = regions["files"][0]["regions"][0]
+            assert region["start_line"] == start_line
+            assert region["end_line"] == end_line
+            assert region["ours"]["text"] == "value = downstream;\n"
+            assert region["theirs"]["text"] == resolved_content
+            assert ranges["sha256"] == digest
+            assert ranges["lines"][start_line - 1]["text"].startswith("<<<<<<<")
+
+        server.enqueue(
+            ScriptedHTTPResponse(
+                json_body=assistant_response(
+                    tool_call("resolve", "replace_lines", {
+                        "path": workspace.target.name,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "expected_sha256": digest,
+                        "replacement": resolved_content,
+                    }),
+                    tool_call("stage", "git_stage",
+                              {"paths": [workspace.target.name]}),
+                    tool_call("continue", "git_cherry_pick_continue", {
+                        "resolution_note": "Took the upstream region verbatim.",
+                    }),
+                ),
+                check=check_reported_evidence,
+            ),
+            ScriptedHTTPResponse(
+                json_body=assistant_response(
+                    tool_call("build", "build_recipe", {}))),
+            ScriptedHTTPResponse(
+                json_body=assistant_response(
+                    tool_call("finish", "finish", {
+                        "status": "done",
+                        "reason": "region replaced positionally and built",
+                    }))),
+        )
+
+    actions = [
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call("context", "read_file", {"path": str(workspace.context)}),
+                tool_call("start", "git_cherry_pick_start",
+                          {"revision": workspace.upstream}),
+            ),
+            check=_request_contract,
+        ),
+        ScriptedHTTPResponse(
+            json_body=assistant_response(
+                tool_call("regions", "git_conflict_regions", {}),
+                tool_call("range", "read_file_range",
+                          {"path": workspace.target.name, "start_line": 1}),
+            ),
+            check=enqueue_positional_resolution,
+        ),
+    ]
+
+    with ScriptedOpenAIServer(actions) as server:
+        backend, _ = _backend(server, workspace, runner)
+        result = backend.run_session(
+            f"Read {workspace.context}",
+            workspace.repo,
+            {workspace.target.name},
+            "socket-model",
+            20,
+            False,
+        )
+
+    assert result.resolved
+    assert workspace.target.read_text(encoding="utf-8") == resolved_content
+    assert _git(workspace.repo, "status", "--porcelain") == ""
+    assert _git(workspace.repo, "ls-files", "-u") == ""
+    message = _git(workspace.repo, "log", "-1", "--format=%B")
+    assert "Backport-resolution: Took the upstream region verbatim." in message
+    assert runner.calls and runner.calls[-1]["content"] == resolved_content
 
 
 def test_socket_clean_pick_failed_build_repair_amend_and_finish(
