@@ -340,8 +340,8 @@ class RunArtifacts:
                 if tool.startswith("read") or tool in {"git_status", "git_diff"}:
                     counters["read_calls"] += 1
                 if tool in {
-                    "replace_in_file", "apply_patch_hunks", "write_file",
-                    "delete_file", "git_commit", "git_amend",
+                    "replace_in_file", "replace_lines", "apply_patch_hunks",
+                    "write_file", "delete_file", "git_commit", "git_amend",
                     "git_cherry_pick_start", "git_cherry_pick_continue",
                 }:
                     counters["mutation_calls"] += 1

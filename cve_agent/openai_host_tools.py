@@ -626,7 +626,8 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         if self._arguments_contain_protected_secret(arguments):
             raise ToolPolicyError("tool arguments contain a protected credential")
         if tool in {
-            "replace_in_file", "apply_patch_hunks", "write_file", "delete_file",
+            "replace_in_file", "replace_lines", "apply_patch_hunks",
+            "write_file", "delete_file",
         }:
             self.approvals.require(
                 "file_mutation", tool, self._file_approval_summary(tool, arguments))
@@ -679,6 +680,15 @@ class OpenAIHostToolRuntime(GitToolRuntime):
                 f"{plan.new_sha256}, hunks={plan.hunks_applied}, "
                 f"+{plan.lines_added}/-{plan.lines_removed}\n"
                 f"{plan.diff_excerpt}"
+            )
+        if tool == "replace_lines":
+            line_plan, start_line, end_line = self._prepare_line_replacement(
+                arguments)
+            return (
+                f"replace {displayed_path} lines {start_line}-{end_line}: "
+                f"{line_plan.old_sha256} -> {line_plan.new_sha256}, "
+                f"+{line_plan.lines_added}/-{line_plan.lines_removed}\n"
+                f"{line_plan.diff_excerpt}"
             )
         if tool == "write_file":
             content = self._required_string(dict(arguments), "content")
