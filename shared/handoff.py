@@ -268,13 +268,84 @@ def _reference_path_variants(path: str) -> tuple[tuple[str, str], ...]:
     return tuple(variants)
 
 
+def _suffix_related(source: str, target: str) -> bool:
+    """Check whether two paths share their trailing components."""
+    source_parts = PurePosixPath(source).parts
+    target_parts = PurePosixPath(target).parts
+    common = 0
+    for left, right in zip(reversed(source_parts), reversed(target_parts)):
+        if left != right:
+            break
+        common += 1
+    return common >= min(2, len(source_parts), len(target_parts))
+
+
+def _content_anchored_path(
+    workspace: Path, base: str, source_path: str,
+    tracked_objects: Mapping[str, str],
+) -> str | None:
+    """Resolve one moved reference path by exact pre-image content.
+
+    Upstream directory renames (e.g. wheel's ``src/wheel/cli`` →
+    ``src/wheel/_commands``) mean the reference commit's path does not exist in
+    the recipe's older source tree, while Git's own rename detection still
+    applies the change to the older path. Declaring the upstream path would then
+    leave the file Git actually modified out of scope.
+
+    The mapping is accepted only on the same evidence the corrector's patch
+    transfer requires: the candidate's blob is byte-identical to the reference
+    pre-image, its trailing path components relate to the source path, and it is
+    the only such candidate. Anything else stays unmapped, which keeps the
+    handoff failing rather than guessing.
+
+    Args:
+        workspace: Devtool workspace repository.
+        base: Reference commit's parent, holding the pre-image.
+        source_path: Reference path missing from the workspace tree.
+        tracked_objects: Tracked path to blob object id.
+
+    Returns:
+        The unique anchored workspace path, or None.
+    """
+    result = subprocess.run(
+        ["git", "--no-pager", "rev-parse", "--verify", f"{base}:{source_path}"],
+        cwd=workspace, env=build_git_env(), stdin=subprocess.DEVNULL,
+        capture_output=True, encoding=TEXT_ENCODING, errors=TEXT_ERRORS,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    anchor = result.stdout.strip()
+    if not _OBJECT_RE.fullmatch(anchor):
+        return None
+    candidates = sorted(
+        path for path, object_id in tracked_objects.items()
+        if object_id == anchor
+        and (_suffix_related(source_path, path)
+             or PurePosixPath(path).name == PurePosixPath(source_path).name)
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _tracked_objects(workspace: Path) -> dict[str, str]:
+    """Return tracked path to blob object id for the current index."""
+    objects: dict[str, str] = {}
+    for entry in _git(workspace, "ls-files", "-s", "-z").split("\0"):
+        if "\t" not in entry:
+            continue
+        metadata, path = entry.split("\t", 1)
+        fields = metadata.split()
+        if len(fields) >= 2:
+            objects[path] = fields[1]
+    return objects
+
+
 def _workspace_reference_paths(
-    workspace: Path, paths: list[str],
+    workspace: Path, paths: list[str], base: str | None = None,
 ) -> tuple[str, ...]:
     """Map upstream-root paths onto an extracted tracked source root."""
-    tracked = {
-        path for path in _git(workspace, "ls-files", "-z").split("\0") if path
-    }
+    tracked_objects = _tracked_objects(workspace)
+    tracked = set(tracked_objects)
     evidenced_prefixes: set[str] = set()
     for path in paths:
         if path in tracked:
@@ -302,7 +373,13 @@ def _workspace_reference_paths(
              if prefix in evidenced_prefixes),
             None,
         )
-        mapped.add(evidenced_variant or path)
+        if evidenced_variant is not None:
+            mapped.add(evidenced_variant)
+            continue
+        anchored = (
+            None if base is None
+            else _content_anchored_path(workspace, base, path, tracked_objects))
+        mapped.add(anchored or path)
     return tuple(sorted(mapped))
 
 
@@ -342,7 +419,7 @@ def reference_change_paths(
             raise HandoffError("HANDOFF_REFERENCE_DIFF_INVALID", "malformed name status")
         paths.extend(tokens[index:index + count])
         index += count
-    normalized = _workspace_reference_paths(workspace, paths)
+    normalized = _workspace_reference_paths(workspace, paths, base)
     if not normalized:
         raise HandoffError("HANDOFF_EMPTY_ALLOWED_SCOPE", "reference change is empty")
     return normalized, selected_parent
