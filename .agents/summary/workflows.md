@@ -38,8 +38,9 @@ flowchart TD
     Sources --> Debian["Debian Tracker"]
     Sources --> OSV["OSV API"]
     Sources --> NVD["NVD / CVEList V5"]
-    Sources --> Ubuntu["Ubuntu API"]
-    Debian & OSV & NVD & Ubuntu --> Merge["Merge & deduplicate"]
+    Sources --> UCT["Ubuntu CVE Tracker (default)"]
+    Sources --> Ubuntu["Ubuntu API (deprecated, --ubuntu-api opt-in)"]
+    Debian & OSV & NVD & UCT & Ubuntu --> Merge["Merge & deduplicate"]
     Merge --> Enrich["Enrich (component deduction)"]
     Enrich --> OECheck{"Check OE status?"}
     OECheck -->|yes| OEStatus["Query OE branches"]
@@ -221,7 +222,51 @@ flowchart TD
     Finish --> EXIT_SUCCESS
 ```
 
-## Batch Processing (Agent)
+## Exit Code → Agent Action Reference
+
+`_run_cve_pipeline()` branches on `exit_code` immediately after running the
+corrector (`cve_agent/orchestrator.py`). Only `EXIT_CONFLICT`, `EXIT_PTEST_ERROR`,
+and `EXIT_BUILD_ERROR` (`RECOVERABLE_EXITS`) enter `_resolution_loop()`; every
+other code is resolved immediately without spawning an AI session.
+
+| Exit Code | Constant | Agent Action | Retry Behavior |
+|-----------|----------|---------------|-----------------|
+| 0 | `EXIT_SUCCESS` | Empty-cherry-pick check, then `_handle_clean_apply()` | None — no AI session; SUCCESS or SKIPPED (fix already in tree) |
+| 1 | `EXIT_CONFLICT` | Enter `_resolution_loop()`: build context → AI session → approval → `--continue` | Up to `--max-retries` (default 3) attempts per step; step change (e.g. conflict → build) resets the attempt counter; `--max-total-attempts` caps the sum across all steps |
+| 2 | `EXIT_CHECKOUT_ERROR` | Immediate `FAILED` (unrecoverable) | None |
+| 3 | `EXIT_PTEST_ERROR` | Enter `_resolution_loop()`; a session that leaves `HEAD` unchanged is detected as a no-op and retried immediately without human approval | Same retry/step-reset rules as exit 1 |
+| 4 | `EXIT_BUILD_ERROR` | Enter `_resolution_loop()`; same no-op short-circuit as ptest | Same retry/step-reset rules as exit 1 |
+| 5 | `EXIT_PATCH_ERROR` | Immediate `FAILED` (unrecoverable) | None |
+| 6 | `EXIT_METADATA_ERROR` | Immediate `FAILED` (unrecoverable) | None |
+| 7 | `EXIT_GIT_ERROR` | Immediate `FAILED` (unrecoverable) | None |
+| 8 | `EXIT_PTEST_PREEXISTING` | Immediate `SKIPPED` — pre-existing failure unrelated to the fix | None |
+| 9 | `EXIT_DEVTOOL_ERROR` | Immediate `FAILED` (unrecoverable) | None |
+| 10 | `EXIT_BUILD_PREEXISTING` | Immediate `SKIPPED` | None |
+| 11 | `EXIT_ALREADY_APPLIED` | `_handle_not_applicable()` (also triggered by `--allow-empty` in corrector output) | None |
+| 12 | `EXIT_NOT_APPLICABLE` | Immediate `SKIPPED` — vulnerable code absent from this recipe version | None |
+| 16 | `EXIT_IGNORED_BY_STATUS` | Immediate `SKIPPED` — recipe's `CVE_STATUS` marks it ignored/patched | None |
+| 17 | `EXIT_PREP_BASE_MISMATCH` | Immediate `FAILED` — a dependency patch could not be replayed onto the CVE branch, so no session is worth spawning | None |
+
+**Escalation paths inside the resolution loop** (independent of the retry
+counter above):
+- The AI backend session itself fails to resolve (timeout, host
+  initialization/corrector-handoff failure) → `FAILED` immediately in trust
+  mode; interactive mode asks "Retry session?" and escalates on "no"
+- The AI writes `conclusion.json` with `not_applicable` → corrector is told to
+  mark the CVE not-applicable, result is `ESCALATED` (human sees the reason)
+- The AI escalates with `needs_human` → `ESCALATED`, unless it also suggested
+  companion/prerequisite commits and they are accepted (`--trust` or
+  interactive approval), which raises `_AcceptedSuggestion` and re-runs the
+  whole pipeline with an extended `--fix-url` chain (capped by
+  `_MAX_CHAIN_EXTENSIONS`)
+- A commit-message note exceeding the length budget (see `commit_notes.py`)
+  bounces back to the AI without consuming a resolution attempt, up to
+  `_MAX_NOTE_REJECTS`
+- Human rejects the diff in interactive review → `ESCALATED`
+- `attempt >= --max-retries` for the current step with no resolution →
+  `ESCALATED` ("Max retries exhausted at step ...")
+
+
 
 ```mermaid
 flowchart TD

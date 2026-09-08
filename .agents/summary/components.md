@@ -19,6 +19,7 @@ graph TB
         debian["debian.py"]
         osv["osv.py"]
         cvelistv5["cvelistv5.py"]
+        uct["uct.py"]
         ubuntu["ubuntu.py"]
         oe_status["oe_status.py"]
         mirrors["mirrors.py"]
@@ -79,7 +80,8 @@ graph TB
 | `debian.py` | Debian Security Tracker: DSA parsing, patch extraction from .debian.tar |
 | `osv.py` | OSV API: query by CVE, extract fix commits and references |
 | `cvelistv5.py` | CVEList V5 + NVD: local git clone, JSON parsing, reference extraction |
-| `ubuntu.py` | Ubuntu Security API: CVE lookup, patch URL extraction |
+| `uct.py` | Ubuntu CVE Tracker (local git clone): default-on Ubuntu source (`is_enabled` returns `not args.no_uct`); reads records directly from `active`/`retired` dirs, avoiding per-CVE HTTP calls |
+| `ubuntu.py` | Legacy Ubuntu Security API (one HTTP request per CVE to ubuntu.com): **deprecated, disabled by default** — `is_enabled` returns `bool(args.ubuntu_api)`; opt in with `--ubuntu-api` for comparison against `uct.py` |
 | `oe_status.py` | Check if CVE is already fixed in OE branches (git log search) |
 | `mirrors.py` | Create/update local git mirrors of upstream source repos |
 | `config.py` | Load config.json with XDG path resolution and caching |
