@@ -16,11 +16,12 @@ graph LR
         D["Debian Tracker"]
         O["OSV API"]
         N["NVD / CVEList V5"]
-        U["Ubuntu API"]
+        UCT["Ubuntu CVE Tracker (default)"]
+        U["Ubuntu Security API (deprecated, opt-in)"]
         Y["Yocto devtool"]
         AI["kiro-cli (AI)"]
     end
-    E --> D & O & N & U
+    E --> D & O & N & UCT & U
     C --> Y
     A --> AI
 ```

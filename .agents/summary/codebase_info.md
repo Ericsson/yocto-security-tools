@@ -3,10 +3,10 @@
 ## Project Identity
 
 - **Name**: yocto-security-tools
-- **Version**: 1.0.0
+- **Version**: 1.2 (see `pyproject.toml`; patch version bumps automatically on every merge to `main`)
 - **License**: MIT (Ericsson AB)
 - **Repository**: https://github.com/Ericsson/yocto-security-tools
-- **Language**: Python 3.9+
+- **Language**: Python ≥3.10 (`requires-python`)
 - **Build System**: setuptools (pyproject.toml)
 
 ## Purpose
@@ -47,14 +47,14 @@ graph TB
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Python 3.9, 3.10, 3.11, 3.12 |
+| Language | Python 3.10–3.14, plus experimental 3.15-dev in CI |
 | Runtime deps | `requests` (HTTP), `packaging` (version parsing) |
 | Dev deps | `pytest`, `pytest-cov`, `mypy`, `ruff` |
 | Build | setuptools ≥68.0 |
-| CI | GitHub Actions (matrix across Python versions) |
+| CI | GitHub Actions (matrix: 3.10–3.14 required, 3.15-dev experimental/`continue-on-error`) |
 | Pre-commit | ruff (lint+format), mypy |
-| Type checking | mypy (check_untyped_defs, ignore_missing_imports) |
-| Linting | ruff (E, F, W, I, UP, B, SIM rules, 100 char line) |
+| Type checking | mypy (`python_version = "3.10"`, check_untyped_defs, ignore_missing_imports) |
+| Linting | ruff (E, F, W, I, UP, B, SIM rules, 100 char line, E501 ignored) — note: `target-version = "py39"` in `pyproject.toml` is a legacy holdover even though `requires-python` is 3.10+ |
 
 ## Storage Model
 
@@ -75,4 +75,4 @@ Tests mirror the source package structure:
 - `tests/integration/` — end-to-end tests (shell + Python)
 - `tests/benchmark/` — cve-agent model benchmark (fixed CVE roster x models, AI judge)
 
-Coverage threshold: 75% (enforced in CI).
+Coverage threshold: 65% (`fail_under = 65` in `pyproject.toml`, enforced in CI).

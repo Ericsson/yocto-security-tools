@@ -219,8 +219,11 @@ Options:
   --checkpoint-interval S Periodic save interval; 0 disables (default: 60)
   --cve-component-name N  Override component name deduction
   --check-oe-status       Check if already fixed in OE branches
-  --no-debian / --no-osv / --no-cvelistv5 / --no-ubuntu
+  --no-debian / --no-osv / --no-cvelistv5
                           Disable specific sources
+  --no-uct                Disable the local Ubuntu CVE Tracker clone (default source; on by default)
+  --ubuntu-api            Opt in to the legacy, deprecated Ubuntu Security API (off by default, rate-limited on batch runs)
+  --no-ubuntu             Accepted but a no-op — the legacy API is already off by default; warns and does nothing
   --config FILE           Override config.json path
 ```
 
@@ -237,6 +240,10 @@ Options:
   --recipe NAME           Override recipe name deduction
   --mirror-dir DIR        Local git mirror directory
   --meta-layer DIR        Target meta-layer for commit
+  --fix-url URL           Repeatable. One URL = one fix commit/PR; two or
+                          more URLs form one ordered, dependent chain (all
+                          must apply, in the given order, or the run stops
+                          at the first conflict)
   --skip-build            Skip build verification step
   --skip-ptest            Skip ptest step
   --bbappend              Use bbappend instead of modifying recipe
@@ -267,6 +274,12 @@ Options:
   --backend NAME          AI backend: kiro, claude, or openai (default: kiro)
   --model NAME            AI model (kiro/claude default: claude-sonnet-5;
                           required for openai unless configured by environment)
+  --verify-backend        No-op round trip against the selected --backend
+                          (no file/git ops, no CVE workflow); exits 0 if the
+                          backend responds correctly. Replaces --cve-id/
+                          --cve-list for the invocation — omit both when using it
+  --fix-url URL           Repeatable; forwarded unchanged to cve-corrector
+                          (see cve-corrector's --fix-url for dependent-chain semantics)
   --max-retries N         Per-step retry limit (default: 3)
   --session-timeout SECS  AI session timeout (default: 600)
   --skip-ptest            Skip ptest verification
