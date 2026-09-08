@@ -21,6 +21,7 @@ from shared.exit_codes import (  # noqa: F401
     EXIT_METADATA_ERROR,
     EXIT_NOT_APPLICABLE,
     EXIT_PATCH_ERROR,
+    EXIT_PREP_BASE_MISMATCH,
     EXIT_PTEST_ERROR,
     EXIT_PTEST_PREEXISTING,
     EXIT_SUCCESS,
@@ -98,6 +99,19 @@ class NotApplicableError(WorkflowError):
 class IgnoredByStatusError(WorkflowError):
     """Recipe's existing CVE_STATUS marks this CVE as ignored/not-affected."""
     exit_code = EXIT_IGNORED_BY_STATUS
+
+
+class PrepBaseMismatchError(WorkflowError):
+    """A recipe patch the CVE fix depends on is missing from the CVE base.
+
+    The CVE branch is built from the upstream release tag plus a replay of the
+    recipe's own patches (``prepare_cve_branch``). When one of those patches
+    cannot be replayed *in a file the CVE fix also touches*, the branch the fix
+    is resolved on no longer matches the ``devtool`` branch it must be
+    transferred to. Any resolution produced there is unusable, so fail before
+    spending a build or an AI session on it.
+    """
+    exit_code = EXIT_PREP_BASE_MISMATCH
 
 
 @dataclass

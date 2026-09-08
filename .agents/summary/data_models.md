@@ -287,6 +287,7 @@ classDiagram
 | 14 | `EXIT_AGENT_ERROR` | Agent | Internal agent error |
 | 15 | `EXIT_AI_TIMEOUT` | Agent | AI session timed out |
 | 16 | `EXIT_IGNORED_BY_STATUS` | Unrecoverable | Recipe's CVE_STATUS marks CVE as Ignored/Patched |
+| 17 | `EXIT_PREP_BASE_MISMATCH` | Unrecoverable | A recipe patch the fix depends on could not be replayed onto the CVE branch |
 
 ## Exception Hierarchy
 
