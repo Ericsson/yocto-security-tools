@@ -35,7 +35,7 @@
 
 ### Exit Code Quick Reference
 - **0**: Success | **1**: Conflict (recoverable) | **3**: Ptest fail (recoverable) | **4**: Build fail (recoverable)
-- **2, 5–12**: Unrecoverable errors | **13–15**: Agent-specific errors
+- **2, 5–12, 16, 17**: Unrecoverable errors | **13–15**: Agent-specific errors
 
 ### File Format Quick Reference
 - `cve-metadata.json`: Dict keyed by CVE ID → `{name, hashes, hash_details, series, patches}`

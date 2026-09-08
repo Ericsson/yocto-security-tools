@@ -35,3 +35,21 @@ The retained manifest records source/parent and target commits, mapping method,
 file modes, content anchors, exact final paths, verification, and a bounded
 `TRANSFER_*` failure code. A verified transfer's target paths become the
 corrector-to-agent handoff scope and the manifest is copied into run artifacts.
+
+## Branch-preparation prerequisite
+
+Anchoring only works when the CVE branch reproduces the target's content for
+the files the fix touches. That branch is the upstream release tag plus a replay
+of the recipe's own `SRC_URI` patches, so a recipe patch that cannot be replayed
+silently changes what the fix is written against.
+
+A conflicting recipe patch is therefore no longer dropped whole. Its conflicted
+paths are reset to the CVE branch's state and the rest of the patch is kept, so
+a patch that conflicts only in a regenerated packaging file (a release tarball's
+`setup.cfg`, for example) still contributes the source context the fix needs.
+When a conflicted path is one the fix itself changes, preparation stops with
+`PREP_BASE_MISMATCH` and exit code 17 before any build or model session, since
+no resolution produced on that base could be transferred. The replay outcome —
+partially applied patches, dropped paths, patches not replayed — is recorded in
+`<build>/workspace/cve_corrector/prep/<recipe>.json` and appended to
+`TRANSFER_*` failure messages as diagnostic context.
