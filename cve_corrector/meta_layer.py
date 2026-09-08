@@ -7,7 +7,6 @@ staging files, restoring devtool-modified content, and exporting patches.
 """
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional
 
 from .bitbake_ops import get_build_path, get_layerseries_corename
 from .git_ops import get_git_user_info
@@ -82,7 +81,7 @@ def _preferred_source(sources: list[str]) -> str:
     return ''
 
 
-def _reference_urls(cve_id: str, hash_details: Optional[list]) -> list[str]:
+def _reference_urls(cve_id: str, hash_details: list | None) -> list[str]:
     """Build templated tracker URLs for the public sources of a CVE.
 
     NVD is always included as the canonical record. Any additional public
@@ -106,11 +105,11 @@ def _reference_urls(cve_id: str, hash_details: Optional[list]) -> list[str]:
             for s in _SOURCE_PRIORITY if s in present]
 
 
-def create_layer_commit(meta_layer: Optional[Path], recipe: str, cve_id: str,
-                        ptest_output: Optional[str] = None, skip_confirm: bool = False,
-                        hash_details: Optional[list] = None,
-                        series_state: Optional[dict] = None,
-                        used_commits: Optional[list] = None,
+def create_layer_commit(meta_layer: Path | None, recipe: str, cve_id: str,
+                        ptest_output: str | None = None, skip_confirm: bool = False,
+                        hash_details: list | None = None,
+                        series_state: dict | None = None,
+                        used_commits: list | None = None,
                         sign_off: bool = False) -> bool:
     """Create git commit in meta-layer with updated recipe and patch.
 
@@ -306,7 +305,7 @@ def _map_cve_status_reason(reason: str) -> str:
     return 'not-applicable-config'
 
 
-def write_cve_status(meta_layer: Optional[Path], recipe: str, cve_id: str,
+def write_cve_status(meta_layer: Path | None, recipe: str, cve_id: str,
                      reason: str, skip_confirm: bool = False,
                      sign_off: bool = False) -> bool:
     """Append a CVE_STATUS line to the recipe's .bb or .bbappend in the meta-layer.

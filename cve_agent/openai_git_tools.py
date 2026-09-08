@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import NoReturn
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
@@ -281,12 +281,12 @@ class TrustedGitState:
     trusted_head: str
     trusted_tree: str
     trusted_parent_basis: tuple[str, ...]
-    last_host_git_operation: Optional[str]
+    last_host_git_operation: str | None
     mutation_generation: int
-    built_generation: Optional[int]
+    built_generation: int | None
     allowed_path_digest: str
     initial_trust_source: str
-    handoff_digest: Optional[str]
+    handoff_digest: str | None
     transition_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
@@ -316,10 +316,10 @@ class GitCommandExecutor:
         self.workspace = workspace
         self.deadline = deadline
         self.limits = limits
-        self.git_directory: Optional[Path] = None
+        self.git_directory: Path | None = None
 
     def run(self, operation: str, argv: Sequence[str],
-            output_limit: Optional[int] = None) -> GitCommandResult:
+            output_limit: int | None = None) -> GitCommandResult:
         """Execute one trusted operation with bounded pipes and deadline."""
         expected_verb = _OPERATION_VERBS.get(operation)
         if expected_verb is None or not argv or argv[0] != expected_verb:
@@ -430,7 +430,7 @@ class GitCommandExecutor:
         truncated = {"stdout": False, "stderr": False}
         command_deadline = time.monotonic() + timeout
         timed_out = False
-        drain_deadline: Optional[float] = None
+        drain_deadline: float | None = None
         try:
             for descriptor in streams:
                 os.set_blocking(descriptor, False)
@@ -688,7 +688,7 @@ def native_openai_tool_schemas() -> list[dict[str, object]]:
     return [contract.schema() for contract in NATIVE_TOOL_CONTRACTS.values()]
 
 
-def build_cherry_pick_message(original: str, resolution_note: Optional[str],
+def build_cherry_pick_message(original: str, resolution_note: str | None,
                               model: str) -> str:
     """Preserve Git's message while replacing host-owned provenance lines."""
     note = _normalize_resolution_note(resolution_note)
@@ -795,8 +795,8 @@ def _parse_conflict_regions(
         ours_label = _conflict_label(line, _CONFLICT_OURS_MARKER)
         theirs_label = ""
         ours: list[str] = []
-        base: Optional[list[str]] = None
-        theirs: Optional[list[str]] = None
+        base: list[str] | None = None
+        theirs: list[str] | None = None
         ours_start = index + 2
         base_start = 0
         theirs_start = 0
@@ -841,7 +841,7 @@ def _parse_conflict_regions(
     return regions, malformed, truncated
 
 
-def _normalize_resolution_note(note: Optional[str]) -> Optional[str]:
+def _normalize_resolution_note(note: str | None) -> str | None:
     if note is None:
         return None
     if "\x00" in note:
@@ -866,12 +866,12 @@ class GitToolRuntime(FileToolRuntime):
         allowed_files: Iterable[str],
         model: str,
         timeout_seconds: int,
-        agent_root: Optional[Path] = None,
-        limits: Optional[FileToolLimits] = None,
-        git_limits: Optional[GitToolLimits] = None,
-        before_operation: Optional[Callable[[str, Path], None]] = None,
-        before_replace: Optional[Callable[[Path], None]] = None,
-        deadline: Optional[SessionDeadline] = None,
+        agent_root: Path | None = None,
+        limits: FileToolLimits | None = None,
+        git_limits: GitToolLimits | None = None,
+        before_operation: Callable[[str, Path], None] | None = None,
+        before_replace: Callable[[Path], None] | None = None,
+        deadline: SessionDeadline | None = None,
     ) -> None:
         super().__init__(
             workspace_root,
@@ -1031,7 +1031,7 @@ class GitToolRuntime(FileToolRuntime):
         paths = self._read_paths(arguments.get("paths", []), "git_diff")
         revision_value = arguments.get("revision")
         argv = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames"]
-        canonical_revision: Optional[str] = None
+        canonical_revision: str | None = None
         if mode == "working":
             if revision_value is not None:
                 raise ToolValidationError("working diff does not accept revision")
@@ -1273,7 +1273,7 @@ class GitToolRuntime(FileToolRuntime):
                 raise ToolValidationError(
                     "message is accepted only when message_mode is replace")
             argv = ["commit", "--amend", "--only", "--no-edit", "--"]
-            message: Optional[str] = None
+            message: str | None = None
         else:
             if not isinstance(message_value, str):
                 raise ToolValidationError(
@@ -1609,7 +1609,7 @@ class GitToolRuntime(FileToolRuntime):
         staged: Sequence[str],
         *,
         exact_commit_paths: bool,
-        expected_head: Optional[str] = None,
+        expected_head: str | None = None,
     ) -> _ExecutionResult:
         before_head = self._current_head()
         self._require_current_trusted_head(before_head)
@@ -1678,7 +1678,7 @@ class GitToolRuntime(FileToolRuntime):
             )
         return head
 
-    def _require_current_trusted_head(self, current_head: Optional[str] = None) -> str:
+    def _require_current_trusted_head(self, current_head: str | None = None) -> str:
         head = self._current_head() if current_head is None else current_head
         if head != self.trusted_git_state.trusted_head:
             raise GitStateError(
@@ -2564,7 +2564,7 @@ class GitToolRuntime(FileToolRuntime):
         limit: int,
         *,
         allow_missing: bool = False,
-    ) -> Optional[bytes]:
+    ) -> bytes | None:
         current_fd = self._open_git_directory()
         try:
             for part in parts[:-1]:

@@ -9,7 +9,6 @@ needing the full Yocto build environment.
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -68,7 +67,7 @@ def make_upstream_repo(tmp_path):
     """Factory: create a bare upstream repo with version tag and fix commits."""
 
     def _factory(files: dict, version_tag: str, fix_commits: list,
-                 monorepo_prefix: Optional[str] = None):
+                 monorepo_prefix: str | None = None):
         bare = tmp_path / 'upstream.git'
         git(tmp_path, 'init', '--bare', '--initial-branch=main', str(bare))
 
@@ -109,7 +108,7 @@ def make_workspace(tmp_path):
     """Factory: create a devtool-like workspace from upstream bare repo."""
 
     def _factory(upstream_bare: Path, recipe: str, version_tag: str,
-                 existing_patch_commits: Optional[list] = None):
+                 existing_patch_commits: list | None = None):
         ws = tmp_path / 'build' / 'workspace' / 'sources' / recipe
         git(tmp_path, 'clone', str(upstream_bare), str(ws))
 
@@ -139,8 +138,8 @@ def make_meta_layer(tmp_path):
     """Factory: create a meta-layer git repo with recipe and patches."""
 
     def _factory(recipe: str, version: str,
-                 existing_patches: Optional[dict] = None,
-                 src_uri_entries: Optional[list] = None):
+                 existing_patches: dict | None = None,
+                 src_uri_entries: list | None = None):
         meta = tmp_path / 'meta-layer'
         meta.mkdir(parents=True, exist_ok=True)
         git(meta, 'init')

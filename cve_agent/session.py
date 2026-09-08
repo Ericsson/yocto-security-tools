@@ -13,7 +13,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Optional
 
 from shared.git_runner import (
     copy_missing_files_from_devtool,
@@ -776,7 +775,7 @@ _CREDITS_LOG_RE = re.compile(
     r"credits=(?P<amount>[0-9]+(?:\.[0-9]+)?)\s+unit=(?P<unit>\S+)")
 
 
-def sum_session_credits(agent_dir: Path) -> tuple[Optional[float], Optional[str]]:
+def sum_session_credits(agent_dir: Path) -> tuple[float | None, str | None]:
     """Sum per-session credits recorded in ``agent_dir/sessions.log``.
 
     Reads the ``credits=<amount> unit=<unit>`` tokens appended by

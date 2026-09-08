@@ -33,7 +33,6 @@ import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
 
 from . import (
     EXIT_ALREADY_APPLIED,
@@ -265,7 +264,7 @@ def main():
                   f"{existing_patch}")
             sys.exit(EXIT_ALREADY_APPLIED)
 
-    meta_layer: Optional[Path]
+    meta_layer: Path | None
     if args.meta_layer:
         meta_layer = resolve_meta_layer(args.meta_layer)
     elif args.dry_run:

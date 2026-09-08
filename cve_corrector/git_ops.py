@@ -4,7 +4,6 @@
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
 from shared.git_runner import (  # noqa: F401  (re-exported for callers/tests)
@@ -24,7 +23,7 @@ def get_git_user_info() -> tuple[str, str]:
     return author, email
 
 
-def find_exact_tag(tags: list[str], version: str) -> Optional[str]:
+def find_exact_tag(tags: list[str], version: str) -> str | None:
     """Find exact tag matching version."""
     norm_underscore = version.replace('.', '_')
     norm_dot = version.replace('_', '.')
@@ -67,7 +66,7 @@ def find_exact_tag(tags: list[str], version: str) -> Optional[str]:
 
 def detect_monorepo_subproject(repo_path: Path, tag: str,
                                mirror_name: str,
-                               recipe: Optional[str] = None) -> Optional[str]:
+                               recipe: str | None = None) -> str | None:
     """Detect if tag is a monorepo and return the subproject path.
 
     Checks if ``subprojects/<name>/meson.build`` (or similar build file)
@@ -101,7 +100,7 @@ def detect_monorepo_subproject(repo_path: Path, tag: str,
 
 
 def checkout_version(repo_path: Path, version: str, branch_name: str,
-                     subproject: Optional[str] = None) -> bool:
+                     subproject: str | None = None) -> bool:
     """Checkout specific version from upstream.
 
     When *subproject* is set (e.g. ``subprojects/gst-plugins-good``), the
@@ -223,7 +222,7 @@ def is_merge_commit(workspace_path: Path, commit_hash: str) -> bool:
 
 
 def cherry_pick_command(workspace_path: Path, commit_hash: str,
-                        mainline_parent: Optional[int] = None) -> list[str]:
+                        mainline_parent: int | None = None) -> list[str]:
     """Build the ``git cherry-pick`` command for a commit.
 
     A merge commit can never be cherry-picked without ``-m``: git refuses with
@@ -275,8 +274,8 @@ def has_conflict_state(workspace_path: Path) -> bool:
 
 
 def try_cherry_pick(workspace_path: Path, commit_hash: str,
-                    subproject: Optional[str] = None,
-                    mainline_parent: Optional[int] = None) -> bool:
+                    subproject: str | None = None,
+                    mainline_parent: int | None = None) -> bool:
     """Try to cherry-pick a commit, return True on success.
 
     When *subproject* is set, strips the subproject prefix from the patch
@@ -348,7 +347,7 @@ def _cherry_pick_monorepo(workspace_path: Path, commit_hash: str,
     return False
 
 
-def deduce_repo_from_patches(patches: list[str]) -> Optional[str]:
+def deduce_repo_from_patches(patches: list[str]) -> str | None:
     """Deduce git repository URL from patch URLs."""
     from shared.url_parser import deduce_repo_url  # pylint: disable=import-outside-toplevel
     for url in patches:
@@ -501,7 +500,7 @@ def reset_submodules(workspace_path: Path) -> None:
         ['git', 'clean', '-ffdx', '-e', 'oe-local-files'], cwd=workspace_path)
 
 
-def get_repo_subdir(workspace_path: Path) -> Optional[str]:
+def get_repo_subdir(workspace_path: Path) -> str | None:
     """Return the source subdirectory name if repo is a monorepo, else None.
 
     Checks the git tree (not the working directory) to avoid being misled

@@ -7,12 +7,11 @@ and CVE_STATUS line operations in Yocto recipe files.
 """
 import re
 from pathlib import Path
-from typing import Optional
 
 from .utils import logger, run_cmd_capture
 
 
-def _find_recipe_file(meta_layer: Optional[Path], recipe: str) -> Optional[Path]:
+def _find_recipe_file(meta_layer: Path | None, recipe: str) -> Path | None:
     """Find the .bbappend or .bb file for a recipe in the meta-layer.
 
     Uses exact recipe name matching (recipe_version or recipe_%) to avoid
@@ -44,7 +43,7 @@ def _get_src_uri_files(recipe_file: Path) -> set[str]:
     return {m.group(1) for m in file_re.finditer(recipe_file.read_text(encoding='utf-8'))}
 
 
-def snapshot_src_uri(meta_layer: Optional[Path], recipe: str) -> set[str]:
+def snapshot_src_uri(meta_layer: Path | None, recipe: str) -> set[str]:
     """Snapshot file:// entries in the recipe before devtool finish.
 
     Returns:
@@ -57,7 +56,7 @@ def snapshot_src_uri(meta_layer: Optional[Path], recipe: str) -> set[str]:
 
 
 def update_recipe_patch(recipe: str, new_patch_name: str, original_patch_name: str,
-                        meta_layer: Optional[Path] = None) -> None:
+                        meta_layer: Path | None = None) -> None:
     """Update bbappend or bb file to reference the CVE patch."""
     if not original_patch_name:
         print("Warning: No patch name provided, skipping recipe update")
@@ -221,7 +220,7 @@ def _append_src_uri_entries(recipe_file: Path, patch_names: list[str]) -> None:
     target_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
-def _find_base_src_uri_line(lines: list[str], base_src_uri_re: re.Pattern) -> Optional[int]:
+def _find_base_src_uri_line(lines: list[str], base_src_uri_re: re.Pattern) -> int | None:
     """Find the first line matching a plain SRC_URI assignment."""
     for i, line in enumerate(lines):
         if base_src_uri_re.match(line):
@@ -230,7 +229,7 @@ def _find_base_src_uri_line(lines: list[str], base_src_uri_re: re.Pattern) -> Op
 
 
 def _find_inc_with_base_src_uri(recipe_file: Path,
-                                base_src_uri_re: re.Pattern) -> Optional[Path]:
+                                base_src_uri_re: re.Pattern) -> Path | None:
     """Find a sibling .inc file that contains the main SRC_URI block.
 
     Searches the same directory as recipe_file for .inc files and returns
@@ -329,7 +328,7 @@ def sort_cve_lines_in_recipe(cve_id: str, meta_layer: Path) -> None:
         return
 
 
-def save_bbappend_extras(meta_layer: Optional[Path], recipe: str) -> list[str]:
+def save_bbappend_extras(meta_layer: Path | None, recipe: str) -> list[str]:
     """Save SRC_URI and CVE_STATUS lines from existing bbappend before devtool overwrites it."""
     recipe_file = _find_recipe_file(meta_layer, recipe)
     if not recipe_file or not recipe_file.exists():
@@ -354,7 +353,7 @@ def save_bbappend_extras(meta_layer: Optional[Path], recipe: str) -> list[str]:
     return extras
 
 
-def restore_bbappend_extras(meta_layer: Optional[Path], recipe: str,
+def restore_bbappend_extras(meta_layer: Path | None, recipe: str,
                             saved_lines: list[str]) -> None:
     """Merge previously saved SRC_URI entries and CVE_STATUS lines back into the bbappend."""
     if not saved_lines:
@@ -421,7 +420,7 @@ def restore_bbappend_extras(meta_layer: Optional[Path], recipe: str,
                 len(cve_status_lines), recipe_file.name)
 
 
-def remove_bbappend_leaks(meta_layer: Optional[Path], recipe: str,
+def remove_bbappend_leaks(meta_layer: Path | None, recipe: str,
                           original_entries: set[str]) -> None:
     """Remove SRC_URI entries that devtool finish leaked from bbappends."""
     recipe_file = _find_recipe_file(meta_layer, recipe)
