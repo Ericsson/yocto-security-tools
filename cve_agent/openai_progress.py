@@ -11,6 +11,11 @@ from .openai_tools import ToolResult
 
 MAX_STATE_SUMMARY_BYTES = 4096
 MAX_PROGRESS_DETAIL_BYTES = 256
+# A conflict-resolution session needs only a handful of inspections before it
+# can edit. Novel-but-fruitless inspection calls used to count as progress
+# forever, which let a model spend an entire session probing a file one line at
+# a time without the host ever objecting.
+MAX_CONSECUTIVE_INSPECTIONS = 16
 
 _COMMIT_TOOLS = frozenset({
     "git_commit", "git_amend", "git_cherry_pick_continue",
@@ -18,7 +23,7 @@ _COMMIT_TOOLS = frozenset({
 _INSPECTION_TOOLS = frozenset({
     "read_file", "read_file_range", "list_directory", "search_text",
     "git_status", "git_diff", "git_show", "git_log", "git_unmerged_files",
-    "git_submodule_status",
+    "git_conflict_regions", "git_submodule_status",
 })
 
 
@@ -60,6 +65,8 @@ class ProgressTracker:
         self.last_evidence_digest = "0" * 64
         self.progress_events = 0
         self.duplicate_events = 0
+        self.consecutive_inspections = 0
+        self.inspection_saturated = False
 
     def observe(
         self,
@@ -113,9 +120,17 @@ class ProgressTracker:
             kind = "conflict_reduction"
             detail = "unresolved conflict count decreased"
         elif dispatched and result.success and tool in _INSPECTION_TOOLS and not repeated:
-            progressed = True
-            kind = "inspection"
-            detail = "new repository evidence was inspected"
+            if self.consecutive_inspections >= MAX_CONSECUTIVE_INSPECTIONS:
+                # Novelty alone stops being evidence of progress: the session
+                # has inspected far more than a resolution needs and has
+                # changed nothing.
+                kind = "inspection_saturated"
+                detail = (
+                    "inspection budget saturated without any repository change")
+            else:
+                progressed = True
+                kind = "inspection"
+                detail = "new repository evidence was inspected"
         elif dispatched and not result.success and tool == "finish":
             if result_digest not in self._finish_corrections:
                 self._finish_corrections.add(result_digest)
@@ -124,6 +139,8 @@ class ProgressTracker:
                 action_class = "finish_or_escalate"
                 detail = "host supplied a new verifiable terminal blocker"
 
+        self._track_inspection_budget(
+            tool, result, dispatched=dispatched, conflict_reduced=conflict_reduced)
         if progressed:
             self.progress_events += 1
             self.last_progress = detail[:MAX_PROGRESS_DETAIL_BYTES]
@@ -139,6 +156,30 @@ class ProgressTracker:
             result.audit.generation,
             detail[:MAX_PROGRESS_DETAIL_BYTES],
         )
+
+    def _track_inspection_budget(
+        self,
+        tool: str,
+        result: ToolResult,
+        *,
+        dispatched: bool,
+        conflict_reduced: bool,
+    ) -> None:
+        """Count inspections since the last host-observed repository change."""
+        if not dispatched or not result.success:
+            return
+        if result.mutated or result.terminal or conflict_reduced:
+            self.consecutive_inspections = 0
+            self.inspection_saturated = False
+            return
+        if tool == "build_recipe":
+            self.consecutive_inspections = 0
+            self.inspection_saturated = False
+            return
+        if tool in _INSPECTION_TOOLS:
+            self.consecutive_inspections += 1
+            self.inspection_saturated = (
+                self.consecutive_inspections >= MAX_CONSECUTIVE_INSPECTIONS)
 
     def state_summary(
         self,
@@ -167,6 +208,14 @@ class ProgressTracker:
             required = "use a different action class or explicit escalation"
         elif consecutive_nonprogress >= 2:
             required = "mutate/build/finish or provide a specific escalation blocker"
+        if self.inspection_saturated:
+            required = (
+                "stop inspecting: nothing has changed after "
+                f"{self.consecutive_inspections} inspections. Use "
+                "git_conflict_regions for exact conflict text, read_file_range "
+                "for exact numbered lines, then replace_lines or "
+                "apply_patch_hunks to edit; or escalate with a specific blocker"
+            )
         fields = {
             "unresolved_conflicts": self.unresolved_conflicts,
             "changed_paths": self.changed_paths,
@@ -174,6 +223,7 @@ class ProgressTracker:
             "validated_generation": validated_generation,
             "last_evidence_digest": self.last_evidence_digest,
             "repeated_no_information": consecutive_nonprogress,
+            "consecutive_inspections": self.consecutive_inspections,
             "turns_remaining": max(0, turns_remaining),
             "tool_calls_remaining": max(0, tool_calls_remaining),
             "mutation_calls": mutation_calls,
@@ -193,6 +243,7 @@ class ProgressTracker:
             f"Evidence digest: {self.last_evidence_digest}",
             f"State digest: {state_digest}",
             f"Repeated no-information turns: {consecutive_nonprogress}",
+            f"Inspections since last change: {self.consecutive_inspections}",
             f"Steps remaining: {max(0, turns_remaining)}",
             f"Tool calls remaining: {max(0, tool_calls_remaining)}",
             f"Mutation calls: {mutation_calls}",
