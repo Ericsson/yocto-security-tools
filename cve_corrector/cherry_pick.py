@@ -17,6 +17,7 @@ from .meta_layer import write_cve_status
 from .state import AlreadyAppliedError, GitError, PatchError, WorkflowState, save_progress
 from .transfer import TransferError, transfer_commits
 from .utils import logger, run_cmd, run_cmd_capture
+from .workspace import read_prep_report
 
 
 def reset_devtool_to_base(workspace_path: Path) -> bool:
@@ -127,6 +128,32 @@ def collect_cve_commits(state: WorkflowState) -> list[str]:
     return rev_list.stdout.split()
 
 
+def _with_prep_context(state: WorkflowState, message: str) -> str:
+    """Append branch-preparation context to a transfer failure message.
+
+    A ``TRANSFER_CONTEXT_MISMATCH`` is most often caused by the CVE branch's
+    base differing from the devtool branch, i.e. by a recipe patch that could
+    only be replayed partially (or not at all) in
+    :func:`cve_corrector.workspace.prepare_cve_branch`. Reporting that here
+    turns an opaque "no unique content anchor" into a diagnosable cause.
+    """
+    report = read_prep_report(state.workspace_path, state.recipe)
+    if not report:
+        return message
+    details = []
+    dropped = report.get('dropped_paths') or []
+    skipped = report.get('skipped') or []
+    if dropped:
+        details.append("recipe-patch changes dropped for "
+                       + ", ".join(str(path) for path in dropped[:8]))
+    if skipped:
+        details.append("recipe patches not replayed: "
+                       + "; ".join(str(entry) for entry in skipped[:8]))
+    if not details:
+        return message
+    return f"{message} (branch preparation: {' | '.join(details)})"
+
+
 def cherry_pick_to_devtool(state: WorkflowState) -> None:
     """Transfer CVE commits through a bounded, verified host-side plan."""
     logger.info("Transferring CVE commits to devtool branch")
@@ -157,7 +184,7 @@ def cherry_pick_to_devtool(state: WorkflowState) -> None:
         )
     except TransferError as error:
         save_progress(state, 'cherry_pick_to_devtool')
-        raise PatchError(str(error)) from error
+        raise PatchError(_with_prep_context(state, str(error))) from error
     logger.info(
         "Transfer verified: %s mapped entries, %s final paths",
         len(manifest.entries), len(manifest.final_changed_paths))

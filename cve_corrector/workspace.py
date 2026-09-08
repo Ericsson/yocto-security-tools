@@ -1,8 +1,9 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Devtool workspace setup and CVE branch preparation."""
+import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from shared.git_runner import force_checkout_branch
@@ -21,11 +22,19 @@ from .git_ops import (
     remove_git_only_build_triggers,
 )
 from .ptest import enable_ptest
-from .state import DevtoolError, GitError, MetadataError
+from .state import DevtoolError, GitError, MetadataError, PrepBaseMismatchError
 from .utils import logger, run_cmd, run_cmd_capture
 
 # Branch names to check when determining the devtool workspace base ref
 _DEVTOOL_BASE_BRANCHES = ('main', 'master', 'devtool-base')
+
+# Machine-readable prefix for branch-preparation failures, scraped by cve_agent
+# the same way TRANSFER_/HANDOFF_ codes are.
+PREP_BASE_MISMATCH_CODE = 'PREP_BASE_MISMATCH'
+
+PREP_REPORT_SCHEMA_VERSION = 1
+
+_COMMIT_RE = re.compile(r'^[0-9a-fA-F]{7,64}$')
 
 
 def _commit_exists(repository: Path, commit_hash: str) -> bool:
@@ -533,10 +542,240 @@ def _init_submodules(workspace_path: Path,
         logger.warning("Submodule initialization failed — continuing without submodules")
 
 
+def collect_fix_commit_paths(workspace_path: Path, hashes: Optional[list[str]],
+                             series: Optional[list[dict]] = None) -> set[str]:
+    """Collect the paths changed by the CVE fix commits.
+
+    Used to decide which files must survive the recipe-patch replay in
+    :func:`prepare_cve_branch`: a recipe patch that cannot be replayed in one of
+    these files leaves the CVE branch with content the ``devtool`` branch does
+    not have, which later breaks the anchored patch transfer.
+
+    Unknown or unfetched commits are ignored — this is a best-effort guard, not
+    an applicability check.
+
+    Args:
+        workspace_path: Repository holding the fetched upstream commits.
+        hashes: Standalone fix-commit candidates.
+        series: Ordered fix series dicts with a ``commits`` key.
+
+    Returns:
+        Set of repository-relative paths (may be empty).
+    """
+    commits: list[str] = [h for h in (hashes or []) if isinstance(h, str)]
+    for entry in series or []:
+        if isinstance(entry, dict):
+            commits.extend(c for c in (entry.get('commits') or [])
+                           if isinstance(c, str))
+    paths: set[str] = set()
+    for commit in commits:
+        if not _COMMIT_RE.match(commit.strip()):
+            continue
+        result = run_cmd_capture(
+            ['git', 'show', '--name-only', '--pretty=format:', '-m',
+             '--first-parent', commit.strip()],
+            cwd=workspace_path)
+        if result.returncode != 0:
+            continue
+        paths.update(line.strip() for line in result.stdout.splitlines()
+                     if line.strip())
+    return paths
+
+
+def _unmerged_paths(workspace_path: Path) -> list[str]:
+    """Return the conflicted (unmerged) paths of an in-progress cherry-pick."""
+    result = run_cmd_capture(['git', 'ls-files', '-u', '-z'], cwd=workspace_path)
+    if result.returncode != 0:
+        return []
+    return sorted({entry.split('\t', 1)[1]
+                   for entry in result.stdout.split('\0') if '\t' in entry})
+
+
+def _is_protected(path: str, protected_paths: set[str],
+                  protected_names: set[str]) -> bool:
+    """Check whether *path* is one of the paths the CVE fix also changes.
+
+    Matches the full path, and falls back to the basename so that layout
+    differences between the upstream repository and the recipe's source tree
+    (see the ``transfer`` metadata) still count as a match. Over-matching here
+    only makes the guard more conservative.
+    """
+    return path in protected_paths or PurePosixPath(path).name in protected_names
+
+
+def _keep_base_state(workspace_path: Path, path: str) -> bool:
+    """Resolve one conflicted path to the CVE branch's own ("ours") state.
+
+    Drops the recipe patch's changes for that single file while keeping the rest
+    of the same patch, so a recipe patch that conflicts only in a packaging file
+    (e.g. a ``setup.cfg`` regenerated in the release tarball) still contributes
+    the source changes the CVE fix is written against.
+
+    Args:
+        workspace_path: Devtool workspace repository, mid cherry-pick.
+        path: Conflicted repository-relative path.
+
+    Returns:
+        True when the path was resolved and staged, False when git refused.
+    """
+    checkout = run_cmd_capture(['git', 'checkout', '--ours', '--', path],
+                               cwd=workspace_path)
+    if checkout.returncode == 0 and (workspace_path / path).exists():
+        return run_cmd_capture(['git', 'add', '--', path],
+                               cwd=workspace_path).returncode == 0
+    if run_cmd_capture(['git', 'cat-file', '-e', f'HEAD:{path}'],
+                       cwd=workspace_path).returncode == 0:
+        if run_cmd_capture(['git', 'checkout', 'HEAD', '--', path],
+                           cwd=workspace_path).returncode != 0:
+            return False
+        return run_cmd_capture(['git', 'add', '--', path],
+                               cwd=workspace_path).returncode == 0
+    # Absent from our tree too (added or deleted by the patch): keep it absent.
+    return run_cmd_capture(['git', 'rm', '-f', '-q', '--', path],
+                           cwd=workspace_path).returncode == 0
+
+
+def prep_report_path(workspace_path: Path, recipe: str) -> Path:
+    """Return the branch-preparation report path for *recipe*."""
+    return (workspace_path.parent.parent / 'cve_corrector' / 'prep'
+            / f'{recipe}.json')
+
+
+def read_prep_report(workspace_path: Path, recipe: str) -> Optional[dict]:
+    """Read the branch-preparation report, or None when unavailable."""
+    try:
+        with open(prep_report_path(workspace_path, recipe), encoding='utf-8') as handle:
+            report = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _write_prep_report(workspace_path: Path, recipe: Optional[str],
+                       report: dict) -> None:
+    """Persist the branch-preparation report; never fail the workflow for it."""
+    if not recipe:
+        return
+    path = prep_report_path(workspace_path, recipe)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(report, handle, indent=2, sort_keys=True)
+    except OSError as error:
+        logger.debug("Could not write prep report %s: %s", path, error)
+
+
+def _replay_devtool_commits(workspace_path: Path, base_branch: str,
+                            protected_paths: set[str]) -> dict:
+    """Replay the recipe's own patches onto the CVE branch.
+
+    A conflicting recipe patch is not dropped wholesale: its conflicted paths
+    are resolved back to the CVE branch's state and the remainder of the patch
+    is kept, because a patch that conflicts only in a generated packaging file
+    still carries source context the CVE fix depends on.
+
+    Args:
+        workspace_path: Devtool workspace repository.
+        base_branch: Pristine devtool base branch (``main``/``master``).
+        protected_paths: Paths the CVE fix changes; a conflict in one of these
+            cannot be resolved this way.
+
+    Returns:
+        Report dict with ``applied``, ``partial``, ``skipped`` and
+        ``dropped_paths`` keys.
+
+    Raises:
+        GitError: The devtool commit list could not be read.
+        PrepBaseMismatchError: A recipe patch conflicts in a path the CVE fix
+            also changes.
+    """
+    commit_list = run_cmd_capture(
+        ['git', 'rev-list', '--reverse', f'{base_branch}..devtool'],
+        cwd=workspace_path)
+    if commit_list.returncode != 0:
+        logger.error("Failed to list devtool commits")
+        raise GitError("Git operation failed")
+    protected_names = {PurePosixPath(path).name for path in protected_paths}
+    applied: list[str] = []
+    partial: list[str] = []
+    skipped: list[str] = []
+    dropped: set[str] = set()
+
+    for commit in commit_list.stdout.strip().splitlines():
+        if run_cmd(['git', 'cherry-pick', commit], cwd=workspace_path) == 0:
+            applied.append(commit[:12])
+            continue
+        subject = run_cmd_capture(['git', 'log', '-1', '--format=%s', commit],
+                                  cwd=workspace_path).stdout.strip()
+        label = f"{commit[:12]} {subject}"
+        conflicted = _unmerged_paths(workspace_path)
+        blocked = [path for path in conflicted
+                   if _is_protected(path, protected_paths, protected_names)]
+        if blocked:
+            run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
+            logger.error(
+                "Recipe patch %s conflicts in %s, which the CVE fix also changes",
+                label, ', '.join(blocked))
+            raise PrepBaseMismatchError(
+                f"{PREP_BASE_MISMATCH_CODE}: recipe patch '{label}' could not be "
+                f"replayed in {', '.join(blocked)}, which the CVE fix also "
+                f"changes; a fix resolved against this base cannot be "
+                f"transferred to the devtool branch")
+        resolved = bool(conflicted)
+        for path in conflicted:
+            if not _keep_base_state(workspace_path, path):
+                logger.warning("Could not resolve conflicted path %s", path)
+                resolved = False
+                break
+        if not resolved:
+            run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
+            logger.warning("Skipping devtool commit: %s", subject)
+            skipped.append(label)
+            continue
+        if run_cmd_capture(['git', 'diff', '--cached', '--quiet', 'HEAD'],
+                           cwd=workspace_path).returncode == 0:
+            # Every change this patch carried was conflicted; nothing is left.
+            run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
+            logger.warning("Skipping devtool commit: %s", subject)
+            skipped.append(label)
+            continue
+        if run_cmd(['git', '-c', 'core.editor=true', 'cherry-pick', '--continue'],
+                   cwd=workspace_path) != 0:
+            run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
+            logger.warning("Skipping devtool commit: %s", subject)
+            skipped.append(label)
+            continue
+        logger.warning(
+            "Partially applied devtool commit %s — dropped conflicted path(s): %s",
+            label, ', '.join(conflicted))
+        partial.append(label)
+        dropped.update(conflicted)
+
+    if partial:
+        logger.info("Partially applied %s devtool commit(s):", len(partial))
+        for entry in partial:
+            logger.info("  ~ %s", entry)
+    if skipped:
+        logger.info("Skipped %s devtool commit(s) that failed to apply:", len(skipped))
+        for entry in skipped:
+            logger.info("  - %s", entry)
+    return {
+        'schema_version': PREP_REPORT_SCHEMA_VERSION,
+        'base_branch': base_branch,
+        'applied': applied,
+        'partial': partial,
+        'skipped': skipped,
+        'dropped_paths': sorted(dropped),
+        'protected_paths': sorted(protected_paths),
+    }
+
+
 def prepare_cve_branch(workspace_path: Path, version: Optional[str],
                        cve_id: str, subproject: Optional[str] = None,
                        hash_details: Optional[list[dict]] = None,
-                       mirror_dir: Optional[Path] = None) -> tuple[bool, list[str]]:
+                       mirror_dir: Optional[Path] = None,
+                       protected_paths: Optional[set[str]] = None,
+                       recipe: Optional[str] = None) -> tuple[bool, list[str]]:
     """Checkout recipe version and prepare branch for CVE fix.
 
     Args:
@@ -549,9 +788,18 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
             mirror.
         mirror_dir: Local mirror directory, forwarded to submodule setup so
             mirrored submodules are used instead of network URLs.
+        protected_paths: Paths the CVE fix changes. A recipe patch that cannot
+            be replayed in one of these paths aborts preparation instead of
+            leaving a base the fix cannot be transferred from.
+        recipe: Recipe name, used to persist the preparation report.
 
     Returns:
         Tuple of (version_checkout_ok, skipped_commits).
+
+    Raises:
+        GitError: A required git operation failed.
+        PrepBaseMismatchError: A recipe patch conflicts in a path the CVE fix
+            also changes.
     """
     checkout_ok = True
     if version:
@@ -586,28 +834,23 @@ def prepare_cve_branch(workspace_path: Path, version: Optional[str],
     if not base_branch:
         logger.error("Failed to find base branch (main/master/devtool-base)")
         raise GitError("Git operation failed")
-    commit_list = run_cmd_capture(
-        ['git', 'rev-list', '--reverse', f'{base_branch}..devtool'],
-        cwd=workspace_path)
-    if commit_list.returncode != 0:
-        logger.error("Failed to list devtool commits")
-        raise GitError("Git operation failed")
-    skipped = []
-    for commit in commit_list.stdout.strip().splitlines():
-        if run_cmd(['git', 'cherry-pick', commit], cwd=workspace_path) != 0:
-            subj = run_cmd_capture(['git', 'log', '-1', '--format=%s', commit],
-                                   cwd=workspace_path)
-            skipped.append(f"{commit[:12]} {subj.stdout.strip()}")
-            logger.warning("Skipping devtool commit: %s", subj.stdout.strip())
-            run_cmd_capture(['git', 'cherry-pick', '--abort'], cwd=workspace_path)
-    if skipped:
-        logger.info("Skipped %s devtool commit(s) that failed to apply:", len(skipped))
-        for entry in skipped:
-            logger.info("  - %s", entry)
+    try:
+        report = _replay_devtool_commits(
+            workspace_path, base_branch, protected_paths or set())
+    except PrepBaseMismatchError as error:
+        _write_prep_report(workspace_path, recipe, {
+            'schema_version': PREP_REPORT_SCHEMA_VERSION,
+            'base_branch': base_branch,
+            'failure_code': PREP_BASE_MISMATCH_CODE,
+            'failure_reason': str(error),
+            'protected_paths': sorted(protected_paths or set()),
+        })
+        raise
+    _write_prep_report(workspace_path, recipe, report)
 
     copy_missing_files_from_devtool(workspace_path)
     remove_git_only_build_triggers(workspace_path)
 
     logger.debug("Creating tag original-version at current position")
     run_cmd_capture(['git', 'tag', '-f', 'original-version'], cwd=workspace_path)
-    return checkout_ok, skipped
+    return checkout_ok, report['skipped']

@@ -18,6 +18,7 @@ from . import (
     EXIT_BUILD_PREEXISTING,
     EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
+    EXIT_PREP_BASE_MISMATCH,
     EXIT_PTEST_ERROR,
     EXIT_PTEST_PREEXISTING,
     EXIT_SUCCESS,
@@ -63,6 +64,7 @@ from .session import guarded_session
 _MAX_CHAIN_EXTENSIONS = 3
 _HANDOFF_CODE_RE = re.compile(r"\b(HANDOFF_[A-Z0-9_]{1,96})\b")
 _TRANSFER_CODE_RE = re.compile(r"\b(TRANSFER_[A-Z0-9_]{1,96})\b")
+_PREP_CODE_RE = re.compile(r"\b(PREP_[A-Z0-9_]{1,96})\b")
 
 # Safety cap on how many times a single CVE run may be bounced back to the AI
 # purely to shorten over-budget ``Conflicts Resolved:`` notes. Past this, the
@@ -1204,7 +1206,25 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: Optional[KnowledgeBas
     if exit_code in UNRECOVERABLE_EXITS:
         handoff_match = _HANDOFF_CODE_RE.search(corrector_output[:64 * 1024])
         transfer_match = _TRANSFER_CODE_RE.search(corrector_output[:64 * 1024])
-        if transfer_match:
+        prep_match = (_PREP_CODE_RE.search(corrector_output[:64 * 1024])
+                      if exit_code == EXIT_PREP_BASE_MISMATCH else None)
+        if prep_match:
+            # The CVE branch could not reproduce the devtool branch's content
+            # for a file the fix touches, so no AI session could produce a
+            # transferable patch. Fail before spending one.
+            result = _make_result(
+                config.cve_id, ResultStatus.FAILED, 0, start_time,
+                "Branch preparation left a base the fix cannot be transferred "
+                f"from: {prep_match.group(1)}",
+                ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.HOST_INITIALIZATION,
+                    prep_match.group(1),
+                ),
+            )
+        elif transfer_match:
             code = transfer_match.group(1)
             result = _make_result(
                 config.cve_id, ResultStatus.FAILED, 0, start_time,

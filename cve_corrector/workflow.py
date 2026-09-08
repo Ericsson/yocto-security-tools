@@ -62,7 +62,12 @@ from .ui import (
     print_manual_instructions,
 )
 from .utils import logger, run_cmd, run_cmd_capture
-from .workspace import prepare_cve_branch, setup_devtool_workspace, setup_upstream_remote
+from .workspace import (
+    collect_fix_commit_paths,
+    prepare_cve_branch,
+    setup_devtool_workspace,
+    setup_upstream_remote,
+)
 
 
 def _sources_of(detail: dict) -> list[str]:
@@ -802,7 +807,9 @@ def initialize_cve_workflow(
         submodule_mirror_dir = config.mirror_path.parent
     checkout_ok, skipped = prepare_cve_branch(
         workspace_path, version, cve_id, subproject=subproject,
-        hash_details=hash_details, mirror_dir=submodule_mirror_dir)
+        hash_details=hash_details, mirror_dir=submodule_mirror_dir,
+        protected_paths=collect_fix_commit_paths(workspace_path, hashes, series),
+        recipe=recipe)
     if skipped:
         logger.warning("Skipped %d devtool commit(s) during branch preparation", len(skipped))
 

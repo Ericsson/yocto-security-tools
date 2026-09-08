@@ -62,7 +62,7 @@ graph TB
 
 | File | Responsibility |
 |------|---------------|
-| `exit_codes.py` | Single source of truth for all exit codes (0–16) |
+| `exit_codes.py` | Single source of truth for all exit codes (0–17) |
 | `paths.py` | XDG-compliant `data_dir()` and `cache_dir()` with env overrides |
 | `json_cache.py` | Gzip-compressed JSON cache with atomic writes (`cache_load`, `cache_dump`) |
 | `handoff.py` | Versioned corrector-to-agent repository state and scope contract |
