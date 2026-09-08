@@ -20,7 +20,12 @@ Resolve each conflicted file. Three shapes come up, cheapest-correct first:
    `git checkout original-version -- <file>` puts the stable file back, and you
    can port just the fix's own hunks onto it.
 2. **Partial resolution** — neither side is right alone: edit the file with your
-   editing tool, removing all conflict markers.
+   editing tool, removing all conflict markers. Get the exact bytes of both
+   sides first, then edit by position: a native typed session has
+   `git_conflict_regions` (exact per-region line numbers and ours/base/theirs
+   text), `read_file_range` (exact numbered lines), and `replace_lines`
+   (positional edit guarded by the file's current SHA-256). Never rediscover
+   indentation by searching for candidate whitespace one line at a time.
 3. **Drop a path** — if upstream deletes a file, `git rm <file>`. If a conflicted
    path exists only in upstream history, not this workspace (a submodule/gitlink
    recorded upstream against a tarball-sourced recipe — confirm with `git
