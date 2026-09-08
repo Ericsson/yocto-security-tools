@@ -93,15 +93,44 @@ not produced by the typed runtime. Rollback provenance is reset at every new
 cherry-pick and successful trusted commit transition, so paths touched by an
 earlier operation can never authorize discarding a later external edit.
 
+## Line-addressed conflict resolution
+
+Exact-text tools force a model to know a file's byte-exact indentation before it
+can edit, which is expensive to rediscover and easy to get wrong. The native
+backend therefore exposes a positional path that needs no text context:
+
+- `git_conflict_regions(paths?)` returns, for every conflicted working-tree
+  file, each region's `start_line`/`end_line` (the marker lines themselves), the
+  `ours`/`base`/`theirs` sides with their own line ranges and byte-exact text,
+  and the marker labels. Sides are bounded per region and in total, with
+  explicit `truncated` flags; malformed or partially resolved markers are
+  reported as `malformed_markers` rather than failing the call.
+- `read_file_range(path, start_line?, line_count?)` returns numbered lines with
+  whitespace preserved exactly, plus the complete file SHA-256, the file's line
+  count, whether it ends with a newline, and a `next_line` continuation.
+- `replace_lines(path, start_line, end_line, expected_sha256, replacement)`
+  replaces an inclusive line range in an LF-only UTF-8 file. An empty
+  replacement deletes the range; a replacement missing its trailing newline gets
+  one unless the range ended at an unterminated end of file. It shares the patch
+  tool's ceilings, atomic write, postcondition verification, and rollback, so it
+  also works on files above the full-rewrite limit.
+
+`search_text` matches within a single line. A query containing a newline is
+rejected with that explanation instead of silently returning zero matches.
+
 ## Bounded edits of large files
 
-The normal exact-text and full-file tools keep their 256 KiB write ceiling.
+The full-file `write_file` tool keeps its 256 KiB ceiling.
 For a larger authorized UTF-8 file, the native backend exposes
 `apply_patch_hunks(path, expected_sha256, hunks)`. Each hunk contains only a
 unique exact `old_text` and its `replacement`; the host locates every context
 in the original file and rejects missing, ambiguous, overlapping, or
 out-of-order hunks. This deliberately avoids unified-diff parsing, regular
 expressions, `patch`, `git apply`, or any command execution.
+`replace_in_file` accepts the same 8 MiB target size, since only its
+model-supplied delta — not the whole file — crosses the tool boundary.
+A size rejection names the file size, the limit, and the tool that does accept
+the operation.
 
 The target must be an exact allowed path and a single-link regular file below
 symlink-free parents. The host rechecks the complete-file SHA-256 immediately
