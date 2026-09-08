@@ -740,10 +740,15 @@ def test_mutation_generation_changes_only_after_durable_success(roots):
 _VALID_ARGUMENTS = {
     "list_directory": {"path": "."},
     "read_file": {"path": "file.txt"},
+    "read_file_range": {"path": "file.txt", "start_line": 1, "line_count": 1},
     "search_text": {"query": "x", "paths": ["file.txt"]},
     "replace_in_file": {
         "path": "file.txt", "old_text": "x", "new_text": "y",
         "expected_count": 1,
+    },
+    "replace_lines": {
+        "path": "file.txt", "start_line": 1, "end_line": 1,
+        "expected_sha256": "0" * 64, "replacement": "y\n",
     },
     "apply_patch_hunks": {
         "path": "file.txt", "expected_sha256": "0" * 64,
