@@ -80,8 +80,8 @@ The following factual drift was found against source and corrected in
 ## Recommendations
 
 1. **High priority**: None — documentation now reflects verified current facts (version, Python support, coverage, CI, all CVE sources) for all critical paths.
-2. **Medium priority** (status: addressed/investigated this pass):
+2. **Medium priority** (status: both addressed):
    - ✅ Added an exit-code → agent-action → retry-behavior table to `workflows.md` (verified against `cve_agent/orchestrator.py`: `_run_cve_pipeline`, `_resolution_loop`, `_run_single_resolution_attempt`, `_handle_escalation`).
-   - ⚠️ Investigated aligning `[tool.ruff] target-version` with `requires-python` (`py39` → `py310`). **Not applied** — confirmed via `ruff check .` that this newly activates `UP045` (`Optional[X]` → `X | None`, 323 occurrences) and `B905` (`zip()` missing `strict=`, 19 occurrences), a 344-line mechanical change spanning most of the codebase. This is real and worth doing, but it is a separate, reviewable change from documentation and needs explicit maintainer sign-off (and likely its own PR) rather than being silently bundled here.
+   - ✅ Aligned `[tool.ruff] target-version` with `requires-python` (`py39` → `py310`, commit `334b0ca`). Applied `ruff check --fix .` for the resulting `UP045`/`UP035` (325 occurrences: `Optional[X]` → `X | None`, deprecated `typing` imports), then hand-reviewed and fixed all 19 `B905` (`zip()` missing `strict=`) call sites individually rather than applying one blanket value — `strict=False` where lists are deliberately uneven (suffix-matching, sliding pairs), `strict=True` where a length mismatch would indicate a real bug (fixed-width schemas, matplotlib artist collections paired with their source data). Full CI verified green: `ruff check .`, `mypy`, and `pytest --cov` (3096 passed, 8 skipped, 86% coverage).
 3. **Low priority**: Document the Debian extraction pipeline in more detail if contributors work on that module.
 4. **Optional**: Consider generating Sphinx API docs from docstrings for public interfaces.
