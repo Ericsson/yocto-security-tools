@@ -5,7 +5,11 @@ import json
 
 import pytest
 
-from cve_agent.openai_progress import MAX_STATE_SUMMARY_BYTES, ProgressTracker
+from cve_agent.openai_progress import (
+    MAX_CONSECUTIVE_INSPECTIONS,
+    MAX_STATE_SUMMARY_BYTES,
+    ProgressTracker,
+)
 from cve_agent.openai_tools import ToolAudit, ToolResult
 
 
@@ -123,3 +127,100 @@ def test_non_json_progress_payload_fails_closed():
         tracker.observe(
             "read_file", "{}",
             _result("read_file", payload={"bad": object()}), dispatched=True)
+
+
+def _inspect(tracker: ProgressTracker, index: int):
+    """Observe one novel inspection call, as a whitespace probe would."""
+    return tracker.observe(
+        "search_text", json.dumps({"query": f"probe-{index}"}),
+        _result("search_text", payload={"match_count": 1, "probe": index}),
+        dispatched=True)
+
+
+def test_novel_inspection_stops_counting_as_progress_once_saturated():
+    tracker = ProgressTracker()
+    for index in range(MAX_CONSECUTIVE_INSPECTIONS):
+        event = _inspect(tracker, index)
+        assert event.progressed and event.kind == "inspection"
+    assert tracker.consecutive_inspections == MAX_CONSECUTIVE_INSPECTIONS
+    assert tracker.inspection_saturated is True
+
+    saturated = _inspect(tracker, MAX_CONSECUTIVE_INSPECTIONS)
+    assert saturated.progressed is False
+    assert saturated.kind == "inspection_saturated"
+    assert saturated.action_class == "inspect"
+
+
+def test_saturated_state_summary_names_the_line_addressed_tools():
+    tracker = ProgressTracker()
+    for index in range(MAX_CONSECUTIVE_INSPECTIONS + 1):
+        _inspect(tracker, index)
+
+    summary = tracker.state_summary(
+        mutation_generation=0,
+        validated_generation=None,
+        consecutive_nonprogress=0,
+        turns_remaining=4,
+        tool_calls_remaining=200,
+        mutation_calls=0,
+        build_calls=0,
+        provider_retries=0,
+        deadline_remaining=100.0,
+    )
+
+    assert "stop inspecting" in summary
+    assert "git_conflict_regions" in summary
+    assert "read_file_range" in summary
+    assert "replace_lines" in summary
+    assert f"Inspections since last change: {MAX_CONSECUTIVE_INSPECTIONS + 1}" in summary
+    assert len(summary.encode()) <= MAX_STATE_SUMMARY_BYTES
+
+
+@pytest.mark.parametrize("tool,result_kwargs", [
+    ("replace_lines", {"generation": 1, "mutated": True}),
+    ("build_recipe", {"payload": {"exit_status": 0, "generation": 0}}),
+    ("finish", {"terminal": True}),
+])
+def test_progress_resets_the_inspection_budget(tool, result_kwargs):
+    tracker = ProgressTracker()
+    for index in range(MAX_CONSECUTIVE_INSPECTIONS):
+        _inspect(tracker, index)
+    assert tracker.inspection_saturated is True
+
+    tracker.observe(tool, "{}", _result(tool, **result_kwargs), dispatched=True)
+
+    assert tracker.consecutive_inspections == 0
+    assert tracker.inspection_saturated is False
+    assert _inspect(tracker, 99).progressed is True
+
+
+def test_conflict_reduction_also_resets_the_inspection_budget():
+    tracker = ProgressTracker()
+    before = _result("git_status", payload={
+        "staged": [], "unstaged": [], "untracked": [], "deleted": [],
+        "conflicted": ["a.c", "b.c"],
+    })
+    after = _result("git_status", payload={
+        "staged": [], "unstaged": [], "untracked": [], "deleted": [],
+        "conflicted": ["b.c"],
+    })
+    tracker.observe("git_status", "{}", before, dispatched=True)
+    for index in range(MAX_CONSECUTIVE_INSPECTIONS):
+        _inspect(tracker, index)
+    assert tracker.inspection_saturated is True
+
+    reduction = tracker.observe("git_status", "{}", after, dispatched=True)
+
+    assert reduction.kind == "conflict_reduction"
+    assert tracker.consecutive_inspections == 0
+
+
+def test_failed_and_undispatched_calls_do_not_spend_the_inspection_budget():
+    tracker = ProgressTracker()
+    failure = _result("search_text", success=False, error_kind="validation",
+                      payload={"error": "single line"})
+    tracker.observe("search_text", '{"query":"a\\nb"}', failure, dispatched=True)
+    tracker.observe(
+        "search_text", '{"query":"x"}', _result("search_text"), dispatched=False)
+
+    assert tracker.consecutive_inspections == 0
