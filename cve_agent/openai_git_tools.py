@@ -37,6 +37,7 @@ from .openai_tools import (
     ToolPolicyError,
     ToolValidationError,
     _ExecutionResult,
+    _split_lines,
 )
 
 GIT_EXECUTABLE = "git"
@@ -56,6 +57,19 @@ MAX_GIT_SEQUENCE_BYTES = 64 * 1024
 # advance is not something the host is willing to account for in one step.
 MAX_GIT_SEQUENCE_COMMITS = 64
 MAX_GIT_PREFLIGHT_OUTPUT_BYTES = 8 * 1024 * 1024
+# Conflict-region inspection replaces per-line whitespace probing, so it has to
+# return exact text while staying far below the model-visible result ceiling.
+MAX_CONFLICT_FILES = 8
+MAX_CONFLICT_REGIONS = 12
+MAX_CONFLICT_SIDE_LINES = 120
+MAX_CONFLICT_SIDE_BYTES = 4 * 1024
+MAX_CONFLICT_TOTAL_BYTES = 24 * 1024
+MAX_CONFLICT_LABEL_CHARS = 120
+
+_CONFLICT_OURS_MARKER = "<<<<<<<"
+_CONFLICT_BASE_MARKER = "|||||||"
+_CONFLICT_SPLIT_MARKER = "======="
+_CONFLICT_THEIRS_MARKER = ">>>>>>>"
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -527,6 +541,18 @@ GIT_TOOL_CONTRACTS: dict[str, ToolContract] = {
         {},
         "_git_unmerged_files",
     ),
+    "git_conflict_regions": ToolContract(
+        "git_conflict_regions",
+        "Return every conflict region of the conflicted working-tree files "
+        "with exact line numbers and the byte-exact ours/base/theirs text, so "
+        "a partial resolution needs no whitespace probing.",
+        {
+            "paths": FieldContract(
+                "array", "Optional explicit literal conflicted paths.",
+                max_items=MAX_GIT_PATHS, item_type="string"),
+        },
+        "_git_conflict_regions",
+    ),
     "git_submodule_status": ToolContract(
         "git_submodule_status",
         "Inspect recorded gitlinks without initialization, fetch, or update.",
@@ -700,6 +726,119 @@ def build_typed_commit_message(message: str, model: str) -> str:
     if len(result.encode("utf-8")) > MAX_COMMIT_MESSAGE_BYTES:
         raise ToolValidationError("commit message exceeds its byte limit")
     return result
+
+
+def _conflict_side(lines: Sequence[str], start_line: int) -> dict[str, object]:
+    """Render one conflict side with exact text and bounded size."""
+    kept: list[str] = []
+    size = 0
+    truncated = False
+    for line in lines:
+        if len(kept) >= MAX_CONFLICT_SIDE_LINES:
+            truncated = True
+            break
+        encoded = len(line.encode(TEXT_ENCODING, errors="surrogatepass")) + 1
+        if size + encoded > MAX_CONFLICT_SIDE_BYTES:
+            truncated = True
+            break
+        size += encoded
+        kept.append(line)
+    text = "".join(f"{line}\n" for line in kept)
+    return {
+        "start_line": start_line if lines else None,
+        "end_line": start_line + len(lines) - 1 if lines else None,
+        "line_count": len(lines),
+        "text": text,
+        "truncated": truncated,
+    }
+
+
+def _conflict_region_bytes(region: Mapping[str, object]) -> int:
+    total = 0
+    for key in ("ours", "base", "theirs"):
+        side = region.get(key)
+        if isinstance(side, Mapping):
+            text = side.get("text")
+            if isinstance(text, str):
+                total += len(text.encode(TEXT_ENCODING, errors="surrogatepass"))
+    return total
+
+
+def _conflict_label(line: str, marker: str) -> str:
+    label = line[len(marker):].strip()
+    return label[:MAX_CONFLICT_LABEL_CHARS]
+
+
+def _parse_conflict_regions(
+    lines: Sequence[str],
+) -> tuple[list[dict[str, object]], bool, bool]:
+    """Parse merge-conflict markers into exact, addressable regions.
+
+    Returns the regions, whether markers were malformed, and whether the region
+    count was capped. Malformed markers are reported rather than raised so a
+    partially resolved file can still be inspected.
+    """
+    regions: list[dict[str, object]] = []
+    malformed = False
+    truncated = False
+    index = 0
+    total = len(lines)
+    while index < total:
+        line = lines[index]
+        if not line.startswith(_CONFLICT_OURS_MARKER):
+            index += 1
+            continue
+        if len(regions) >= MAX_CONFLICT_REGIONS:
+            truncated = True
+            break
+        start_line = index + 1
+        ours_label = _conflict_label(line, _CONFLICT_OURS_MARKER)
+        theirs_label = ""
+        ours: list[str] = []
+        base: Optional[list[str]] = None
+        theirs: Optional[list[str]] = None
+        ours_start = index + 2
+        base_start = 0
+        theirs_start = 0
+        end_line = 0
+        index += 1
+        while index < total:
+            current = lines[index]
+            if current.startswith(_CONFLICT_OURS_MARKER):
+                malformed = True
+                break
+            if current.startswith(_CONFLICT_THEIRS_MARKER):
+                theirs_label = _conflict_label(current, _CONFLICT_THEIRS_MARKER)
+                end_line = index + 1
+                index += 1
+                break
+            if current.startswith(_CONFLICT_BASE_MARKER) and theirs is None:
+                base = []
+                base_start = index + 2
+            elif current.startswith(_CONFLICT_SPLIT_MARKER) and theirs is None:
+                theirs = []
+                theirs_start = index + 2
+            elif theirs is not None:
+                theirs.append(current)
+            elif base is not None:
+                base.append(current)
+            else:
+                ours.append(current)
+            index += 1
+        if not end_line or theirs is None:
+            malformed = True
+            continue
+        regions.append({
+            "index": len(regions) + 1,
+            "start_line": start_line,
+            "end_line": end_line,
+            "ours_label": ours_label,
+            "theirs_label": theirs_label,
+            "ours": _conflict_side(ours, ours_start),
+            "base": (None if base is None else _conflict_side(base, base_start)),
+            "theirs": _conflict_side(theirs, theirs_start),
+        })
+    return regions, malformed, truncated
 
 
 def _normalize_resolution_note(note: Optional[str]) -> Optional[str]:
@@ -991,6 +1130,66 @@ class GitToolRuntime(FileToolRuntime):
         result = self._executor.run("unmerged", ["ls-files", "-u", "-z"])
         self._require_complete(result, "Git unmerged-file inspection")
         return _ExecutionResult({"files": self._parse_unmerged(result.stdout)})
+
+    def _git_conflict_regions(
+        self, arguments: dict[str, object],
+    ) -> _ExecutionResult:
+        """Return exact conflict-region text so no line probing is needed."""
+        requested = self._read_paths(
+            arguments.get("paths", []), "git_conflict_regions")
+        conflicted = [str(entry["path"]) for entry in self._unmerged_entries()]
+        skipped: list[dict[str, str]] = []
+        if requested:
+            selected = [path for path in requested if path in conflicted]
+            skipped.extend(
+                {"path": path, "reason": "not_conflicted"}
+                for path in requested if path not in conflicted)
+        else:
+            selected = conflicted
+        if len(selected) > MAX_CONFLICT_FILES:
+            skipped.extend(
+                {"path": path, "reason": "file_limit"}
+                for path in selected[MAX_CONFLICT_FILES:])
+            selected = selected[:MAX_CONFLICT_FILES]
+
+        files: list[dict[str, object]] = []
+        budget = MAX_CONFLICT_TOTAL_BYTES
+        for path in selected:
+            authorized = self._reauthorize("git_conflict_regions", path, write=False)
+            try:
+                data, _ = self._read_whole_file(authorized, "git_conflict_regions")
+            except ToolOperationalError:
+                skipped.append({"path": path, "reason": "unreadable"})
+                continue
+            if self._looks_binary(data):
+                skipped.append({"path": path, "reason": "binary"})
+                continue
+            lines, _ = _split_lines(data.decode(TEXT_ENCODING, errors=TEXT_ERRORS))
+            regions, malformed, region_truncated = _parse_conflict_regions(lines)
+            kept: list[dict[str, object]] = []
+            text_truncated = False
+            for region in regions:
+                cost = _conflict_region_bytes(region)
+                if kept and cost > budget:
+                    text_truncated = True
+                    break
+                budget -= cost
+                kept.append(region)
+            files.append({
+                "path": path,
+                "regions": kept,
+                "region_count": len(kept),
+                "file_lines": len(lines),
+                "malformed_markers": malformed,
+                "truncated": region_truncated or text_truncated,
+            })
+            if budget <= 0:
+                break
+        return _ExecutionResult({
+            "files": files,
+            "conflicted_files": len(conflicted),
+            "skipped": skipped,
+        })
 
     def _git_submodule_status(self, arguments: dict[str, object]) -> _ExecutionResult:
         paths = self._read_paths(arguments.get("paths", []), "git_submodule_status")
