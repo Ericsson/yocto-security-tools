@@ -12,7 +12,6 @@ function (no I/O) so it can be unit-tested against captured stdout or a
 transcript file regardless of how the text was obtained.
 """
 import re
-from typing import Optional
 
 # Strip ANSI escape sequences (colours, cursor moves) that kiro-cli emits when
 # writing to a TTY — the interactive transcript captured via ``script`` is full
@@ -37,7 +36,7 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def parse_kiro_credits(text: str) -> Optional[float]:
+def parse_kiro_credits(text: str) -> float | None:
     """Extract the credits figure from kiro-cli output.
 
     Scans *text* for the ``Credits: <num> • Time: <str>`` summary line and
@@ -56,7 +55,7 @@ def parse_kiro_credits(text: str) -> Optional[float]:
     if not text:
         return None
     clean = strip_ansi(text)
-    last: Optional[float] = None
+    last: float | None = None
     for match in _CREDITS_RE.finditer(clean):
         raw_credits = match.group("credits").replace(",", "")
         try:

@@ -4,7 +4,6 @@
 import json
 import re
 from pathlib import Path, PurePosixPath
-from typing import Optional
 
 from shared.git_runner import force_checkout_branch
 
@@ -47,7 +46,7 @@ def _commit_exists(repository: Path, commit_hash: str) -> bool:
 
 def setup_devtool_workspace(
         recipe: str, clean: bool, skip_ptest: bool
-) -> tuple[Path, Optional[str]]:
+) -> tuple[Path, str | None]:
     """Setup devtool workspace for recipe modification.
 
     Args:
@@ -97,12 +96,12 @@ def setup_devtool_workspace(
     return workspace_path, version
 
 
-def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
-                          mirror_dir: Optional[Path], recipe: str,
+def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
+                          mirror_dir: Path | None, recipe: str,
                           hash_details: list[dict],
-                          series: Optional[list[dict]] = None,
-                          references: Optional[list[dict]] = None,
-                          premirror: Optional[str] = None) -> Optional[str]:
+                          series: list[dict] | None = None,
+                          references: list[dict] | None = None,
+                          premirror: str | None = None) -> str | None:
     """Configure upstream git remote and fetch references.
 
     Priority for upstream URL:
@@ -127,7 +126,7 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
         mirror_name = mirror_path.stem
 
     # Determine the recipe's authoritative upstream URL for comparison
-    recipe_upstream: Optional[str] = None
+    recipe_upstream: str | None = None
     # A patch-deduced repo that differs from the fetch source (e.g. the fix
     # commit lives in bzip2 while the recipe SRC_URI is bzip2-tests). When set,
     # it is fetched as a secondary remote so the fix commits/tags are reachable.
@@ -135,7 +134,7 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Optional[Path],
     missing_hashes: list[str] = []
 
     if mirror_path:
-        upstream_url: Optional[str] = str(mirror_path.absolute())
+        upstream_url: str | None = str(mirror_path.absolute())
         missing_details = [
             detail for detail in hash_details
             if isinstance(detail.get('hash'), str)
@@ -292,7 +291,7 @@ def _urls_differ(url_a: str, url_b: str) -> bool:
     return normalize(url_a) != normalize(url_b)
 
 
-def _alternate_protocol_url(url: str) -> Optional[str]:
+def _alternate_protocol_url(url: str) -> str | None:
     """Return the same repo URL over an alternate transport protocol.
 
     Swaps between ``https://`` and ``git://`` for the same host/path. Used
@@ -341,7 +340,7 @@ def _fetch_remote(workspace_path: Path, remote_name: str, url: str) -> bool:
     return False
 
 
-def resolve_relative_submodule_url(base_url: str, relative_url: str) -> Optional[str]:
+def resolve_relative_submodule_url(base_url: str, relative_url: str) -> str | None:
     """Resolve a relative ``.gitmodules`` URL against a base repository URL.
 
     Projects hosted on GitLab/GitHub commonly reference their submodules
@@ -412,7 +411,7 @@ def _is_remote_url(url: str) -> bool:
 
 
 def _submodule_base_url(workspace_path: Path,
-                        hash_details: Optional[list[dict]]) -> Optional[str]:
+                        hash_details: list[dict] | None) -> str | None:
     """Determine the URL that relative submodule URLs should resolve against.
 
     Prefers the workspace's ``upstream`` remote when it is a real remote URL.
@@ -458,8 +457,8 @@ def _gitmodules_entries(workspace_path: Path) -> list[tuple[str, str]]:
 
 
 def _init_submodules(workspace_path: Path,
-                     hash_details: Optional[list[dict]] = None,
-                     mirror_dir: Optional[Path] = None) -> None:
+                     hash_details: list[dict] | None = None,
+                     mirror_dir: Path | None = None) -> None:
     """Initialize git submodules if the repo defines any.
 
     When a recipe is built from a tarball, devtool extracts the archive into
@@ -504,10 +503,10 @@ def _init_submodules(workspace_path: Path,
     # 'submodule init' never overwrites an existing submodule.<name>.url.
     run_cmd(['git', 'submodule', 'init'], cwd=workspace_path)
 
-    base_url: Optional[str] = None
+    base_url: str | None = None
     uses_local_transport = False
     for name, url in _gitmodules_entries(workspace_path):
-        override: Optional[str] = None
+        override: str | None = None
         sub_name = url.rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')
         if mirror_dir:
             sub_mirror = find_mirror_repo(mirror_dir, sub_name)
@@ -542,8 +541,8 @@ def _init_submodules(workspace_path: Path,
         logger.warning("Submodule initialization failed — continuing without submodules")
 
 
-def collect_fix_commit_paths(workspace_path: Path, hashes: Optional[list[str]],
-                             series: Optional[list[dict]] = None) -> set[str]:
+def collect_fix_commit_paths(workspace_path: Path, hashes: list[str] | None,
+                             series: list[dict] | None = None) -> set[str]:
     """Collect the paths changed by the CVE fix commits.
 
     Used to decide which files must survive the recipe-patch replay in
@@ -641,7 +640,7 @@ def prep_report_path(workspace_path: Path, recipe: str) -> Path:
             / f'{recipe}.json')
 
 
-def read_prep_report(workspace_path: Path, recipe: str) -> Optional[dict]:
+def read_prep_report(workspace_path: Path, recipe: str) -> dict | None:
     """Read the branch-preparation report, or None when unavailable."""
     try:
         with open(prep_report_path(workspace_path, recipe), encoding='utf-8') as handle:
@@ -651,7 +650,7 @@ def read_prep_report(workspace_path: Path, recipe: str) -> Optional[dict]:
     return report if isinstance(report, dict) else None
 
 
-def _write_prep_report(workspace_path: Path, recipe: Optional[str],
+def _write_prep_report(workspace_path: Path, recipe: str | None,
                        report: dict) -> None:
     """Persist the branch-preparation report; never fail the workflow for it."""
     if not recipe:
@@ -770,12 +769,12 @@ def _replay_devtool_commits(workspace_path: Path, base_branch: str,
     }
 
 
-def prepare_cve_branch(workspace_path: Path, version: Optional[str],
-                       cve_id: str, subproject: Optional[str] = None,
-                       hash_details: Optional[list[dict]] = None,
-                       mirror_dir: Optional[Path] = None,
-                       protected_paths: Optional[set[str]] = None,
-                       recipe: Optional[str] = None) -> tuple[bool, list[str]]:
+def prepare_cve_branch(workspace_path: Path, version: str | None,
+                       cve_id: str, subproject: str | None = None,
+                       hash_details: list[dict] | None = None,
+                       mirror_dir: Path | None = None,
+                       protected_paths: set[str] | None = None,
+                       recipe: str | None = None) -> tuple[bool, list[str]]:
     """Checkout recipe version and prepare branch for CVE fix.
 
     Args:

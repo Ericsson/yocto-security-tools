@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Git helpers
@@ -107,7 +106,7 @@ def assert_no_patches_removed(before_set: set, after_set: set):
 
 
 def assert_patch_correctness(meta_layer: Path, cve_id: str,
-                             expected_files: set, expected_adds: Optional[set] = None):
+                             expected_files: set, expected_adds: set | None = None):
     """Assert generated patches touch expected files and contain expected additions."""
     patches = sorted(meta_layer.rglob(f'*{cve_id}*.patch'))
     assert patches, f"No patches found for {cve_id}"

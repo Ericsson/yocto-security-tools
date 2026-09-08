@@ -8,7 +8,6 @@ recipe version to decide whether the CVE is applicable.
 """
 import re
 from pathlib import Path
-from typing import Optional
 
 from .utils import logger, run_cmd_capture
 
@@ -76,8 +75,8 @@ def parse_diff_line_ranges(workspace_path: Path,
 
 def blame_line_ranges(workspace_path: Path,
                       file_ranges: dict[str, list[tuple[int, int]]],
-                      revision: Optional[str] = None,
-                      file_revisions: Optional[dict[str, str]] = None) -> set[str]:
+                      revision: str | None = None,
+                      file_revisions: dict[str, str] | None = None) -> set[str]:
     """Run git blame on line ranges to find introducing commits.
 
     Args:
@@ -153,7 +152,7 @@ def _tag_to_version_str(tag: str) -> str:
 
 
 def find_introducing_version(workspace_path: Path,
-                             commits: set[str]) -> Optional[str]:
+                             commits: set[str]) -> str | None:
     """Map introducing commits to the earliest release tag version.
 
     For each commit, tries ``git describe --contains`` first, then falls
@@ -210,7 +209,7 @@ def _is_release_tag(tag: str) -> bool:
 
 
 def _resolve_tag_for_commit(workspace_path: Path,
-                            commit: str) -> Optional[str]:
+                            commit: str) -> str | None:
     """Find the earliest release tag containing a commit.
 
     Tries ``git describe --contains`` first (fast), falls back to
@@ -253,7 +252,7 @@ def _resolve_tag_for_commit(workspace_path: Path,
 
 
 def is_cve_applicable(introducing_version: str,
-                      recipe_version: str) -> Optional[bool]:
+                      recipe_version: str) -> bool | None:
     """Compare introducing version against recipe version.
 
     Args:
@@ -290,8 +289,8 @@ def is_cve_applicable(introducing_version: str,
 def check_vulnerability_origin(workspace_path: Path,
                                commit_hashes: list[str],
                                recipe_version: str,
-                               series: Optional[list] = None,
-                               ) -> Optional[str]:
+                               series: list | None = None,
+                               ) -> str | None:
     """Check whether the CVE applies to the current recipe version.
 
     Parses the upstream fix commit diffs, blames the modified lines to

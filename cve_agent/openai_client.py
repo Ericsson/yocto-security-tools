@@ -18,7 +18,7 @@ import os
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Optional, Protocol
+from typing import Protocol
 
 import requests
 
@@ -246,9 +246,9 @@ class OpenAIRetryPolicy:
 class TokenUsage:
     """Portable optional token counts returned by compatible endpoints."""
 
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    total_tokens: Optional[int]
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -265,11 +265,11 @@ class FunctionToolCall:
 class AssistantResponse:
     """Validated first assistant choice from one Chat Completions response."""
 
-    content: Optional[str]
+    content: str | None
     tool_calls: tuple[FunctionToolCall, ...]
-    finish_reason: Optional[str]
-    usage: Optional[TokenUsage]
-    reasoning_replay: Optional[tuple[str, str]] = None
+    finish_reason: str | None
+    usage: TokenUsage | None
+    reasoning_replay: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -278,8 +278,8 @@ class OpenAIClientEvent:
 
     kind: str
     attempt: int
-    status_code: Optional[int] = None
-    delay: Optional[float] = None
+    status_code: int | None = None
+    delay: float | None = None
     failure: ProviderFailureEvidence | None = None
     request_id: str | None = None
     request_features: tuple[str, ...] = ()
@@ -317,12 +317,12 @@ class OpenAIChatCompletionsClient:
         config: OpenAIConfig,
         deadline: SessionDeadline,
         *,
-        limits: Optional[OpenAIClientLimits] = None,
-        retry_policy: Optional[OpenAIRetryPolicy] = None,
-        transport: Optional[HTTPTransport] = None,
-        environ: Optional[Mapping[str, str]] = None,
+        limits: OpenAIClientLimits | None = None,
+        retry_policy: OpenAIRetryPolicy | None = None,
+        transport: HTTPTransport | None = None,
+        environ: Mapping[str, str] | None = None,
         sleep: Callable[[float], None] = time.sleep,
-        event_sink: Optional[EventSink] = None,
+        event_sink: EventSink | None = None,
         capabilities: ProviderCapabilities | None = None,
     ) -> None:
         self.config = config
@@ -375,7 +375,7 @@ class OpenAIChatCompletionsClient:
             self._emit(OpenAIClientEvent(
                 "attempt", attempt,
                 request_features=self._last_request_features))
-            response: Optional[HTTPResponse] = None
+            response: HTTPResponse | None = None
             try:
                 proxy_override = (
                     {"http": None, "https": None, "all": None}
@@ -616,7 +616,7 @@ class OpenAIChatCompletionsClient:
                 f"serialized {label} exceeds the configured byte limit")
         return dict(value), encoded
 
-    def _headers(self) -> tuple[dict[str, str], Optional[str]]:
+    def _headers(self) -> tuple[dict[str, str], str | None]:
         headers = {"Content-Type": "application/json"}
         value = self._environ.get(self.config.api_key_env)
         secret = value.strip() if value is not None else ""
@@ -824,13 +824,13 @@ class OpenAIChatCompletionsClient:
         except OpenAIProtocolError as exc:
             raise OpenAIToolProtocolError(str(exc)) from None
 
-    def _parse_usage(self, value: object) -> Optional[TokenUsage]:
+    def _parse_usage(self, value: object) -> TokenUsage | None:
         if value is None:
             return None
         if not isinstance(value, dict):
             raise OpenAIProtocolError("usage must be an object when present")
 
-        def count(name: str) -> Optional[int]:
+        def count(name: str) -> int | None:
             item = value.get(name)
             if item is None:
                 return None
@@ -859,7 +859,7 @@ class OpenAIChatCompletionsClient:
 
     def _http_error(
         self, status: int, headers: Mapping[str, str], body: bytes,
-        secret: Optional[str],
+        secret: str | None,
     ) -> OpenAIClientError:
         snippet = self._safe_snippet(body, secret)
         suffix = f": {snippet}" if snippet else ""
@@ -912,7 +912,7 @@ class OpenAIChatCompletionsClient:
                 return candidate
         return None
 
-    def _safe_snippet(self, body: bytes, secret: Optional[str]) -> str:
+    def _safe_snippet(self, body: bytes, secret: str | None) -> str:
         # The complete body is already capped by max_response_bytes. Redact
         # before truncating so a secret crossing the snippet boundary cannot
         # leak as an unredacted prefix.
@@ -925,7 +925,7 @@ class OpenAIChatCompletionsClient:
         normalized = " ".join(text.split())
         return normalized[:self.limits.max_error_snippet_bytes]
 
-    def _retry_after(self, headers: Mapping[str, str]) -> Optional[float]:
+    def _retry_after(self, headers: Mapping[str, str]) -> float | None:
         value = self._header(headers, "Retry-After")
         if value is None:
             return None
@@ -938,7 +938,7 @@ class OpenAIChatCompletionsClient:
         return min(delay, self.retry_policy.max_delay)
 
     @staticmethod
-    def _header(headers: Mapping[str, str], name: str) -> Optional[str]:
+    def _header(headers: Mapping[str, str], name: str) -> str | None:
         expected = name.lower()
         for key, value in headers.items():
             if isinstance(key, str) and key.lower() == expected:
@@ -946,8 +946,8 @@ class OpenAIChatCompletionsClient:
         return None
 
     def _retry_sleep(
-        self, attempt: int, retry_after: Optional[float],
-        status: Optional[int] = None,
+        self, attempt: int, retry_after: float | None,
+        status: int | None = None,
     ) -> None:
         exponential = (
             self.retry_policy.initial_backoff
