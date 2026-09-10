@@ -16,6 +16,7 @@ from cve_agent.openai_host_tools import (
 )
 from cve_agent.openai_ollama import (
     MAX_OLLAMA_RESPONSE_BYTES,
+    OLLAMA_RETRYABLE_ATTEMPTS,
     OllamaConfig,
     OllamaConfigurationError,
     OllamaPreparationClient,
@@ -310,8 +311,21 @@ def test_redirect_malformed_oversized_and_status_fail_safely(response, match):
 ])
 def test_connection_and_timeout_errors_are_bounded_and_provider_text_free(error):
     with pytest.raises(OllamaPreparationError, match="connection failed or timed out") as exc:
-        _client(FakeTransport(error, error)).prepare()
+        _client(FakeTransport(*([error] * OLLAMA_RETRYABLE_ATTEMPTS))).prepare()
     assert "provider secret" not in str(exc.value)
+
+
+def test_connection_errors_recover_within_the_retry_budget():
+    """A transient failure that clears before the budget is exhausted succeeds.
+
+    Regression test for a real benchmark session (bench_20260907_094608,
+    CVE-2025-47203) where a connection failure on the very first /api/show
+    call got exactly one retry at a fixed 100ms, failed again, and then burned
+    all 3 session-level retries identically with zero AI work each time.
+    """
+    transient = requests.ConnectionError("temporary network blip")
+    client = _client(FakeTransport(transient, FakeResponse(payload=_show())))
+    client.prepare()
 
 
 def test_overall_deadline_exhaustion_stops_response_processing():

@@ -1268,6 +1268,13 @@ class OpenAICompatibleBackend(AIBackend):
         secret: str,
     ) -> SessionResult:
         from .openai_redaction import redact_openai_text
+        from .result import (
+            BuildStatus,
+            FailureClass,
+            ResultOutcome,
+            SecurityStatus,
+            WorkflowStatus,
+        )
 
         reason = redact_openai_text(str(error), (secret,) if secret else ())
         reason = " ".join(reason.split())[:512]
@@ -1292,11 +1299,25 @@ class OpenAICompatibleBackend(AIBackend):
             logging.error("OpenAI preparation transcript finalization failed")
         with contextlib.suppress(OSError, RuntimeError):
             transcript.close()
+        # Ollama preparation runs before any conflict-resolution work starts,
+        # so a failure here (endpoint unreachable, model missing, operator
+        # denial) is host/infrastructure-shaped, not a model reasoning
+        # failure. Classifying it as HOST_INITIALIZATION lets the orchestrator
+        # take its existing fast-fail path instead of burning the full
+        # session-retry budget on an outcome no retry of *this* session can
+        # change (see orchestrator._run_single_resolution_attempt).
         return SessionResult(
             resolved=False,
             duration=max(0.0, deadline.clock() - started),
             transcript_path=transcript.path,
             failure_reason=f"Ollama preparation failed: {safe_reason}",
+            outcome=ResultOutcome(
+                WorkflowStatus.FAILED,
+                BuildStatus.NOT_RUN,
+                SecurityStatus.NOT_EVALUATED,
+                FailureClass.HOST_INITIALIZATION,
+                "ollama_preparation_failed",
+            ),
         )
 
     @staticmethod
