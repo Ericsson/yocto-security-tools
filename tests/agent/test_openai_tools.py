@@ -748,11 +748,11 @@ _VALID_ARGUMENTS = {
     },
     "replace_lines": {
         "path": "file.txt", "start_line": 1, "end_line": 1,
-        "expected_sha256": "0" * 64, "replacement": "y\n",
+        "expected_sha256": "0" * 64, "new_text": "y\n",
     },
     "apply_patch_hunks": {
         "path": "file.txt", "expected_sha256": "0" * 64,
-        "hunks": [{"old_text": "x", "replacement": "y"}],
+        "hunks": [{"old_text": "x", "new_text": "y"}],
     },
     "write_file": {
         "path": "file.txt", "content": "x", "mode": "replace_only",

@@ -218,7 +218,7 @@ def test_realistic_inspect_edit_stage_build_finish_sequence(tmp_path):
 def test_deterministic_loop_dispatches_bounded_patch_hunks(tmp_path):
     arguments = json.dumps({
         "path": "large.c", "expected_sha256": "a" * 64,
-        "hunks": [{"old_text": "vulnerable\n", "replacement": "fixed\n"}],
+        "hunks": [{"old_text": "vulnerable\n", "new_text": "fixed\n"}],
     })
     actions = [
         _response(_call("patch", "apply_patch_hunks", arguments)),

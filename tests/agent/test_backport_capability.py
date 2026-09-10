@@ -464,7 +464,7 @@ def test_scripted_provider_patches_large_file_with_read_digest(tmp_path, monkeyp
             "patch", "apply_patch_hunks", {
                 "path": "large_guard.py",
                 "expected_sha256": digest,
-                "hunks": [{"old_text": conflict, "replacement": resolved}],
+                "hunks": [{"old_text": conflict, "new_text": resolved}],
             },
         ))),
         ScriptedHTTPResponse(json_body=assistant_response(
