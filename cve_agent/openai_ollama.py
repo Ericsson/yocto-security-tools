@@ -35,6 +35,16 @@ MAX_OLLAMA_RESPONSE_HEADER_BYTES = 64 * 1024
 MAX_OLLAMA_JSON_DEPTH = 24
 MAX_OLLAMA_JSON_NODES = 10_000
 OLLAMA_CHUNK_BYTES = 16 * 1024
+# A transient connection failure (endpoint still starting, brief network
+# blip) should self-heal within one preparation call instead of failing the
+# whole session: a real benchmark run (bench_20260907_094608, CVE-2025-47203)
+# hit a connection failure on the very first /api/show call, got exactly one
+# retry after a fixed 100ms, and then burned all 3 session retries identically
+# with zero AI work each time. Retrying here, with backoff, is far cheaper
+# than a full session retry.
+OLLAMA_RETRYABLE_ATTEMPTS = 4
+OLLAMA_RETRY_BASE_DELAY_SECONDS = 0.5
+OLLAMA_RETRY_MAX_DELAY_SECONDS = 5.0
 _KEEP_ALIVE_RE = re.compile(r"^([0-9]+)(ms|s|m|h)$", re.ASCII)
 
 
@@ -372,7 +382,7 @@ class OllamaPreparationClient:
         secret_value = self._environ.get(self.openai_config.api_key_env)
         if secret_value is not None and secret_value.strip():
             headers["Authorization"] = f"Bearer {secret_value.strip()}"
-        attempts = 2 if retryable else 1
+        attempts = OLLAMA_RETRYABLE_ATTEMPTS if retryable else 1
         for attempt in range(1, attempts + 1):
             remaining = self.deadline.require("Ollama preparation request")
             timeout = (
@@ -397,7 +407,12 @@ class OllamaPreparationClient:
                 raw = self._read_response(response)
             except requests.RequestException:
                 if attempt < attempts:
-                    self._bounded_sleep(0.1)
+                    self._emit("ollama_preparation_retry", {
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "reason": "connection_failed",
+                    })
+                    self._bounded_sleep(_retry_delay(attempt))
                     continue
                 raise OllamaPreparationError(
                     "Ollama preparation connection failed or timed out") from None
@@ -418,7 +433,12 @@ class OllamaPreparationClient:
             if status in {301, 302, 303, 307, 308}:
                 raise OllamaPreparationError("Ollama preparation redirects are forbidden")
             if status in {502, 503, 504} and attempt < attempts:
-                self._bounded_sleep(0.1)
+                self._emit("ollama_preparation_retry", {
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "reason": f"http_{status}",
+                })
+                self._bounded_sleep(_retry_delay(attempt))
                 continue
             if status == 404 and allow_not_found:
                 return status, {}
@@ -468,6 +488,12 @@ class OllamaPreparationClient:
     def _emit(self, kind: str, data: Mapping[str, object]) -> None:
         if self._event_sink is not None:
             self._event_sink(kind, data)
+
+
+def _retry_delay(attempt: int) -> float:
+    """Return a bounded exponential backoff delay for retry *attempt* (1-based)."""
+    delay = OLLAMA_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+    return min(delay, OLLAMA_RETRY_MAX_DELAY_SECONDS)
 
 
 def _resolve_api_root(explicit: str | None, openai_url: str) -> str:

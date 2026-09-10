@@ -331,6 +331,43 @@ class TestRunSingleResolutionAttempt:
         assert outcome.failure_outcome is failure
         assert outcome.failure_reason == "model step limit reached"
 
+    @patch("cve_agent.orchestrator.guarded_session")
+    @patch("cve_agent.orchestrator.get_upstream_sha", return_value="abc")
+    @patch("cve_agent.orchestrator.build_context", return_value=Path("/ctx"))
+    def test_host_initialization_failure_fails_fast_without_retrying(
+        self, _context, _sha, session,
+    ):
+        """A pre-session infrastructure failure (e.g. Ollama preparation could
+        not reach its endpoint) must not be treated like a model reasoning
+        failure: it fails this attempt immediately (outcome.result is set)
+        instead of leaving the resolution loop to spend its full retry budget
+        retrying a session that never gets to the model.
+
+        Regression test for a real benchmark run (bench_20260907_094608,
+        CVE-2025-47203), where an unclassified Ollama connection failure
+        looped through all 3 session retries identically, each doing zero AI
+        work, before escalating.
+        """
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.HOST_INITIALIZATION,
+            "ollama_preparation_failed",
+        )
+        session.return_value = SessionResult(
+            resolved=False,
+            duration=1.0,
+            failure_reason="Ollama preparation failed: connection failed or timed out",
+            outcome=failure,
+        )
+        cfg = _cfg(trust_mode=True)
+        outcome = _run_single_resolution_attempt(
+            cfg, Path("/ws"), 1, {}, MagicMock(), 1, time.monotonic())
+        assert outcome.result is not None
+        assert outcome.result.status is ResultStatus.FAILED
+        assert outcome.result.outcome.failure_class is FailureClass.HOST_INITIALIZATION
+
     @patch("builtins.input", return_value="n")
     @patch("cve_agent.orchestrator.guarded_session",
            return_value=SessionResult(resolved=False, duration=1.0))
