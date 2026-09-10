@@ -201,7 +201,7 @@ def test_replace_lines_resolves_a_region_without_any_text_context(roots):
         "start_line": 1,
         "end_line": 9,
         "expected_sha256": _sha(target),
-        "replacement": (
+        "new_text": (
             "static struct elf_link_hash_entry *\n"
             "get_ext_sym_hash (void)\n"),
     })
@@ -227,14 +227,14 @@ def test_replace_lines_deletes_a_range_and_adds_a_missing_newline(roots):
 
     deleted = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 2, "end_line": 2,
-        "expected_sha256": _sha(target), "replacement": "",
+        "expected_sha256": _sha(target), "new_text": "",
     })
     assert deleted.success is True
     assert target.read_text(encoding="utf-8") == "one\nthree\n"
 
     joined = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": _sha(target), "replacement": "first",
+        "expected_sha256": _sha(target), "new_text": "first",
     })
     assert joined.success is True
     assert target.read_text(encoding="utf-8") == "first\nthree\n"
@@ -248,7 +248,7 @@ def test_replace_lines_preserves_an_unterminated_final_line(roots):
 
     result = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 2, "end_line": 2,
-        "expected_sha256": _sha(target), "replacement": "second",
+        "expected_sha256": _sha(target), "new_text": "second",
     })
 
     assert result.success is True
@@ -263,7 +263,7 @@ def test_replace_lines_rejects_stale_hash_and_names_the_current_one(roots):
 
     result = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": "0" * 64, "replacement": "changed\n",
+        "expected_sha256": "0" * 64, "new_text": "changed\n",
     })
 
     assert result.error_kind == "operation"
@@ -273,10 +273,10 @@ def test_replace_lines_rejects_stale_hash_and_names_the_current_one(roots):
 
 
 @pytest.mark.parametrize("arguments,expected", [
-    ({"start_line": 2, "end_line": 1, "replacement": "x\n"}, "validation"),
-    ({"start_line": 1, "end_line": 9, "replacement": "x\n"}, "operation"),
-    ({"start_line": 1, "end_line": 1, "replacement": "one\n"}, "validation"),
-    ({"start_line": 1, "end_line": 1, "replacement": "bad\r\n"}, "validation"),
+    ({"start_line": 2, "end_line": 1, "new_text": "x\n"}, "validation"),
+    ({"start_line": 1, "end_line": 9, "new_text": "x\n"}, "operation"),
+    ({"start_line": 1, "end_line": 1, "new_text": "one\n"}, "validation"),
+    ({"start_line": 1, "end_line": 1, "new_text": "bad\r\n"}, "validation"),
 ])
 def test_replace_lines_rejects_unsafe_or_useless_ranges(roots, arguments, expected):
     workspace, _ = roots
@@ -302,11 +302,11 @@ def test_replace_lines_rejects_crlf_targets_and_unauthorized_paths(roots):
 
     windows = runtime.dispatch("replace_lines", {
         "path": "crlf.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": _sha(crlf), "replacement": "changed\n",
+        "expected_sha256": _sha(crlf), "new_text": "changed\n",
     })
     denied = runtime.dispatch("replace_lines", {
         "path": "other.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": _sha(other), "replacement": "changed\n",
+        "expected_sha256": _sha(other), "new_text": "changed\n",
     })
 
     assert windows.error_kind == "operation"
@@ -333,7 +333,7 @@ def test_replace_lines_edits_a_file_above_the_full_rewrite_limit(roots):
         "start_line": line_count,
         "end_line": line_count,
         "expected_sha256": _sha(target),
-        "replacement": "int vulnerable = 0;\n",
+        "new_text": "int vulnerable = 0;\n",
     })
 
     assert rewrite.error_kind == "validation"
@@ -391,7 +391,7 @@ def test_replace_lines_rejects_a_malformed_hash_before_touching_the_file(roots):
 
     result = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": "Z" * 64, "replacement": "changed\n",
+        "expected_sha256": "Z" * 64, "new_text": "changed\n",
     })
 
     assert result.error_kind == "validation"
@@ -410,7 +410,7 @@ def test_replace_lines_enforces_the_changed_line_ceiling(roots):
         "start_line": 1,
         "end_line": MAX_PATCH_CHANGED_LINES + 1,
         "expected_sha256": _sha(target),
-        "replacement": "one\n",
+        "new_text": "one\n",
     })
 
     assert result.error_kind == "validation"
@@ -427,7 +427,7 @@ def test_replace_lines_refuses_to_grow_a_file_past_its_output_limit(roots):
 
     result = runtime.dispatch("replace_lines", {
         "path": "file.c", "start_line": 1, "end_line": 1,
-        "expected_sha256": _sha(target), "replacement": "x" * 200 + "\n",
+        "expected_sha256": _sha(target), "new_text": "x" * 200 + "\n",
     })
 
     assert result.error_kind == "validation"
@@ -660,7 +660,7 @@ def test_conflict_regions_then_replace_lines_completes_the_cherry_pick(conflicte
         "start_line": region["start_line"],
         "end_line": region["end_line"],
         "expected_sha256": current.payload["sha256"],
-        "replacement": region["theirs"]["text"],
+        "new_text": region["theirs"]["text"],
     })
     staged = runtime.dispatch("git_stage", {"paths": ["elflink.c"]})
     continued = runtime.dispatch(

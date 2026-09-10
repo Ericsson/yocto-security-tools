@@ -49,8 +49,73 @@ def _arguments(path: Path, old: str, new: str):
     return {
         "path": path.name,
         "expected_sha256": _sha(path),
-        "hunks": [{"old_text": old, "replacement": new}],
+        "hunks": [{"old_text": old, "new_text": new}],
     }
+
+
+def test_apply_patch_hunks_field_name_matches_replace_in_file(patch_roots):
+    """Regression test for a real benchmark failure (bench_20260907_094608,
+    CVE-2025-1153): apply_patch_hunks used field name 'replacement' while the
+    similar replace_in_file tool used 'new_text' for the same concept. The
+    model correctly diagnosed the conflict but repeatedly called
+    apply_patch_hunks with 'new_text' (matching replace_in_file's contract),
+    failed validation three times in a row, and the session was terminated as
+    AGENT_NO_PROGRESS despite reasoning correctly. Both tools must now accept
+    the same field name for replacement text.
+    """
+    workspace, _, _ = patch_roots
+    target = workspace / "file.c"
+    target.write_text("old\n", encoding="utf-8")
+    runtime = _runtime(patch_roots, {"file.c"})
+
+    result = runtime.dispatch("apply_patch_hunks", {
+        "path": "file.c",
+        "expected_sha256": _sha(target),
+        "hunks": [{"old_text": "old\n", "new_text": "new\n"}],
+    })
+
+    assert result.success is True
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+    # The old field name must be rejected outright (not silently ignored),
+    # so a model that still tries the old contract gets an immediate,
+    # unambiguous validation error rather than a confusing no-op.
+    stale_field = runtime.dispatch("apply_patch_hunks", {
+        "path": "file.c",
+        "expected_sha256": _sha(target),
+        "hunks": [{"old_text": "new\n", "replacement": "newer\n"}],
+    })
+    assert stale_field.error_kind == "validation"
+
+
+def test_replace_lines_field_name_matches_replace_in_file(patch_roots):
+    """Companion regression test: replace_lines must also use 'new_text',
+    matching replace_in_file and apply_patch_hunks, instead of 'replacement'.
+    """
+    workspace, _, _ = patch_roots
+    target = workspace / "file.c"
+    target.write_text("one\ntwo\n", encoding="utf-8")
+    runtime = _runtime(patch_roots, {"file.c"})
+
+    result = runtime.dispatch("replace_lines", {
+        "path": "file.c",
+        "start_line": 1,
+        "end_line": 1,
+        "expected_sha256": _sha(target),
+        "new_text": "ONE\n",
+    })
+
+    assert result.success is True
+    assert target.read_text(encoding="utf-8") == "ONE\ntwo\n"
+
+    stale_field = runtime.dispatch("replace_lines", {
+        "path": "file.c",
+        "start_line": 2,
+        "end_line": 2,
+        "expected_sha256": _sha(target),
+        "replacement": "TWO\n",
+    })
+    assert stale_field.error_kind == "validation"
 
 
 def test_large_file_patch_succeeds_while_full_replacement_stays_bounded(patch_roots):
@@ -122,13 +187,13 @@ def test_out_of_order_and_overlapping_hunks_are_rejected(patch_roots, order):
     target.write_text("first\nmiddle\nlast\n", encoding="utf-8")
     if order == "reverse":
         hunks = [
-            {"old_text": "last\n", "replacement": "LAST\n"},
-            {"old_text": "first\n", "replacement": "FIRST\n"},
+            {"old_text": "last\n", "new_text": "LAST\n"},
+            {"old_text": "first\n", "new_text": "FIRST\n"},
         ]
     else:
         hunks = [
-            {"old_text": "first\nmiddle\n", "replacement": "FIRST\n"},
-            {"old_text": "middle\nlast\n", "replacement": "LAST\n"},
+            {"old_text": "first\nmiddle\n", "new_text": "FIRST\n"},
+            {"old_text": "middle\nlast\n", "new_text": "LAST\n"},
         ]
     result = _runtime(patch_roots, {"target.c"}).dispatch(
         "apply_patch_hunks", {
@@ -148,7 +213,7 @@ def test_patch_count_byte_line_and_output_limits(patch_roots):
     too_many = runtime.dispatch("apply_patch_hunks", {
         **base,
         "hunks": [
-            {"old_text": f"old-{index}", "replacement": "new"}
+            {"old_text": f"old-{index}", "new_text": "new"}
             for index in range(MAX_PATCH_HUNKS + 1)
         ],
     })
@@ -156,14 +221,14 @@ def test_patch_count_byte_line_and_output_limits(patch_roots):
         **base,
         "hunks": [{
             "old_text": "x" * (MAX_PATCH_CONTEXT_BYTES + 1),
-            "replacement": "new",
+            "new_text": "new",
         }],
     })
     too_many_lines = runtime.dispatch("apply_patch_hunks", {
         **base,
         "hunks": [{
             "old_text": "x\n" * (MAX_PATCH_CHANGED_LINES + 1),
-            "replacement": "new",
+            "new_text": "new",
         }],
     })
     small_runtime = _runtime(
@@ -210,12 +275,12 @@ def test_patch_rejects_unsafe_file_types_and_paths(patch_roots):
         result = runtime.dispatch("apply_patch_hunks", {
             "path": path,
             "expected_sha256": _sha(hash_target) if hash_target.is_file() else "0" * 64,
-            "hunks": [{"old_text": "old\n", "replacement": "new\n"}],
+            "hunks": [{"old_text": "old\n", "new_text": "new\n"}],
         })
         assert not result.success and result.error_kind == "policy"
     git_path = runtime.dispatch("apply_patch_hunks", {
         "path": ".git/config", "expected_sha256": "0" * 64,
-        "hunks": [{"old_text": "x", "replacement": "y"}],
+        "hunks": [{"old_text": "x", "new_text": "y"}],
     })
     assert not git_path.success and git_path.error_kind == "policy"
 
@@ -305,7 +370,7 @@ def test_patch_schema_is_closed_and_transcript_redacts_bounded_diff(patch_roots)
     }
     hunk_items = schemas["apply_patch_hunks"]["properties"]["hunks"]["items"]
     assert hunk_items["additionalProperties"] is False
-    assert set(hunk_items["properties"]) == {"old_text", "replacement"}
+    assert set(hunk_items["properties"]) == {"old_text", "new_text"}
 
     _, agent, _ = patch_roots
     secret = "never-record-this-secret"
@@ -328,7 +393,7 @@ def test_patch_rejects_non_lf_or_invalid_utf8_text(patch_roots, content):
     result = _runtime(patch_roots, {"target.c"}).dispatch(
         "apply_patch_hunks", {
             "path": "target.c", "expected_sha256": _sha(target),
-            "hunks": [{"old_text": "old", "replacement": "new"}],
+            "hunks": [{"old_text": "old", "new_text": "new"}],
         })
     assert not result.success and result.error_kind == "operation"
     assert target.read_bytes() == content

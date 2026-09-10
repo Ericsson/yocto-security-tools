@@ -393,7 +393,7 @@ def test_socket_loop_patches_large_file_builds_and_commits(
                 "expected_sha256": digest,
                 "hunks": [{
                     "old_text": marker,
-                    "replacement": "value = bounded-secure;\n",
+                    "new_text": "value = bounded-secure;\n",
                 }],
             })), check=_request_contract),
         ScriptedHTTPResponse(
@@ -578,7 +578,7 @@ def test_socket_line_addressed_conflict_resolution_needs_no_text_probing(
                         "start_line": start_line,
                         "end_line": end_line,
                         "expected_sha256": digest,
-                        "replacement": resolved_content,
+                        "new_text": resolved_content,
                     }),
                     tool_call("stage", "git_stage",
                               {"paths": [workspace.target.name]}),

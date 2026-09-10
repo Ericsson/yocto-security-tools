@@ -426,7 +426,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "expected_sha256": FieldContract(
                 "string", "Lowercase SHA-256 of the complete current file.",
                 required=True, min_length=64, max_length=64),
-            "replacement": FieldContract(
+            "new_text": FieldContract(
                 "string", "Complete LF-only replacement text for the range; "
                 "empty deletes the range.", required=True,
                 max_length=MAX_PATCH_REPLACEMENT_BYTES),
@@ -450,7 +450,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
                     "old_text": FieldContract(
                         "string", "Unique exact UTF-8 context.", required=True,
                         min_length=1, max_length=MAX_PATCH_CONTEXT_BYTES),
-                    "replacement": FieldContract(
+                    "new_text": FieldContract(
                         "string", "Exact UTF-8 replacement.", required=True,
                         max_length=MAX_PATCH_REPLACEMENT_BYTES),
                 }),
@@ -1463,7 +1463,7 @@ class FileToolRuntime:
         start_line = self._required_integer(arguments, "start_line")
         end_line = self._required_integer(arguments, "end_line")
         expected_sha256 = self._validated_sha256(arguments)
-        replacement_text = self._required_string(arguments, "replacement")
+        replacement_text = self._required_string(arguments, "new_text")
         if end_line < start_line:
             raise ToolValidationError("end_line must not precede start_line")
         try:
@@ -1582,7 +1582,7 @@ class FileToolRuntime:
             if not isinstance(item, dict):
                 raise ToolValidationError("hunk must be an object")
             old_text = self._required_string(item, "old_text")
-            replacement = self._required_string(item, "replacement")
+            replacement = self._required_string(item, "new_text")
             if not old_text:
                 raise ToolValidationError("hunk old_text must not be empty")
             try:
