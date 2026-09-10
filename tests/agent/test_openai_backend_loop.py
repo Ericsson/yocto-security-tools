@@ -807,6 +807,16 @@ create_if_missing = false
     assert result.transcript_path is not None
     assert model_called is False
     assert "Ollama preparation failed" in result.failure_reason
+    # Preparation runs before any conflict-resolution attempt, so its failure
+    # must be classified as host-infrastructure, not a model reasoning
+    # failure: the orchestrator's fast-fail path (see
+    # orchestrator._run_single_resolution_attempt) keys off this to avoid
+    # burning the full session-retry budget on a failure no session retry
+    # can fix. Regression test for bench_20260907_094608 / CVE-2025-47203,
+    # where an unclassified preparation failure looped through all 3
+    # retries with zero AI work each time.
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.HOST_INITIALIZATION
     transcript = result.transcript_path.read_text(encoding="utf-8")
     assert "profile_loaded" in transcript
     assert "ollama_preparation" in transcript
