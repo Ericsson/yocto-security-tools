@@ -108,7 +108,7 @@ backend therefore exposes a positional path that needs no text context:
 - `read_file_range(path, start_line?, line_count?)` returns numbered lines with
   whitespace preserved exactly, plus the complete file SHA-256, the file's line
   count, whether it ends with a newline, and a `next_line` continuation.
-- `replace_lines(path, start_line, end_line, expected_sha256, replacement)`
+- `replace_lines(path, start_line, end_line, expected_sha256, new_text)`
   replaces an inclusive line range in an LF-only UTF-8 file. An empty
   replacement deletes the range; a replacement missing its trailing newline gets
   one unless the range ended at an unterminated end of file. It shares the patch
@@ -123,7 +123,7 @@ rejected with that explanation instead of silently returning zero matches.
 The full-file `write_file` tool keeps its 256 KiB ceiling.
 For a larger authorized UTF-8 file, the native backend exposes
 `apply_patch_hunks(path, expected_sha256, hunks)`. Each hunk contains only a
-unique exact `old_text` and its `replacement`; the host locates every context
+unique exact `old_text` and its `new_text`; the host locates every context
 in the original file and rejects missing, ambiguous, overlapping, or
 out-of-order hunks. This deliberately avoids unified-diff parsing, regular
 expressions, `patch`, `git apply`, or any command execution.

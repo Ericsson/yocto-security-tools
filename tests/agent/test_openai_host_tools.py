@@ -402,7 +402,7 @@ def test_interactive_large_patch_approval_and_denial_are_bounded(host_repository
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     arguments = {
         "path": "a.c", "expected_sha256": digest,
-        "hunks": [{"old_text": old, "replacement": "patched\n"}],
+        "hunks": [{"old_text": old, "new_text": "patched\n"}],
     }
     denied_approval = FakeApproval(ApprovalDecision.DENY)
     denied_runtime = _runtime(
@@ -431,7 +431,7 @@ def test_interactive_line_replacement_is_previewed_and_denied_safely(host_reposi
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     arguments = {
         "path": "a.c", "start_line": 2, "end_line": 2,
-        "expected_sha256": digest, "replacement": "patched\n",
+        "expected_sha256": digest, "new_text": "patched\n",
     }
     denied_approval = FakeApproval(ApprovalDecision.DENY)
     denied_runtime = _runtime(
@@ -565,7 +565,7 @@ def test_build_is_invalidated_by_later_large_patch_hunk(host_repository):
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     patched = runtime.dispatch("apply_patch_hunks", {
         "path": "a.c", "expected_sha256": digest,
-        "hunks": [{"old_text": "base\n", "replacement": "fixed\n"}],
+        "hunks": [{"old_text": "base\n", "new_text": "fixed\n"}],
     })
     assert patched.success
     result = runtime.dispatch("finish", {
