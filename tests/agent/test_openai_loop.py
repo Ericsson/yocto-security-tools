@@ -404,6 +404,97 @@ def test_independent_turn_total_per_response_and_nonprogress_bounds(tmp_path):
         AgentLoopLimits(10, 10, max_consecutive_nonprogress=11)
 
 
+def test_inspection_saturation_spends_grace_before_the_hard_limit(tmp_path):
+    """Inspection saturation alone must not immediately count as a strike.
+
+    Regression test for a real benchmark session (bench_20260910_130258,
+    CVE-2025-1153): the model was still correctly and productively inspecting
+    a genuinely large 8-file conflict when it crossed the 16-inspection
+    saturation threshold, and had exactly 3 tool calls left — all more
+    inspections, all correct verification, none a repeat or a failure —
+    before the session was torn down as AGENT_NO_PROGRESS. It never got to
+    attempt its first edit.
+    """
+    from cve_agent.openai_progress import MAX_CONSECUTIVE_INSPECTIONS
+
+    # One call per turn so each progress decision maps to one turn boundary;
+    # a distinct query per call keeps every call novel (not a repeat). The
+    # first MAX_CONSECUTIVE_INSPECTIONS calls are genuine progress; the next
+    # 3 spend the grace budget instead of the hard 3-strike counter.
+    actions = [
+        _response(_call(
+            f"id-{index}", "search_text", json.dumps({"query": f"probe-{index}"})))
+        for index in range(MAX_CONSECUTIVE_INSPECTIONS + 3)
+    ]
+    result, client, _, _, _, events = _run(
+        tmp_path, actions,
+        limits=AgentLoopLimits(
+            50, 50, max_consecutive_nonprogress=3, max_saturation_grace_turns=3))
+
+    # All 3 grace turns are spent (not the hard 3-strike budget): no
+    # progress_warning fires even though 3 saturated calls happened, proving
+    # the model was not charged against the harder limit for calls that were
+    # still novel, successful inspections.
+    assert len(client.requests) >= MAX_CONSECUTIVE_INSPECTIONS + 3
+    warnings = [event for event in events if event["event"] == "progress_warning"]
+    assert warnings == []
+    grace_events = [
+        event for event in events if event["event"] == "saturation_grace_used"]
+    assert [event["consecutive"] for event in grace_events] == [1, 2, 3]
+    assert not result.resolved
+
+
+def test_inspection_saturation_still_fails_once_grace_is_exhausted(tmp_path):
+    """Saturation-only turns still end the session once grace runs out."""
+    from cve_agent.openai_progress import MAX_CONSECUTIVE_INSPECTIONS
+
+    actions = [
+        _response(_call(
+            f"id-{index}", "search_text", json.dumps({"query": f"probe-{index}"})))
+        for index in range(MAX_CONSECUTIVE_INSPECTIONS + 10)
+    ]
+    result, client, _, _, _, events = _run(
+        tmp_path, actions,
+        limits=AgentLoopLimits(
+            50, 50, max_consecutive_nonprogress=3, max_saturation_grace_turns=3))
+
+    assert not result.resolved
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.MODEL_NO_PROGRESS
+    # Grace (3 turns) plus the hard budget (3 strikes) is exhausted, then the
+    # session ends: it never reaches the 10 extra scripted saturation calls.
+    assert len(client.requests) == MAX_CONSECUTIVE_INSPECTIONS + 6
+    warnings = [event for event in events if event["event"] == "progress_warning"]
+    assert len(warnings) == 3
+
+
+def test_saturation_grace_does_not_cover_a_stale_repeated_call(tmp_path):
+    """A genuine repeat mixed into a saturated turn still counts as a strike."""
+    from cve_agent.openai_progress import MAX_CONSECUTIVE_INSPECTIONS
+
+    warmup = [
+        _response(_call(
+            f"id-{index}", "search_text", json.dumps({"query": f"probe-{index}"})))
+        for index in range(MAX_CONSECUTIVE_INSPECTIONS)
+    ]
+    repeat = [_response(_call("stale", "search_text", '{"query":"probe-0"}'))
+              for _ in range(3)]
+    result, client, _, _, _, events = _run(
+        tmp_path, warmup + repeat,
+        limits=AgentLoopLimits(
+            50, 50, max_consecutive_nonprogress=3, max_saturation_grace_turns=3))
+
+    assert not result.resolved
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.MODEL_NO_PROGRESS
+    # The repeated call is "no_new_evidence", not "inspection_saturated", so
+    # it spends the hard 3-strike budget directly with no grace turns used.
+    assert len(client.requests) == MAX_CONSECUTIVE_INSPECTIONS + 3
+    grace_events = [
+        event for event in events if event["event"] == "saturation_grace_used"]
+    assert grace_events == []
+
+
 def test_canonical_argument_reformat_is_duplicate_evidence(tmp_path):
     actions = [
         _response(_call(

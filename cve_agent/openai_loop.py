@@ -41,6 +41,17 @@ from .result import BuildStatus, FailureClass, ResultOutcome, SecurityStatus, Wo
 DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE = 16
 DEFAULT_MAX_CONSECUTIVE_NONPROGRESS = 3
 MAX_CONSECUTIVE_NONPROGRESS_LIMIT = 10
+# Inspection saturation (see openai_progress.MAX_CONSECUTIVE_INSPECTIONS) is a
+# soft nudge, not evidence the model is stuck: a genuinely large conflict (many
+# conflicted files, one very large divergent region) needs more than 16 reads
+# to plan correctly, and the model may still be mid-verification when it first
+# triggers. Charging saturated-only turns against the same 3-strike budget as a
+# real repeat/failed call gives a model that is about to mutate correctly no
+# room to act on the "stop inspecting, mutate now" guidance it just received.
+# This grace budget is spent only by turns whose sole non-progress reason is
+# saturation; any other non-progress (a stale repeat, a failed tool call)
+# still counts against max_consecutive_nonprogress immediately, unchanged.
+DEFAULT_MAX_SATURATION_GRACE_TURNS = 3
 # Read-only evidence is re-sent verbatim on every later turn, so a long
 # inspection phase multiplies prefill cost and provider latency without adding
 # information. Only the most recent read-only results stay expanded.
@@ -121,13 +132,14 @@ class AgentLoopLimits:
     max_total_tool_calls: int
     max_tool_calls_per_response: int = DEFAULT_MAX_TOOL_CALLS_PER_RESPONSE
     max_consecutive_nonprogress: int = DEFAULT_MAX_CONSECUTIVE_NONPROGRESS
+    max_saturation_grace_turns: int = DEFAULT_MAX_SATURATION_GRACE_TURNS
     retained_read_results: int = DEFAULT_RETAINED_READ_RESULTS
 
     def __post_init__(self) -> None:
         for name in (
             "max_model_turns", "max_total_tool_calls",
             "max_tool_calls_per_response", "max_consecutive_nonprogress",
-            "retained_read_results",
+            "max_saturation_grace_turns", "retained_read_results",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -139,6 +151,10 @@ class AgentLoopLimits:
         if self.max_consecutive_nonprogress > MAX_CONSECUTIVE_NONPROGRESS_LIMIT:
             raise ValueError(
                 "max_consecutive_nonprogress must not exceed "
+                f"{MAX_CONSECUTIVE_NONPROGRESS_LIMIT}")
+        if self.max_saturation_grace_turns > MAX_CONSECUTIVE_NONPROGRESS_LIMIT:
+            raise ValueError(
+                "max_saturation_grace_turns must not exceed "
                 f"{MAX_CONSECUTIVE_NONPROGRESS_LIMIT}")
         if self.max_model_turns > 100:
             raise ValueError("max_model_turns must not exceed 100")
@@ -491,6 +507,7 @@ class OpenAIAgentLoop:
         self._seen_call_ids = self._shared.seen_call_ids
         self._progress = self._shared.progress
         self._consecutive_nonprogress = 0
+        self._saturation_grace_used = 0
         self._corrective_message_sent = False
         self._state_message_index: int | None = None
         self._mutation_calls = self._shared.mutation_calls
@@ -685,6 +702,8 @@ class OpenAIAgentLoop:
                 continue
 
             turn_progress = False
+            turn_saturation_only = True
+            saw_tool_call = False
             for call in response.tool_calls:
                 self._tool_calls += 1
                 self._shared.tool_calls = self._tool_calls
@@ -704,8 +723,11 @@ class OpenAIAgentLoop:
                 progress_data["progress_kind"] = progress_data.pop("kind")
                 self.transcript.write(
                     "progress_event", tool=call.name, **progress_data)
+                saw_tool_call = True
                 if event.progressed:
                     turn_progress = True
+                elif event.kind != "inspection_saturated":
+                    turn_saturation_only = False
                 if result.success and result.terminal:
                     self.transcript.write(
                         "terminal_result",
@@ -721,6 +743,23 @@ class OpenAIAgentLoop:
                     )
             if turn_progress:
                 self._consecutive_nonprogress = 0
+            elif (saw_tool_call and turn_saturation_only
+                    and self._saturation_grace_used
+                    < self.limits.max_saturation_grace_turns):
+                # Every non-progressed call this turn was inspection
+                # saturation, not a stale repeat or a failed call: the model
+                # is still working (often mid-verification just before its
+                # first edit on a genuinely large conflict) and already got
+                # the "stop inspecting, mutate now" guidance in host state.
+                # Spend the separate grace budget instead of the harder
+                # 3-strike counter so it has real turns to act on that
+                # guidance before the session is torn down.
+                self._saturation_grace_used += 1
+                self.transcript.write(
+                    "saturation_grace_used",
+                    consecutive=self._saturation_grace_used,
+                    threshold=self.limits.max_saturation_grace_turns,
+                )
             else:
                 self._record_nonprogress()
         return False, "Native session reached --openai-max-steps before finish."
