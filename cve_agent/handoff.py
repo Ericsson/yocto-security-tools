@@ -133,7 +133,18 @@ def refresh_repository_handoff(
 ) -> RepositoryHandoff:
     """Reissue a handoff for a narrowly audited provider retry state."""
     captured = capture_handoff_state(workspace)
-    authorized = set(allowed_paths) | set(manifest.known_generated_paths)
+    # sequence_paths covers the remaining commits of a conflicted fix series
+    # that a host-driven `git cherry-pick --continue` applies without a
+    # further model action (see cve_agent.openai_git_tools
+    # ._validate_trusted_sequence and cve_corrector.handoff
+    # ._pending_sequence_paths). Those paths are trusted durable state from
+    # the prior attempt, not part of the model's writable scope, so a retry
+    # handoff must authorize them the same way the original session's
+    # terminal verification does, or a session that correctly landed a
+    # trusted multi-commit sequence gets its retry crash instead of escalate.
+    authorized = (
+        set(allowed_paths) | set(manifest.known_generated_paths)
+        | set(manifest.sequence_paths))
     tracked_outside = sorted(set(captured.tracked_paths) - authorized)
     if tracked_outside:
         raise HandoffError(

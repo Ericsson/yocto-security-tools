@@ -902,8 +902,21 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             if item.old_mode in {"120000", "160000"}
             or item.new_mode in {"120000", "160000"}
         })
-        rejected = sorted(
-            set(unsupported) | set(self._preflight_changed_paths(changed)))
+        # sequence_paths (the corrector's declared scope for commits Git's
+        # sequencer creates on the model's behalf during a multi-commit
+        # cherry-pick --continue -- see _validate_trusted_sequence) are
+        # trusted durable state, not model-writable scope. Without this,
+        # a session that correctly landed such a sequence (validated and
+        # accepted at cherry-pick time) could never reach finish(done): the
+        # same paths that _validate_trusted_sequence already accepted would
+        # be re-rejected here, forcing an unresolvable escalation loop for a
+        # build that already passed. Matches _validate_trusted_sequence's
+        # ordering: unsupported (symlink/gitlink) paths are never exempted
+        # by sequence authorization, only ordinary scope rejections are.
+        rejected_set = set(self._preflight_changed_paths(changed))
+        rejected_set -= self._sequence_authorized_paths(rejected_set)
+        rejected_set |= set(unsupported)
+        rejected = sorted(rejected_set)
         if rejected:
             raise TerminalInvariantError(
                 "durable changed paths are outside allowed_files", {
