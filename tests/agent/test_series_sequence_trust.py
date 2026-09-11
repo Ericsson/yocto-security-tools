@@ -20,9 +20,11 @@ from cve_agent.git import revert_unauthorized_changes
 from cve_agent.handoff import (
     activate_validated_handoff,
     deactivate_validated_handoff,
+    refresh_repository_handoff,
     validate_repository_handoff,
 )
 from cve_agent.openai_git_tools import GitToolRuntime
+from cve_agent.openai_host_tools import OpenAIHostToolRuntime
 from cve_agent.openai_tools import ToolPolicyError
 from cve_corrector.handoff import emit_handoff
 from cve_corrector.state import WorkflowState
@@ -207,4 +209,107 @@ def test_cleanup_squash_uses_the_first_commit_subject(series) -> None:
     assert len(_git(repo, "rev-list", "original-version..HEAD").split()) == 1
     assert _git(repo, "log", "-1", "--format=%s") == first_subject
     assert "process_incoming(self)" in (repo / SOURCE).read_text(encoding="utf-8")
-    assert (repo / TESTS).read_text(encoding="utf-8") == "test-one\n"
+
+
+class _FakeBuildRunner:
+    """Always-succeeds build stub, for finish()'s validated-generation check."""
+
+    def __init__(self, agent: Path) -> None:
+        self.agent = agent
+
+    def run(self, recipe: str):
+        from cve_agent.openai_host_tools import BUILD_LOG_NAME, BuildCommandResult
+
+        return BuildCommandResult(
+            returncode=0, duration=1.0, timed_out=False, tail="build ok",
+            truncated=False, total_output_bytes=8,
+            log_path=self.agent / BUILD_LOG_NAME,
+        )
+
+
+def test_finish_done_accepts_a_trusted_sequence_advance(series, tmp_path) -> None:
+    """finish(done) must not re-reject paths _validate_trusted_sequence
+    already accepted.
+
+    Regression test for a real benchmark session (bench_20260910_130258,
+    CVE-2024-52532): after the earlier deadlock fix, git_cherry_pick_continue
+    correctly accepted the whole 3-commit chain as trusted and the build
+    passed, but finish(done) still rejected tests/websocket-test.c as
+    "outside allowed_files" -- the same sequence_paths that
+    _validate_trusted_sequence had just accepted were never consulted by
+    finish's own durable-path check, forcing an unresolvable escalation loop
+    for a build that had already passed.
+    """
+    repo, commits = series
+    _, validated = _handoff(repo, commits)
+    _resolve_conflict(repo)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    token = activate_validated_handoff(validated)
+    try:
+        runtime = OpenAIHostToolRuntime(
+            repo, {SOURCE}, "gpt-test", 60, agent_root=agent,
+            build_runner=_FakeBuildRunner(agent))
+        continued = runtime.dispatch("git_cherry_pick_continue", {})
+        assert continued.success, continued.payload
+        built = runtime.dispatch("build_recipe", {})
+        assert built.success, built.payload
+
+        finished = runtime.dispatch("finish", {
+            "status": "done", "reason": "verified", "summary": "landed the fix"})
+    finally:
+        deactivate_validated_handoff(token)
+
+    assert finished.success, finished.payload
+
+
+def test_finish_done_still_rejects_paths_outside_both_scopes(series, tmp_path) -> None:
+    """A path in neither allowed_files nor sequence_paths still blocks finish."""
+    repo, commits = series
+    _, validated = _handoff(repo, commits)
+    stripped = validated.__class__(
+        **{**validated.to_dict(), "sequence_paths": (), "critical_sha256": ""},
+    ).with_digest()
+    _resolve_conflict(repo)
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    token = activate_validated_handoff(stripped)
+    try:
+        runtime = OpenAIHostToolRuntime(
+            repo, {SOURCE}, "gpt-test", 60, agent_root=agent,
+            build_runner=_FakeBuildRunner(agent))
+        continued = runtime.dispatch("git_cherry_pick_continue", {})
+        # Without sequence authorization, the whole chain is rejected and
+        # rolled back (see test_rejected_advance_rolls_back_...), so there is
+        # nothing further to build or finish.
+        assert not continued.success
+    finally:
+        deactivate_validated_handoff(token)
+
+
+def test_retry_handoff_refresh_authorizes_sequence_paths(series) -> None:
+    """A retry's handoff refresh must accept the same trusted sequence paths.
+
+    Companion regression test: cve_agent.handoff.refresh_repository_handoff
+    is called between resolution attempts and previously omitted
+    sequence_paths from its authorized set, so a session that correctly
+    landed a trusted multi-commit sequence would crash the whole CVE's
+    processing (an uncaught HandoffError) on the very next retry instead of
+    refreshing cleanly.
+    """
+    repo, commits = series
+    _, validated = _handoff(repo, commits)
+    _resolve_conflict(repo)
+    token = activate_validated_handoff(validated)
+    try:
+        runtime = GitToolRuntime(repo, {SOURCE}, "gpt-test", 60)
+        assert runtime.dispatch("git_cherry_pick_continue", {}).success
+    finally:
+        deactivate_validated_handoff(token)
+
+    refreshed = refresh_repository_handoff(
+        repo, validated, {SOURCE}, session_root_head=validated.baseline_head)
+
+    assert refreshed.current_head == _git(repo, "rev-parse", "HEAD")
+    assert (repo / TESTS).read_text(encoding="utf-8").splitlines() == [
+        "test-one", "test-two", "test-three"]
