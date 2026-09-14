@@ -5,195 +5,13 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13578/badge)](https://www.bestpractices.dev/projects/13578)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Ericsson/yocto-security-tools/badge)](https://scorecard.dev/viewer/?uri=github.com/Ericsson/yocto-security-tools)
 [![PyPI version](https://img.shields.io/pypi/v/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
-[![Python versions](https://img.shields.io/pypi/pyversions/yocto-security-tools.svg)](https://pypi.org/project/yocto-security-tools/)
-[![Downloads](https://static.pepy.tech/badge/yocto-security-tools)](https://pepy.tech/project/yocto-security-tools)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Ericsson/yocto-security-tools/blob/main/LICENSE)
 
-Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions:
-find fix commits, apply them to recipes, and optionally resolve conflicts
-with AI assistance. See [Documentation](#documentation) below for design
-details on result reporting, artifacts, and validation.
+CVE management tools for Yocto/OpenEmbedded Linux distributions. They find the
+upstream commits that fix a CVE, apply them to your recipes, and optionally use
+an AI backend to resolve the conflicts and build failures that follow.
 
-## Tools
-
-| Tool | Purpose |
-|------|---------|
-| **cve-metadata-extractor** | Find fix commits for CVEs from multiple public sources (Debian, OSV, CVEList V5, Ubuntu CVE Tracker, NVD) |
-| **cve-corrector** | Automate backporting CVE fixes to Yocto recipes using devtool |
-| **cve-agent** | Orchestrate CVE backporting with AI-assisted conflict resolution |
-
-## AI Backends
-
-`cve-agent` resolves patch conflicts using one of several interchangeable AI
-backends, selected with `--backend`:
-
-| Backend | `--backend` value | Needs | Notes |
-|---------|-------------------|-------|-------|
-| Kiro CLI | `kiro` (default) | [kiro-cli](https://github.com/kirodotdev/Kiro) installed | Default backend |
-| Claude Code | `claude` | Authenticated [`claude` CLI](https://code.claude.com) on `PATH` (Anthropic API key, or Bedrock/Vertex) | Pass `--model sonnet\|opus\|haiku` or a full model id |
-| Native OpenAI-compatible | `openai` / `openai-<profile>` | A tool-capable OpenAI-compatible endpoint (incl. local Ollama) | Runs entirely in-process; no external agent CLI or generic shell |
-| Custom plugin | your own name | A file in `extra/` implementing `AIBackend` | See [extra/README.md](extra/README.md) |
-
-All backends run under the same file-scope guard, so the AI can only modify
-the files the upstream fix touches.
-
-**Verify a backend.** Before committing to a real backport run, confirm the
-selected `--backend` is installed, authenticated, and actually responding:
-
-```bash
-cve-agent --backend kiro --verify-backend
-cve-agent --backend claude --verify-backend
-cve-agent --backend openai --verify-backend
-```
-
-`--verify-backend` runs a trivial, no-op round trip against the backend (no
-file or git operations, no CVE workflow) and exits immediately: `0` if the
-backend responded correctly, non-zero with a reason otherwise. It replaces
-`--cve-id`/`--cve-list` for the invocation — omit both when using it.
-
-### Native OpenAI-compatible backend and Ollama
-
-The built-in `openai` backend directly calls a non-streaming
-`/chat/completions` endpoint and runs the agent loop and closed typed tools
-inside this project. It does not invoke another agent CLI and exposes no
-generic shell. Local Ollama is supported without an API key when the selected
-model reliably supports function tools:
-
-```bash
-export CVE_AGENT_OPENAI_MODEL='replace-with-a-tool-capable-model'
-export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
-cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
-```
-
-Committing a fix requires a Git author/committer identity. `cve-agent`
-seeds `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
-`GIT_COMMITTER_EMAIL` at startup from `git config --global user.name`/
-`user.email` if none of the four are already set in the environment —
-explicit environment values always win. The sandboxed session itself never
-reads global or system Git config directly.
-
-Named profiles keep a validated endpoint/model policy in
-`etc/openai-<profile>.cfg` and still use the canonical native `openai` backend:
-
-```bash
-cve-agent --backend openai-site-model --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
-```
-
-Set `CVE_AGENT_OPENAI_CONFIG_DIR` to an absolute directory to use site-local
-profiles. Profiles use a strict INI schema, may select portable Chat
-Completions sampling fields, and may opt into bounded Ollama alias preparation
-before source or build data is sent to the model endpoint. Remote plain HTTP
-still requires both explicit endpoint opt-ins.
-
-Profiles may also declare a strict versioned `[capabilities]` dialect and an
-opt-in source-free `[probe]`. A primary profile can name one different native
-profile in `[fallback]`; only model/provider-addressable failures are eligible,
-while both attempts retain the same deadline, counters, trusted Git state, and
-allowed-file scope. Timeout and rate-limit fallback are separately opt-in.
-
-See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
-for the Ollama setup, exact API contract, configuration precedence, key and
-remote-endpoint gates, interactive approvals, transcript location, limitations,
-and troubleshooting.
-
-## Requirements
-
-- Python 3.10+
-- Git
-- For `cve-corrector` / `cve-agent`: a sourced Yocto build environment (`BBPATH` set)
-- For `cve-agent`: [kiro-cli](https://github.com/kirodotdev/Kiro) (default), [Claude Code](https://code.claude.com) (`--backend claude`), a tool-capable OpenAI-compatible model endpoint (`--backend openai` or `openai-<profile>`), or a custom backend plugin
-- Optional, for `cve-agent`: [`patchutils`](https://cyberelk.net/tim/software/patchutils/) (provides `interdiff`) — when installed, cve-agent enriches its review diff, console output, and AI context with a concise upstream-vs-backport adaptation delta. When absent, cve-agent falls back to its existing behavior unchanged.
-
-## Installation
-
-### From PyPI
-
-```bash
-pip install yocto-security-tools
-```
-
-### From source (development)
-
-```bash
-git clone https://github.com/Ericsson/yocto-security-tools.git
-cd yocto-security-tools
-pip install -e .
-```
-
-## Quick Start
-
-### Find CVE fix metadata
-
-```bash
-# From Yocto cve-summary.json (output of sbom-cve-check)
-cve-metadata-extractor --yocto-summary cve-summary.json --output cve-metadata.json
-
-# For a specific CVE
-cve-metadata-extractor --cve-id CVE-2024-1234 --cve-component-name openssl
-```
-
-### Apply CVE patches
-
-```bash
-# Source your Yocto build environment first
-source oe-init-build-env
-
-# Apply a CVE fix
-cve-corrector --cve-id CVE-2024-1234 --cve-info cve-metadata.json
-
-# Resume after manual conflict resolution
-cve-corrector --continue
-```
-
-**Dependent commit chains.** `--fix-url` is repeatable. A single URL applies
-one fix commit (or one pull request's commits); two or more URLs are treated
-as one ordered, dependent chain — the caller controls the order, and **all**
-commits must apply or the run stops at a conflict (no falling back to
-applying just one of them). Use this when a CVE is fixed by a short series
-of follow-up commits on the same branch, e.g. acl's CVE-2026-XXXXX:
-
-```bash
-cve-corrector --cve-id CVE-2026-XXXXX --recipe acl \
-  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=5906d2868ec8d3b08be556153696e6b1122eeeda \
-  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=0071c6d1fea0a8a6270333baa85fb609be325c26 \
-  --fix-url https://cgit.git.savannah.nongnu.org/cgit/acl.git/commit/?id=170dbd3beff9bd5bdab3f72db1a04bf282f6087c
-```
-
-If the chain conflicts partway through, resolve it and resume with
-`cve-corrector --continue` — the remaining commits are applied in the same
-order. `cve-agent` accepts the same repeated `--fix-url` flag and forwards
-it unchanged to `cve-corrector`.
-
-### AI-assisted backporting
-
-```bash
-# Uses kiro-cli by default; Claude Code and native OpenAI-compatible modes are available
-cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust
-
-# Batch mode
-cve-agent --cve-list cves.txt --cve-info cve-metadata.json --trust
-
-# Use the Claude Code backend (install and authenticate the `claude` CLI first)
-cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend claude --model sonnet
-
-# Use a custom backend plugin from extra/
-cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --backend my_backend
-
-# Disable the knowledge base for this run (no similar-pattern lookups, no
-# pattern saved on success) -- useful for benchmarking a model's unaided
-# performance
-cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust --no-knowledge
-```
-
-**AI backends.** `kiro` (default) drives [kiro-cli](https://github.com/kirodotdev/Kiro);
-`claude` drives the [Claude Code](https://code.claude.com) `claude` CLI directly;
-`openai` / `openai-<profile>` drives a native, in-process OpenAI-compatible
-client (including local Ollama). See [AI Backends](#ai-backends) above for
-requirements, `--verify-backend`, and the full OpenAI-compatible/Ollama setup.
-
-## How It Works
+## How it works
 
 ```mermaid
 graph LR
@@ -202,102 +20,107 @@ graph LR
     A -->|subprocess| C
 ```
 
-Each tool works independently. Chain them via `--cve-info cve-metadata.json`.
+Each tool works standalone. Chain them with `--cve-info cve-metadata.json`.
+
+## Requirements
+
+- Python 3.10+ and Git
+- A sourced Yocto build environment (`BBPATH` set) for `cve-corrector` and
+  `cve-agent`
+- An AI backend for `cve-agent` — see [Modules](#modules) below
+
+## Installation
+
+```bash
+pip install yocto-security-tools
+```
+
+From source:
+
+```bash
+git clone https://github.com/Ericsson/yocto-security-tools.git
+cd yocto-security-tools
+pip install -e .
+```
+
+## Quick start
+
+```bash
+# 1. Find fix commits for the CVEs in a Yocto CVE summary
+cve-metadata-extractor --yocto-summary cve-summary.json --output cve-metadata.json
+
+# 2. Source your Yocto build environment
+source oe-init-build-env
+
+# 3. Apply one fix
+cve-corrector --cve-id CVE-2024-1234 --cve-info cve-metadata.json
+
+# ...or let an AI backend resolve conflicts and build failures for you
+cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json
+```
+
+## Modules
+
+### cve-metadata-extractor
+
+Finds the commits that fix a CVE by querying Debian security-tracker, OSV,
+CVEList V5, the Ubuntu CVE Tracker, and NVD, then writes a single
+`cve-metadata.json` for the other two tools. Accepts a Yocto `cve-summary.json`
+(`--yocto-summary`) or explicit CVE IDs (`--cve-id`). Optionally checks whether
+a fix already landed in an OpenEmbedded branch (`--check-oe`).
+
+→ [Full reference](docs/cve-metadata-extractor.md)
+
+### cve-corrector
+
+Applies a fix to a recipe using `devtool`: cherry-picks the upstream commit into
+the recipe's source tree, builds, runs ptest, and finishes the change into a
+layer. Stops with a specific exit code when it needs help — conflict, build
+failure, or ptest failure — so you can fix it by hand and resume with
+`--continue`. `--fix-url` is repeatable and applies two or more commits as one
+ordered, dependent chain.
+
+→ [Full reference](docs/cve-corrector.md)
+
+### cve-agent
+
+Runs `cve-corrector` as a subprocess and, on a recoverable exit code, starts a
+guarded AI session to resolve the conflict or failure, then retries. Backends
+are interchangeable via `--backend`:
+
+| Backend | `--backend` | Needs |
+|---------|-------------|-------|
+| Kiro CLI | `kiro` (default) | [kiro-cli](https://github.com/kirodotdev/Kiro) |
+| Claude Code | `claude` | Authenticated [`claude` CLI](https://code.claude.com) on `PATH` |
+| Native OpenAI-compatible | `openai` / `openai-<profile>` | A tool-capable OpenAI-compatible endpoint, including local Ollama |
+| Custom plugin | your own name | A file in `extra/` implementing `AIBackend` |
+
+Every backend runs under the same file-scope guard, so the AI can only modify
+the files the upstream fix touches. Check a backend is installed and responding
+with `cve-agent --backend <name> --verify-backend`. Use `--cve-list` for batch
+runs.
+
+→ [Full reference](docs/cve-agent.md) ·
+[OpenAI-compatible/Ollama setup](docs/openai-compatible-backend.md)
 
 ## Documentation
 
-Design and internals for each tool are documented separately from this
-quickstart:
+[docs/README.md](docs/README.md) indexes everything: per-tool references,
+configuration, and the design docs covering the result schema, agent artifacts,
+preflight checks, the corrector-to-agent handoff, safe patch transfer, semantic
+security validation, and the evaluation harness.
 
-| Doc | Covers |
-|-----|--------|
-| [Result schema](docs/result-schema.md) | Versioned workflow/build/security outcome format, incl. the `WORKFLOW_COMPLETED_UNVERIFIED` state before semantic validation accepts a result |
-| [Agent artifacts](docs/agent-artifacts.md) | Durable, redacted per-attempt artifact directories |
-| [Agent preflight](docs/agent-preflight.md) | Typed repository preflight checks before an AI backend starts |
-| [Corrector-to-agent handoff](docs/corrector-agent-handoff.md) | Versioned repository-state boundary crossed after a recoverable corrector failure, incl. manifest and generated-file policy |
-| [Safe patch transfer](docs/safe-patch-transfer.md) | Deterministic patch-transfer plan for cross-layout changes, with content anchors, rollback, and path verification |
-| [Semantic security validation](docs/semantic-security-validation.md) | Host-owned gate that a completed build must pass before it's accepted for release |
-| [Agent progress and budgets](docs/agent-progress-and-budgets.md) | State-based progress accounting and bounded terminal budgets for native model sessions |
-| [Native OpenAI-compatible backend](docs/openai-compatible-backend.md) | Ollama setup, API contract, configuration precedence, endpoint/key gates, and troubleshooting for the `openai` backend |
-| [Evaluation harness](docs/evaluation-harness.md) | Reproducible backend/model benchmarking with fresh snapshots, crossover cohorts, and semantic success metrics |
-| [LLM backport capability suite](docs/llm-backport-capability-suite.md) | Isolated scoring of a model's patch-adaptation ability, independent of Yocto/mirrors/corrector setup |
-| [Adversarial release gate](docs/adversarial-release-gate.md) | Deterministic tests for known false positives and hostile model/provider/repository cases before a controlled evaluation release |
+## Plugins
 
-## Supported Input Formats
-
-| Format | Flag | Description |
-|--------|------|-------------|
-| cve-summary.json | `--yocto-summary` | Output from Yocto's `sbom-cve-check` class |
-| Direct CVE ID | `--cve-id` | One or more CVE identifiers |
-| CVE list file | `--cve-list` | Text file with one CVE ID per line (agent only) |
+Add a CVE data source or an AI backend by dropping a `.py` file into `extra/` —
+no existing file needs to change. See
+[extra/README.md](extra/README.md) for the plugin guide.
 
 ## Configuration
 
-The extractor reads configuration from `cve_metadata_extractor/config.json` by default.
-Override with the `CVE_EXTRACTOR_CONFIG` environment variable.
-
-### Storage (XDG Compliant)
-
-| Directory | Default | Override |
-|-----------|---------|----------|
-| Persistent data | `~/.local/share/yocto-security-tools/` | `CVE_TOOLS_DATA_DIR` |
-| Cache (expendable) | `~/.cache/yocto-security-tools/` | `CVE_TOOLS_CACHE_DIR` |
-
-### Config Keys
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `cvelistv5_url` | GitHub | Git URL to clone CVEList V5 from |
-| `debian_tracker_url` | salsa.debian.org | Git URL for Debian tracker |
-| `nvd_url` | GitHub | Git URL for NVD data |
-| `uct_url` | git.launchpad.net | Git URL to clone the Ubuntu CVE Tracker from |
-| `uct_branch` | `master` | Branch to track for the Ubuntu CVE Tracker clone |
-| `oe_branches` | `["scarthgap"]` | OE branches to check for fix status |
-
-### Ubuntu Sources
-
-By default, Ubuntu CVE data comes from a local clone of the
-[Ubuntu CVE Tracker](https://git.launchpad.net/ubuntu-cve-tracker) (`--uct-dir`,
-default under the shared data directory). The clone is shallow but still
-sizeable (tens of thousands of CVE records) — expect the first run to take a
-while to fetch. Disable with `--no-uct`.
-
-The legacy Ubuntu Security API source (one HTTP request per CVE to
-`ubuntu.com`) is **deprecated and disabled by default**, since it gets
-rate-limited on batch runs. It is slated for removal; use `--ubuntu-api` to
-re-enable it for comparison. `--no-ubuntu` is accepted but is now a no-op
-(it warns and does nothing, since the API source is already off by default).
-
-## Environment Variables
-
-| Variable | Purpose |
-|----------|---------|
-| `CVE_EXTRACTOR_CONFIG` | Override config.json path |
-| `CVE_TOOLS_DATA_DIR` | Override XDG data directory |
-| `CVE_TOOLS_CACHE_DIR` | Override XDG cache directory |
-| `GITHUB_TOKEN` | GitHub API access (required for PR metadata) |
-| `OPENEMBEDDED_TOKEN` | OE mailing list API |
-| `BBPATH` | Required for cve-corrector/cve-agent (Yocto build env) |
-| `CVE_EXTRA_SOURCES_DIR` | Override plugin directory for extractor |
-| `CVE_EXTRA_BACKENDS_DIR` | Override plugin directory for agent backends |
-
-## Plugin System
-
-Add custom CVE data sources or AI backends by dropping `.py` files in the `extra/` directory. See [extra/README.md](extra/README.md) for the plugin development guide.
-
-### Quick Example: Custom Source
-
-```python
-# extra/my_source.py
-from cve_metadata_extractor.sources import CveSource, SOURCE_REGISTRY
-
-class MySource(CveSource):
-    name = 'my_source'
-    def is_enabled(self, args): return True
-    def extract(self, cve_id, stats): return [], [], [], []
-
-SOURCE_REGISTRY.append(MySource())
-```
+Data and cache directories follow the XDG base directory spec and are
+overridable, as are the extractor's config path and the API tokens. See
+[docs/configuration.md](docs/configuration.md).
 
 ## Development
 
