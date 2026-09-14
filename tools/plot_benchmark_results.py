@@ -509,7 +509,7 @@ def plot_cost_by_model(ranked: list[ModelStats], out_path: Path) -> None:
         ('Total credits', [s.total_credits for s in ranked], '#0072B2', '{:.2f}'),
         ('Avg credits per run', [s.avg_credits for s in ranked], '#56B4E9', '{:.2f}'),
     )
-    for ax, (title, values, color, fmt) in zip(axes, panels, strict=True):
+    for ax, (title, values, color, fmt) in zip(axes[:2], panels, strict=True):
         ax.barh(ypos, values, height=0.6, color=color)
         for y, value in enumerate(values):
             ax.text(value + max(values) * 0.02, y, fmt.format(value), va='center', fontsize=9)
