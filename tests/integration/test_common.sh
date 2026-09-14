@@ -28,6 +28,11 @@ fi
 : "${BUILD_DIR:?Set BUILD_DIR to your Yocto build directory (or source oe-init-build-env first)}"
 : "${MIRROR_DIR:=${HOME}/git}"
 
+# Pinned to a fixed scarthgap commit rather than the moving origin/scarthgap
+# branch tip, so integration test runs are reproducible over time. Override
+# with a newer commit/tag when intentionally moving the pin forward.
+: "${OE_SCARTHGAP_REF:=310eec2cb646d7d1a3ca99bad7e37495bb418a0d}"
+
 # Optional
 BUILDTOOLS_ENV="${BUILDTOOLS_ENV:-}"
 
@@ -65,13 +70,13 @@ source_build_env() {
 }
 
 reset_oe_tree() {
-    log "Resetting openembedded-core to clean state..."
+    log "Resetting openembedded-core to clean state (pinned to $OE_SCARTHGAP_REF)..."
     cd "$OE_DIR"
     git am --abort 2>/dev/null || true
     git cherry-pick --abort 2>/dev/null || true
-    git reset --hard origin/scarthgap 2>&1
+    git reset --hard "$OE_SCARTHGAP_REF" 2>&1
     git clean -fd 2>&1 | tail -1
-    git checkout origin/scarthgap 2>&1 || git checkout scarthgap 2>&1
+    git checkout "$OE_SCARTHGAP_REF" 2>&1
     log "Reset complete."
 }
 
