@@ -248,6 +248,30 @@ class TestAggregate:
         assert empty.credits_per_equivalent is None
 
 
+class TestIsLocal:
+    """is_local flags a model that never reported a credit figure, any run."""
+
+    def test_no_credit_figures_at_all_is_local(self) -> None:
+        agent = [
+            _agent_row(model="local-m", credits=""),
+            _agent_row(model="local-m", cve_id="CVE-2", credits=""),
+        ]
+        stats = tool.aggregate(agent, [])
+        assert stats["local-m"].is_local is True
+
+    def test_any_reported_credit_is_not_local(self) -> None:
+        agent = [
+            _agent_row(model="cloud-m", credits="1.5"),
+            _agent_row(model="cloud-m", cve_id="CVE-2", credits=""),
+        ]
+        stats = tool.aggregate(agent, [])
+        assert stats["cloud-m"].is_local is False
+
+    def test_model_with_no_runs_is_not_local(self) -> None:
+        empty = tool.ModelStats(model="none")
+        assert empty.is_local is False
+
+
 class TestRankAndMatrix:
     """Ranking order and the per-CVE grid."""
 

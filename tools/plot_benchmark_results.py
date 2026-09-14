@@ -17,8 +17,13 @@ directory (produced by ``tests/benchmark/run_benchmark.sh``), joins them on
                                  per usable (reference-equivalent) backport
   4. quality_vs_cost.png       - avg credits per run vs. reference-equivalent
                                  rate, one point per model
-  5. effort_by_model.png       - avg wall-clock duration and avg tool calls
-  6. outcome_matrix.png        - per-CVE x per-model outcome grid, which shows
+  5. local_vs_remote.png       - avg duration vs. reference-equivalent rate,
+                                 local (no credit figure) models marked apart
+                                 from cloud-billed ones, to show a local model
+                                 taking longer for the same quality is a good
+                                 trade, not a worse one
+  6. effort_by_model.png       - avg wall-clock duration and avg tool calls
+  7. outcome_matrix.png        - per-CVE x per-model outcome grid, which shows
                                  whether a bad column is a weak model or a bad
                                  row is a CVE that defeats every model
 
@@ -334,6 +339,19 @@ class ModelStats:
         """
         return self.total_credits / self.equivalent if self.equivalent else None
 
+    @property
+    def is_local(self) -> bool:
+        """Whether this model ran with no credit figure reported at all.
+
+        ``credits`` is parsed from kiro-cli's own billing output (see
+        ``tests/benchmark/README.md``); a model driven through the native
+        OpenAI-compatible backend against a local/self-hosted endpoint (e.g.
+        Ollama) never produces one, run after run. A model that merely had a
+        blank credit on *some* runs is not local by this signal — only the
+        complete absence of any credit figure across every recorded run is.
+        """
+        return self.runs > 0 and not self.credits
+
 
 def aggregate(
     agent_rows: list[dict[str, str]], judge_rows: list[dict[str, str]]
@@ -581,6 +599,64 @@ def plot_quality_vs_cost(ranked: list[ModelStats], out_path: Path) -> None:
     plt.close(fig)
 
 
+# Distinct from OUTCOME_COLORS on purpose: local/remote is a deployment axis,
+# not an outcome, and must not be mistaken for one when a reader has both
+# charts open. Still Okabe-Ito for colorblind-safety.
+LOCAL_COLOR = '#009E73'
+REMOTE_COLOR = '#0072B2'
+
+
+def plot_local_vs_remote(ranked: list[ModelStats], out_path: Path) -> None:
+    """Scatter of avg duration against reference-equivalent rate, split by deployment.
+
+    Local models (no credit figure reported at all — see
+    :attr:`ModelStats.is_local`) are typically slower per run than a
+    cloud-billed model, since they run on local/shared hardware rather than a
+    provider's fleet. The point of this chart is to show that trade cleanly:
+    a local model landing the same equivalent rate further right on the time
+    axis is still a good result, since taking longer costs no credits.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.8))
+    seen_local = seen_remote = False
+    for i, stat in enumerate(ranked):
+        local = stat.is_local
+        color = LOCAL_COLOR if local else REMOTE_COLOR
+        marker = '^' if local else 'o'
+        label = None
+        if local and not seen_local:
+            label, seen_local = 'local (no credit figure)', True
+        elif not local and not seen_remote:
+            label, seen_remote = 'cloud-billed', True
+        ax.scatter(stat.avg_duration, stat.equivalent_rate * 100, s=190, color=color,
+                   marker=marker, edgecolor='white', linewidth=1.5, zorder=3, label=label)
+        # Alternate the label above/below the point so two models that land
+        # at a near-identical (duration, rate) don't render as stacked text.
+        y_offset = 10 if i % 2 == 0 else -16
+        ax.annotate(
+            stat.model,
+            (stat.avg_duration, stat.equivalent_rate * 100),
+            textcoords='offset points', xytext=(11, y_offset), fontsize=9.5,
+        )
+
+    ax.set_xlabel('avg duration per run (s)')
+    ax.set_ylabel('reference-equivalent rate (%)')
+    ax.set_ylim(-6, 106)
+    max_dur = max((s.avg_duration for s in ranked), default=1.0)
+    ax.set_xlim(-max_dur * 0.05, max_dur * 1.3)
+    ax.axhline(50, color='#cccccc', linestyle='--', linewidth=1)
+    ax.set_title('Quality vs time, local vs cloud-billed', fontsize=13, fontweight='bold')
+    ax.legend(loc='lower right', fontsize=9.5, frameon=False)
+    ax.grid(alpha=0.25, linestyle=':')
+    ax.set_axisbelow(True)
+    _caption(fig, 'A triangle further right than the circles is the point: a local model '
+                  'taking longer to match their quality still spent no credits doing it.')
+    fig.tight_layout(rect=(0, 0.035, 1, 1))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_effort_by_model(ranked: list[ModelStats], out_path: Path) -> None:
     """Average wall-clock duration and average tool-call count per model."""
     import matplotlib.pyplot as plt
@@ -706,6 +782,7 @@ CHART_BUILDERS = (
     ('bucket_by_model.png', 'raw diff_bucket distribution per model'),
     ('cost_by_model.png', 'total / per-run / per-usable-backport credits'),
     ('quality_vs_cost.png', 'avg credits per run vs equivalent rate'),
+    ('local_vs_remote.png', 'avg duration vs equivalent rate, local vs cloud-billed models'),
     ('effort_by_model.png', 'avg duration and avg tool calls'),
     ('outcome_matrix.png', 'per-CVE x per-model outcome grid'),
 )
@@ -759,6 +836,7 @@ def main() -> None:
     plot_bucket_by_model(ranked, out_dir / 'bucket_by_model.png')
     plot_cost_by_model(ranked, out_dir / 'cost_by_model.png')
     plot_quality_vs_cost(ranked, out_dir / 'quality_vs_cost.png')
+    plot_local_vs_remote(ranked, out_dir / 'local_vs_remote.png')
     plot_effort_by_model(ranked, out_dir / 'effort_by_model.png')
     plot_outcome_matrix(agent_rows, judge_rows, ranked, out_dir / 'outcome_matrix.png')
 
