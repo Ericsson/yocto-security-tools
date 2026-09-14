@@ -11,14 +11,10 @@
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Ericsson/yocto-security-tools/blob/main/LICENSE)
 
-Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions.
-
-Agent result files separate workflow completion, current build evidence, and
-security validation. A successful agent/build workflow is reported as
-`WORKFLOW_COMPLETED_UNVERIFIED` until a trusted semantic validation phase
-accepts it; see [the versioned result schema](docs/result-schema.md). Every
-attempt also has a [durable, redacted artifact directory](docs/agent-artifacts.md)
-created before [typed repository preflight](docs/agent-preflight.md).
+Standalone CVE management tools for Yocto/OpenEmbedded Linux distributions:
+find fix commits, apply them to recipes, and optionally resolve conflicts
+with AI assistance. See [Documentation](#documentation) below for design
+details on result reporting, artifacts, and validation.
 
 ## Tools
 
@@ -28,18 +24,79 @@ created before [typed repository preflight](docs/agent-preflight.md).
 | **cve-corrector** | Automate backporting CVE fixes to Yocto recipes using devtool |
 | **cve-agent** | Orchestrate CVE backporting with AI-assisted conflict resolution |
 
-Recoverable corrector failures cross a validated, versioned repository-state
-boundary before an AI backend starts. See
-[Corrector-to-agent repository handoff](docs/corrector-agent-handoff.md) for
-the manifest, generated-file policy, and explicit merge-mainline handling.
-Cross-layout changes use a [deterministic patch-transfer plan](docs/safe-patch-transfer.md)
-with content anchors, rollback, and exact path verification.
-Completed builds pass through a host-owned
-[semantic security validation gate](docs/semantic-security-validation.md)
-before they are accepted for release.
-Native model sessions use [state-based progress accounting and bounded
-terminal budgets](docs/agent-progress-and-budgets.md) instead of trusting model
-prose or call IDs as evidence of progress.
+## AI Backends
+
+`cve-agent` resolves patch conflicts using one of several interchangeable AI
+backends, selected with `--backend`:
+
+| Backend | `--backend` value | Needs | Notes |
+|---------|-------------------|-------|-------|
+| Kiro CLI | `kiro` (default) | [kiro-cli](https://github.com/kirodotdev/Kiro) installed | Default backend |
+| Claude Code | `claude` | Authenticated [`claude` CLI](https://code.claude.com) on `PATH` (Anthropic API key, or Bedrock/Vertex) | Pass `--model sonnet\|opus\|haiku` or a full model id |
+| Native OpenAI-compatible | `openai` / `openai-<profile>` | A tool-capable OpenAI-compatible endpoint (incl. local Ollama) | Runs entirely in-process; no external agent CLI or generic shell |
+| Custom plugin | your own name | A file in `extra/` implementing `AIBackend` | See [extra/README.md](extra/README.md) |
+
+All backends run under the same file-scope guard, so the AI can only modify
+the files the upstream fix touches.
+
+**Verify a backend.** Before committing to a real backport run, confirm the
+selected `--backend` is installed, authenticated, and actually responding:
+
+```bash
+cve-agent --backend kiro --verify-backend
+cve-agent --backend claude --verify-backend
+cve-agent --backend openai --verify-backend
+```
+
+`--verify-backend` runs a trivial, no-op round trip against the backend (no
+file or git operations, no CVE workflow) and exits immediately: `0` if the
+backend responded correctly, non-zero with a reason otherwise. It replaces
+`--cve-id`/`--cve-list` for the invocation — omit both when using it.
+
+### Native OpenAI-compatible backend and Ollama
+
+The built-in `openai` backend directly calls a non-streaming
+`/chat/completions` endpoint and runs the agent loop and closed typed tools
+inside this project. It does not invoke another agent CLI and exposes no
+generic shell. Local Ollama is supported without an API key when the selected
+model reliably supports function tools:
+
+```bash
+export CVE_AGENT_OPENAI_MODEL='replace-with-a-tool-capable-model'
+export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
+cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
+```
+
+Committing a fix requires a Git author/committer identity. `cve-agent`
+seeds `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+`GIT_COMMITTER_EMAIL` at startup from `git config --global user.name`/
+`user.email` if none of the four are already set in the environment —
+explicit environment values always win. The sandboxed session itself never
+reads global or system Git config directly.
+
+Named profiles keep a validated endpoint/model policy in
+`etc/openai-<profile>.cfg` and still use the canonical native `openai` backend:
+
+```bash
+cve-agent --backend openai-site-model --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
+```
+
+Set `CVE_AGENT_OPENAI_CONFIG_DIR` to an absolute directory to use site-local
+profiles. Profiles use a strict INI schema, may select portable Chat
+Completions sampling fields, and may opt into bounded Ollama alias preparation
+before source or build data is sent to the model endpoint. Remote plain HTTP
+still requires both explicit endpoint opt-ins.
+
+Profiles may also declare a strict versioned `[capabilities]` dialect and an
+opt-in source-free `[probe]`. A primary profile can name one different native
+profile in `[fallback]`; only model/provider-addressable failures are eligible,
+while both attempts retain the same deadline, counters, trusted Git state, and
+allowed-file scope. Timeout and rate-limit fallback are separately opt-in.
+
+See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
+for the Ollama setup, exact API contract, configuration precedence, key and
+remote-endpoint gates, interactive approvals, transcript location, limitations,
+and troubleshooting.
 
 ## Requirements
 
@@ -131,90 +188,10 @@ cve-agent --cve-id CVE-2024-1234 --cve-info cve-metadata.json --trust --no-knowl
 ```
 
 **AI backends.** `kiro` (default) drives [kiro-cli](https://github.com/kirodotdev/Kiro);
-`claude` drives the [Claude Code](https://code.claude.com) `claude` CLI directly.
-The Claude Code backend needs a recent `claude` on `PATH`, already authenticated
-(Anthropic API key, or Bedrock/Vertex), supporting `-p`, `--permission-mode`,
-`--allowedTools`/`--disallowedTools`, `--append-system-prompt`, and `--add-dir`.
-Pass `--model sonnet|opus|haiku` (or a full model id); the default
-`claude-sonnet-5` is mapped to `sonnet`. Both backends run under the same
-file-scope guard, so the AI can only modify the files the upstream fix touches.
-
-**Verify a backend.** Before committing to a real backport run, confirm the
-selected `--backend` is installed, authenticated, and actually responding:
-
-```bash
-cve-agent --backend kiro --verify-backend
-cve-agent --backend claude --verify-backend
-cve-agent --backend openai --verify-backend
-```
-
-`--verify-backend` runs a trivial, no-op round trip against the backend (no
-file or git operations, no CVE workflow) and exits immediately: `0` if the
-backend responded correctly, non-zero with a reason otherwise. It replaces
-`--cve-id`/`--cve-list` for the invocation — omit both when using it.
-
-### Native OpenAI-compatible backend and Ollama
-
-The built-in `openai` backend directly calls a non-streaming
-`/chat/completions` endpoint and runs the agent loop and closed typed tools
-inside this project. It does not invoke another agent CLI and exposes no
-generic shell. Local Ollama is supported without an API key when the selected
-model reliably supports function tools:
-
-```bash
-export CVE_AGENT_OPENAI_MODEL='replace-with-a-tool-capable-model'
-export CVE_AGENT_OPENAI_BASE_URL='http://127.0.0.1:11434/v1'
-cve-agent --backend openai --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
-```
-
-Committing a fix requires a Git author/committer identity. `cve-agent`
-seeds `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
-`GIT_COMMITTER_EMAIL` at startup from `git config --global user.name`/
-`user.email` if none of the four are already set in the environment —
-explicit environment values always win. The sandboxed session itself never
-reads global or system Git config directly.
-
-Named profiles keep a validated endpoint/model policy in
-`etc/openai-<profile>.cfg` and still use the canonical native `openai` backend:
-
-```bash
-cve-agent --backend openai-site-model --cve-id CVE-2024-1234 --cve-info /absolute/path/to/cve-metadata.json
-```
-
-Set `CVE_AGENT_OPENAI_CONFIG_DIR` to an absolute directory to use site-local
-profiles. Profiles use a strict INI schema, may select portable Chat
-Completions sampling fields, and may opt into bounded Ollama alias preparation
-before source or build data is sent to the model endpoint. Remote plain HTTP
-still requires both explicit endpoint opt-ins.
-
-Profiles may also declare a strict versioned `[capabilities]` dialect and an
-opt-in source-free `[probe]`. A primary profile can name one different native
-profile in `[fallback]`; only model/provider-addressable failures are eligible,
-while both attempts retain the same deadline, counters, trusted Git state, and
-allowed-file scope. Timeout and rate-limit fallback are separately opt-in.
-
-See the [native OpenAI-compatible backend guide](docs/openai-compatible-backend.md)
-for the Ollama setup, exact API contract, configuration precedence, key and
-remote-endpoint gates, interactive approvals, transcript location, limitations,
-and troubleshooting.
-
-For backend/model campaigns, use the security-first
-[reproducible evaluation harness](docs/evaluation-harness.md). It enforces
-fresh identical snapshots, immutable same-campaign resume, complete crossover
-cohorts, baseline-health exclusions, decomposed telemetry, and semantic—not
-legacy union—success metrics.
-
-To measure only a model's patch-adaptation ability without Yocto, mirrors,
-metadata extraction, or corrector setup, use the opt-in
-[isolated LLM backport capability suite](docs/llm-backport-capability-suite.md).
-It scores fresh conflicted Git fixtures with host-owned builds, reproducers,
-semantic validation, strict scope checks, and repeated-trial qualification.
-
-Before a controlled evaluation release, run the
-[adversarial release gate](docs/adversarial-release-gate.md). It maps the
-report-derived false positives and hostile model/provider/repository cases to
-offline deterministic tests. Passing this gate does not make build success a
-security proof or remove mandatory semantic and human review.
+`claude` drives the [Claude Code](https://code.claude.com) `claude` CLI directly;
+`openai` / `openai-<profile>` drives a native, in-process OpenAI-compatible
+client (including local Ollama). See [AI Backends](#ai-backends) above for
+requirements, `--verify-backend`, and the full OpenAI-compatible/Ollama setup.
 
 ## How It Works
 
@@ -226,6 +203,25 @@ graph LR
 ```
 
 Each tool works independently. Chain them via `--cve-info cve-metadata.json`.
+
+## Documentation
+
+Design and internals for each tool are documented separately from this
+quickstart:
+
+| Doc | Covers |
+|-----|--------|
+| [Result schema](docs/result-schema.md) | Versioned workflow/build/security outcome format, incl. the `WORKFLOW_COMPLETED_UNVERIFIED` state before semantic validation accepts a result |
+| [Agent artifacts](docs/agent-artifacts.md) | Durable, redacted per-attempt artifact directories |
+| [Agent preflight](docs/agent-preflight.md) | Typed repository preflight checks before an AI backend starts |
+| [Corrector-to-agent handoff](docs/corrector-agent-handoff.md) | Versioned repository-state boundary crossed after a recoverable corrector failure, incl. manifest and generated-file policy |
+| [Safe patch transfer](docs/safe-patch-transfer.md) | Deterministic patch-transfer plan for cross-layout changes, with content anchors, rollback, and path verification |
+| [Semantic security validation](docs/semantic-security-validation.md) | Host-owned gate that a completed build must pass before it's accepted for release |
+| [Agent progress and budgets](docs/agent-progress-and-budgets.md) | State-based progress accounting and bounded terminal budgets for native model sessions |
+| [Native OpenAI-compatible backend](docs/openai-compatible-backend.md) | Ollama setup, API contract, configuration precedence, endpoint/key gates, and troubleshooting for the `openai` backend |
+| [Evaluation harness](docs/evaluation-harness.md) | Reproducible backend/model benchmarking with fresh snapshots, crossover cohorts, and semantic success metrics |
+| [LLM backport capability suite](docs/llm-backport-capability-suite.md) | Isolated scoring of a model's patch-adaptation ability, independent of Yocto/mirrors/corrector setup |
+| [Adversarial release gate](docs/adversarial-release-gate.md) | Deterministic tests for known false positives and hostile model/provider/repository cases before a controlled evaluation release |
 
 ## Supported Input Formats
 
