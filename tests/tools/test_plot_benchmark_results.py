@@ -301,6 +301,63 @@ class TestRankAndMatrix:
         assert ("CVE-1", "b") not in grid
 
 
+class TestAggregateByCve:
+    """aggregate_by_cve pools every model's run of a CVE — the transpose of aggregate."""
+
+    def _rows(self) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        agent = [
+            _agent_row(cve_id="CVE-1", tier="easy", model="a", diff_bucket="minor",
+                       duration_s="100", commands="10"),
+            _agent_row(cve_id="CVE-1", tier="easy", model="b", diff_bucket="major",
+                       duration_s="300", commands="30"),
+            _agent_row(cve_id="CVE-2", tier="hard", model="a", exit_status="14",
+                       diff_bucket="-", diff_lines="-", duration_s="50", commands="5"),
+        ]
+        judge = [{"cve_id": "CVE-1", "model": "b", "judgment": "meaningful"}]
+        return agent, judge
+
+    def test_outcomes_and_tier_are_pooled_per_cve(self) -> None:
+        agent, judge = self._rows()
+        stats = tool.aggregate_by_cve(agent, judge)
+        assert stats["CVE-1"].tier == "easy"
+        assert stats["CVE-1"].runs == 2
+        assert stats["CVE-1"].outcomes[tool.OUTCOME_EQUIVALENT] == 1
+        assert stats["CVE-1"].outcomes[tool.OUTCOME_DIVERGENT] == 1
+        assert stats["CVE-2"].outcomes[tool.OUTCOME_FAILED] == 1
+
+    def test_avg_duration_and_commands_are_pooled_across_models(self) -> None:
+        agent, judge = self._rows()
+        stats = tool.aggregate_by_cve(agent, judge)
+        assert stats["CVE-1"].avg_duration == pytest.approx(200.0)
+        assert stats["CVE-1"].avg_commands == pytest.approx(20.0)
+
+    def test_equivalent_rate(self) -> None:
+        agent, judge = self._rows()
+        stats = tool.aggregate_by_cve(agent, judge)
+        assert stats["CVE-1"].equivalent_rate == pytest.approx(0.5)
+        assert stats["CVE-2"].equivalent_rate == pytest.approx(0.0)
+
+    def test_blank_numeric_cells_are_excluded_not_zeroed(self) -> None:
+        agent = [_agent_row(cve_id="CVE-1", model="a", duration_s="", commands="")]
+        stats = tool.aggregate_by_cve(agent, [])
+        assert stats["CVE-1"].durations == []
+        assert stats["CVE-1"].avg_duration == 0.0
+
+    def test_empty_stats_have_zero_rate(self) -> None:
+        empty = tool.CveStats(cve_id="CVE-0")
+        assert empty.runs == 0
+        assert empty.equivalent_rate == 0.0
+
+    def test_rank_cves_orders_easy_to_hard_then_alphabetically(self) -> None:
+        agent = [
+            _agent_row(cve_id="CVE-H", tier="hard", model="a"),
+            _agent_row(cve_id="CVE-E2", tier="easy", model="a"),
+            _agent_row(cve_id="CVE-E1", tier="easy", model="a"),
+        ]
+        ranked = tool.rank_cves(tool.aggregate_by_cve(agent, []))
+        assert [s.cve_id for s in ranked] == ["CVE-E1", "CVE-E2", "CVE-H"]
+
+
 class TestReadCsv:
     """CSV loading tolerates a missing judge file."""
 
