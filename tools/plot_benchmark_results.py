@@ -23,7 +23,10 @@ directory (produced by ``tests/benchmark/run_benchmark.sh``), joins them on
                                  taking longer for the same quality is a good
                                  trade, not a worse one
   6. effort_by_model.png       - avg wall-clock duration and avg tool calls
-  7. outcome_matrix.png        - per-CVE x per-model outcome grid, which shows
+  7. cve_distribution.png      - per-CVE avg duration, avg tool calls, and
+                                 reference-equivalent (success) rate, pooled
+                                 across all models
+  8. outcome_matrix.png        - per-CVE x per-model outcome grid, which shows
                                  whether a bad column is a weak model or a bad
                                  row is a CVE that defeats every model
 
@@ -392,6 +395,90 @@ def rank_models(stats: dict[str, ModelStats]) -> list[ModelStats]:
     )
 
 
+@dataclass
+class CveStats:
+    """Aggregated benchmark figures for one CVE, pooled across all models.
+
+    Where :class:`ModelStats` answers "how did this model do across the
+    roster?", this answers "how did the roster do on this CVE?" — the
+    complementary marginal of the same per-CVE x per-model outcome grid used
+    by :func:`build_matrix`.
+    """
+
+    cve_id: str
+    tier: str = ''
+    outcomes: Counter[str] = field(default_factory=Counter)
+    durations: list[float] = field(default_factory=list)
+    commands: list[float] = field(default_factory=list)
+
+    @property
+    def runs(self) -> int:
+        """Number of benchmark runs recorded for this CVE, across models."""
+        return sum(self.outcomes.values())
+
+    @property
+    def avg_duration(self) -> float:
+        """Mean wall-clock seconds per run."""
+        return sum(self.durations) / len(self.durations) if self.durations else 0.0
+
+    @property
+    def avg_commands(self) -> float:
+        """Mean tool-call count per run."""
+        return sum(self.commands) / len(self.commands) if self.commands else 0.0
+
+    @property
+    def equivalent(self) -> int:
+        """Count of runs that landed a reference-equivalent backport."""
+        return self.outcomes[OUTCOME_EQUIVALENT]
+
+    @property
+    def equivalent_rate(self) -> float:
+        """Fraction of runs that landed a reference-equivalent backport (0..1)."""
+        return self.equivalent / self.runs if self.runs else 0.0
+
+
+def aggregate_by_cve(
+    agent_rows: list[dict[str, str]], judge_rows: list[dict[str, str]]
+) -> dict[str, CveStats]:
+    """Join agent and judge rows on ``(cve_id, model)`` and aggregate per CVE.
+
+    This pools every model's run of a given CVE into one entry, the transpose
+    of :func:`aggregate`. A CVE with a low equivalent rate and high duration
+    here is expensive and hard for the whole roster, not just one model.
+
+    Args:
+        agent_rows: Rows from ``agent_results.csv``.
+        judge_rows: Rows from ``judge_results.csv``.
+
+    Returns:
+        Mapping of CVE ID to its :class:`CveStats`.
+    """
+    judge_by_key = {(r['cve_id'], r['model']): r for r in judge_rows}
+    stats: dict[str, CveStats] = {}
+    for row in agent_rows:
+        cve = row['cve_id']
+        entry = stats.setdefault(cve, CveStats(cve_id=cve))
+        if not entry.tier:
+            entry.tier = row.get('tier', '')
+        judge_row = judge_by_key.get((cve, row['model']))
+        entry.outcomes[classify_outcome(row, judge_row)] += 1
+        for value, target in (
+            (_to_float(row.get('duration_s')), entry.durations),
+            (_to_float(row.get('commands')), entry.commands),
+        ):
+            if value is not None:
+                target.append(value)
+    return stats
+
+
+def rank_cves(stats: dict[str, CveStats]) -> list[CveStats]:
+    """Order CVEs easy->hard, then alphabetically — matches build_matrix."""
+    return sorted(
+        stats.values(),
+        key=lambda s: (TIER_RANK.get(s.tier, 3), s.cve_id),
+    )
+
+
 def build_matrix(
     agent_rows: list[dict[str, str]], judge_rows: list[dict[str, str]]
 ) -> tuple[list[str], dict[str, str], dict[tuple[str, str], str]]:
@@ -693,6 +780,63 @@ def plot_effort_by_model(ranked: list[ModelStats], out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_cve_distribution(ranked_cves: list[CveStats], out_path: Path) -> None:
+    """Per-CVE avg duration, avg tool calls, and equivalent (success) rate.
+
+    Pools every model's run of each CVE, the transpose of
+    :func:`plot_effort_by_model` / :func:`plot_outcome_by_model`: those show
+    per-model figures across the roster, this shows per-CVE figures across
+    all models. A CVE that is slow and low-success for every model is a
+    property of that CVE, not of any one model.
+    """
+    import matplotlib.pyplot as plt
+
+    labels = [f'{s.cve_id} ({s.tier})' for s in ranked_cves]
+    ypos = list(range(len(ranked_cves)))
+    fig, axes = plt.subplots(1, 3, figsize=(14, 0.42 * len(ranked_cves) + 2.6), sharey=True)
+
+    panels = (
+        ('Avg duration', [s.avg_duration for s in ranked_cves], '#0072B2', 's'),
+        ('Avg tool calls', [s.avg_commands for s in ranked_cves], '#CC79A7', ''),
+    )
+    for ax, (title, values, color, unit) in zip(axes[:2], panels, strict=True):
+        ax.barh(ypos, values, height=0.62, color=color)
+        top = max(values) if values else 1.0
+        for y, value in enumerate(values):
+            ax.text(value + top * 0.02, y, f'{value:.0f}{unit}', va='center', fontsize=8)
+        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_xlim(0, top * 1.22 if top else 1)
+        ax.grid(axis='x', alpha=0.25, linestyle=':')
+        ax.set_axisbelow(True)
+
+    ax = axes[2]
+    rates = [s.equivalent_rate * 100 for s in ranked_cves]
+    colors = [
+        OUTCOME_COLORS[OUTCOME_EQUIVALENT] if r >= 50 else OUTCOME_COLORS[OUTCOME_DIVERGENT]
+        for r in rates
+    ]
+    ax.barh(ypos, rates, height=0.62, color=colors)
+    for y, (rate, stat) in enumerate(zip(rates, ranked_cves, strict=True)):
+        ax.text(rate + 2.5, y, f'{rate:.0f}% ({stat.equivalent}/{stat.runs})',
+                va='center', fontsize=8)
+    ax.set_title('Reference-equivalent rate', fontsize=11, fontweight='bold')
+    ax.set_xlim(0, 118)
+
+    axes[0].set_yticks(ypos)
+    axes[0].set_yticklabels(labels, fontsize=8.5)
+    axes[0].invert_yaxis()
+    for a in axes:
+        a.grid(axis='x', alpha=0.25, linestyle=':')
+        a.set_axisbelow(True)
+    fig.suptitle('Per-CVE distribution across all models', fontsize=13, fontweight='bold')
+    _caption(fig, 'Pools every model\'s run of each CVE. A row that is slow and low-success '
+                  'here is hard for the whole roster, not just one model — compare with '
+                  'outcome_matrix.png for the per-model breakdown.')
+    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_outcome_matrix(
     agent_rows: list[dict[str, str]],
     judge_rows: list[dict[str, str]],
@@ -784,6 +928,7 @@ CHART_BUILDERS = (
     ('quality_vs_cost.png', 'avg credits per run vs equivalent rate'),
     ('local_vs_remote.png', 'avg duration vs equivalent rate, local vs cloud-billed models'),
     ('effort_by_model.png', 'avg duration and avg tool calls'),
+    ('cve_distribution.png', 'per-CVE avg duration, avg tool calls, and success rate'),
     ('outcome_matrix.png', 'per-CVE x per-model outcome grid'),
 )
 
@@ -838,6 +983,8 @@ def main() -> None:
     plot_quality_vs_cost(ranked, out_dir / 'quality_vs_cost.png')
     plot_local_vs_remote(ranked, out_dir / 'local_vs_remote.png')
     plot_effort_by_model(ranked, out_dir / 'effort_by_model.png')
+    plot_cve_distribution(rank_cves(aggregate_by_cve(agent_rows, judge_rows)),
+                           out_dir / 'cve_distribution.png')
     plot_outcome_matrix(agent_rows, judge_rows, ranked, out_dir / 'outcome_matrix.png')
 
     print()
