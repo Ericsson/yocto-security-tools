@@ -21,6 +21,9 @@ _Formatter = Callable[[Mapping[str, object]], str | None]
 
 def _tool_request(data: Mapping[str, object]) -> str:
     tool = data.get("tool", "?")
+    summary = data.get("argument_summary")
+    if isinstance(summary, str) and summary:
+        return f"tool_request: {tool} ({summary})"
     return f"tool_request: {tool}"
 
 
@@ -64,6 +67,19 @@ def _progress_warning(data: Mapping[str, object]) -> str:
     return f"progress_warning: consecutive={consecutive}/{threshold}"
 
 
+def _progress_event(data: Mapping[str, object]) -> str | None:
+    # Only surface the non-progressed classification: a plain "progressed"
+    # event carries no diagnostic value on its own (the turn already reset
+    # the counter), while "no_new_evidence"/"inspection_saturated" are
+    # exactly what a bare progress_warning cannot show — which tool call,
+    # in which turn, was judged not to have advanced the session.
+    if data.get("progressed") is True:
+        return None
+    tool = data.get("tool", "?")
+    kind = data.get("progress_kind", "?")
+    return f"progress_event: {tool} \u2192 {kind}"
+
+
 def _retry(data: Mapping[str, object]) -> str:
     attempt = data.get("attempt", "?")
     delay = data.get("delay", "?")
@@ -85,6 +101,7 @@ _FORMATTERS: dict[str, _Formatter] = {
     "tool_request": _tool_request,
     "assistant_response": _assistant_response,
     "tool_result": _tool_result,
+    "progress_event": _progress_event,
     "terminal_result": _terminal_result,
     "session_end": _session_end,
     "session_error": _session_error,

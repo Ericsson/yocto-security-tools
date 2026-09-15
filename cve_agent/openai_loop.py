@@ -63,6 +63,10 @@ MAX_TOOL_ARGUMENT_NODES = 20_000
 MAX_TRANSCRIPT_EVENT_BYTES = 16 * 1024
 MAX_TRANSCRIPT_STRING_CHARS = 4096
 MAX_TRANSCRIPT_NODES = 512
+# Best-effort, path-only argument echo for tool_request events. Bounded hard
+# so a pathological argument can never make the mandatory audit write large
+# or slow; this is display convenience, not a parsed/validated value.
+MAX_ARGUMENT_SUMMARY_CHARS = 200
 
 _BUILD_RELEVANT_MUTATIONS = frozenset({
     "replace_in_file", "replace_lines", "apply_patch_hunks", "write_file",
@@ -792,6 +796,7 @@ class OpenAIAgentLoop:
             tool_call_id=call.id,
             tool=call.name,
             argument_bytes=len(call.arguments.encode("utf-8")),
+            argument_summary=_summarize_tool_arguments(call.arguments),
         )
         if call.id in self._seen_call_ids:
             self._shared.duplicate_calls += 1
@@ -1004,6 +1009,7 @@ class OpenAIAgentLoop:
                 tool_call_id=call.id,
                 tool=call.name,
                 argument_bytes=len(call.arguments.encode("utf-8")),
+                argument_summary=_summarize_tool_arguments(call.arguments),
             )
             self._append_tool_result(call.id, result)
             self._write_tool_result(call.id, call.name, result, False)
@@ -1063,6 +1069,38 @@ class OpenAIAgentLoop:
 
 class _NonprogressExhausted(Exception):
     """Internal stable exit for repeated assistant nonprogress."""
+
+
+def _summarize_tool_arguments(raw: str) -> str | None:
+    """Best-effort, never-raising echo of a call's target path(s).
+
+    Only for terse human-readable transcript/console display alongside
+    ``tool_request`` — the model's untrusted raw JSON is never treated as
+    validated here, and this must never affect dispatch. Returns ``None``
+    when nothing path-like is found or the JSON cannot be parsed at all.
+    """
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, RecursionError, ValueError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    for field_name in ("path", "file", "file_path"):
+        value = decoded.get(field_name)
+        if isinstance(value, str) and value:
+            return value[:MAX_ARGUMENT_SUMMARY_CHARS]
+    paths = decoded.get("paths")
+    if isinstance(paths, list):
+        strings = [item for item in paths if isinstance(item, str) and item]
+        if strings:
+            joined = ", ".join(strings[:3])
+            if len(strings) > 3:
+                joined += f", +{len(strings) - 3} more"
+            return joined[:MAX_ARGUMENT_SUMMARY_CHARS]
+    query = decoded.get("query") or decoded.get("pattern")
+    if isinstance(query, str) and query:
+        return f"query={query[:MAX_ARGUMENT_SUMMARY_CHARS]}"
+    return None
 
 
 def _decode_tool_arguments(value: str) -> dict[str, object]:
