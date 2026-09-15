@@ -33,6 +33,18 @@ Resolve each conflicted file. Three shapes come up, cheapest-correct first:
    ```bash
    git restore --staged <path>    # index-only; working tree untouched
    ```
+4. **Changelog/news files** — `CHANGES.rst`, `CHANGELOG*`, `NEWS*`, `HISTORY*`
+   and similar release-notes files add no functionality; resolving their
+   conflicts (which are usually just adjacent-entry line churn) burns turns
+   for no build or security benefit. If one of these is in scope and
+   conflicts, restore the stable side and drop the upstream hunk rather than
+   resolving it:
+   ```bash
+   git checkout --ours <file>     # keep the stable branch's existing entries
+   ```
+   or, if it was newly added upstream, `git restore --staged <file>` to leave
+   it out of the commit entirely. Record it with the omitted-file form:
+   `<file>: omitted (changelog entry, no functional change)`.
 
 Then stage ONLY allowed files (`git add <resolved_files>`). If the cherry-pick
 as a whole does not apply, `git cherry-pick --skip` drops it (`--abort` stops
@@ -60,3 +72,4 @@ happens, shorten `.git/MERGE_MSG` and re-run `--continue` (never `--abort` or
 | Struct member renamed | Use stable member name with upstream logic | `Member renamed netdev→ndev in original patch` |
 | Function moved to different file | Apply fix where function lives in stable | `Function in old_file.c in original patch` |
 | Missing helper function | Inline it or use stable equivalent | `Inlined helper_foo() (not in stable)` |
+| Changelog/news entry conflict | Keep stable side, drop the upstream hunk | `CHANGES.rst: omitted (changelog entry, no functional change)` |
