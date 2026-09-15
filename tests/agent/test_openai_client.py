@@ -255,6 +255,21 @@ def test_allowlisted_portable_chat_fields_are_encoded_once():
     assert not ({"extra_body", "headers", "num_ctx"} & set(body))
 
 
+def test_xhigh_reasoning_effort_is_accepted_and_encoded():
+    transport = FakeTransport(FakeResponse())
+    config = _config(openai_reasoning_effort="xhigh")
+    assert config.reasoning_effort == "xhigh"
+    _client(transport, config=config).complete(
+        [{"role": "user", "content": "hello"}], [])
+    body = json.loads(transport.calls[0][1]["data"])
+    assert body["reasoning_effort"] == "xhigh"
+
+
+def test_invalid_reasoning_effort_is_rejected():
+    with pytest.raises(OpenAIConfigurationError, match="reasoning effort"):
+        _config(openai_reasoning_effort="ultra")
+
+
 def test_request_size_limit_accounts_for_portable_chat_fields():
     message = [{"role": "user", "content": "hello"}]
     limits = OpenAIClientLimits(max_request_bytes=200)

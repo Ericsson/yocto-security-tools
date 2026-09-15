@@ -114,6 +114,25 @@ def test_profile_supplies_required_model_and_all_portable_values(tmp_path):
     assert backend.config.reasoning_effort == "none"
 
 
+def test_profile_accepts_xhigh_reasoning_effort(tmp_path):
+    directory = tmp_path / "profiles"
+    _write_profile(directory, text=BASE_PROFILE.replace(
+        "reasoning_effort = none", "reasoning_effort = xhigh"))
+    backend = OpenAICompatibleBackend()
+    backend.configure(_options(), {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
+
+    assert backend.config.reasoning_effort == "xhigh"
+
+
+def test_profile_rejects_unknown_reasoning_effort(tmp_path):
+    directory = tmp_path / "profiles"
+    _write_profile(directory, text=BASE_PROFILE.replace(
+        "reasoning_effort = none", "reasoning_effort = ultra"))
+
+    with pytest.raises(OpenAIProfileError, match="reasoning_effort"):
+        load_openai_profile("test", {"CVE_AGENT_OPENAI_CONFIG_DIR": str(directory)})
+
+
 def test_profile_loads_explicit_capabilities_probe_and_fallback(tmp_path):
     directory = tmp_path / "profiles"
     _write_profile(directory, text=BASE_PROFILE + """
