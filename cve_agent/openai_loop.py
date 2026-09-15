@@ -1041,6 +1041,7 @@ class OpenAIAgentLoop:
             mutation_generation=self.runtime.mutation_generation,
             validated_generation=self.runtime.validated_generation,
             consecutive_nonprogress=self._consecutive_nonprogress,
+            nonprogress_threshold=self.limits.max_consecutive_nonprogress,
             turns_remaining=self.limits.max_model_turns - self._turns,
             tool_calls_remaining=self.limits.max_total_tool_calls - self._tool_calls,
             mutation_calls=self._mutation_calls,
