@@ -192,6 +192,40 @@ def test_read_then_terminal_outcome(tmp_path):
     assert any(event["event"] == "terminal_result" for event in events)
 
 
+def test_tool_request_events_carry_a_path_argument_summary(tmp_path):
+    """The transcript's tool_request event echoes the call's target path.
+
+    Without this, correlating a progress_warning to the specific file or
+    query a model was working on requires cross-referencing sequence numbers
+    against a separate argument_bytes count -- this makes the live log and
+    JSONL transcript self-describing.
+    """
+    actions = [
+        _response(_call("one", "read_file_range",
+                        '{"path":"src/urllib3/response.py","start_line":1,"end_line":10}')),
+        _response(_call(
+            "two", "finish",
+            '{"status":"not_applicable","reason":"feature absent"}')),
+    ]
+    _, _, _, _, _, events = _run(tmp_path, actions)
+    requests = [event for event in events if event["event"] == "tool_request"]
+    assert requests[0]["tool"] == "read_file_range"
+    assert requests[0]["argument_summary"] == "src/urllib3/response.py"
+
+
+def test_tool_request_argument_summary_is_none_for_argless_calls(tmp_path):
+    actions = [
+        _response(_call("one", "git_status")),
+        _response(_call(
+            "two", "finish",
+            '{"status":"not_applicable","reason":"feature absent"}')),
+    ]
+    _, _, _, _, _, events = _run(tmp_path, actions)
+    requests = [event for event in events if event["event"] == "tool_request"]
+    assert requests[0]["tool"] == "git_status"
+    assert requests[0]["argument_summary"] is None
+
+
 def test_realistic_inspect_edit_stage_build_finish_sequence(tmp_path):
     actions = [
         _response(_call("c1", "read_file", '{"path":"context.md"}')),
