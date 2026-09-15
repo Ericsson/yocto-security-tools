@@ -264,7 +264,7 @@ allow_insecure_remote_http = true|false
 [chat]
 temperature = 0..2
 top_p = >0..1
-reasoning_effort = none|low|medium|high|max
+reasoning_effort = none|low|medium|high|xhigh|max
 
 [capabilities]
 chat_completions_path = chat/completions

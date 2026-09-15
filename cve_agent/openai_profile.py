@@ -321,9 +321,9 @@ def _parse_chat_values(values: Mapping[str, str]) -> dict[str, object]:
         parsed["top_p"] = result
     if "reasoning_effort" in values:
         effort = values["reasoning_effort"].strip()
-        if effort not in {"none", "low", "medium", "high", "max"}:
+        if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
             raise OpenAIProfileError(
-                "reasoning_effort must be one of: none, low, medium, high, max")
+                "reasoning_effort must be one of: none, low, medium, high, xhigh, max")
         parsed["reasoning_effort"] = effort
     return parsed
 
