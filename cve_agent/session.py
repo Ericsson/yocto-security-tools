@@ -381,9 +381,28 @@ def guarded_session(context_file: Path, workspace_path: Path,
     except BaseException as exc:
         cleanup_errors.append(exc)
 
+    # Paths already committed before this attempt started (original-version..
+    # pre_session_head) are prior attempts' work in the same conflict series,
+    # already vetted and authorized when *those* attempts' handoffs were
+    # refreshed. `allowed` only covers this attempt's own narrow conflict
+    # scope, so without this a no-progress retry — one that makes zero
+    # repository changes of its own — would see an earlier attempt's
+    # already-committed file as unauthorized, squash it back out during
+    # cleanup, and then crash on HANDOFF_RETRY_SCOPE_DRIFT for a diff that
+    # cleanup itself just introduced. See tests/agent/test_retry_scope_drift.py.
+    previously_committed = (
+        set(run_git_stdout(
+            ['diff', '--name-only', 'original-version..' + pre_session_head],
+            cwd=workspace_path,
+        ).splitlines())
+        if pre_session_head is not None
+        else set()
+    )
+
     if workspace_path.exists():
         try:
-            revert_unauthorized_changes(workspace_path, allowed, sequence_paths)
+            revert_unauthorized_changes(
+                workspace_path, allowed, sequence_paths, previously_committed)
         except BaseException as exc:
             cleanup_errors.append(exc)
         if pre_session_head is not None:
@@ -405,6 +424,7 @@ def guarded_session(context_file: Path, workspace_path: Path,
             handoff = refresh_repository_handoff(
                 workspace_path, handoff, allowed,
                 session_root_head=pre_session_head,
+                previously_committed=previously_committed,
             )
             if artifact_run is not None:
                 artifact_run.event(

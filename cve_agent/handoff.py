@@ -130,8 +130,23 @@ def refresh_repository_handoff(
     manifest: RepositoryHandoff,
     allowed_paths: set[str],
     session_root_head: str | None = None,
+    previously_committed: set[str] | None = None,
 ) -> RepositoryHandoff:
-    """Reissue a handoff for a narrowly audited provider retry state."""
+    """Reissue a handoff for a narrowly audited provider retry state.
+
+    Args:
+        workspace: Devtool workspace repository.
+        manifest: The handoff being refreshed.
+        allowed_paths: This attempt's narrow writable scope.
+        session_root_head: HEAD at the start of this attempt.
+        previously_committed: Paths already committed between
+            ``original-version`` and ``session_root_head`` — i.e. work landed
+            and authorized by an earlier attempt in the same conflict series.
+            ``allowed_paths`` narrows to each attempt's own conflicted commit,
+            so without this a no-progress retry appears to have "unauthorized
+            commits" the moment cleanup re-derives the same paths, even
+            though nothing about this attempt actually touched them.
+    """
     captured = capture_handoff_state(workspace)
     # sequence_paths covers the remaining commits of a conflicted fix series
     # that a host-driven `git cherry-pick --continue` applies without a
@@ -144,7 +159,7 @@ def refresh_repository_handoff(
     # trusted multi-commit sequence gets its retry crash instead of escalate.
     authorized = (
         set(allowed_paths) | set(manifest.known_generated_paths)
-        | set(manifest.sequence_paths))
+        | set(manifest.sequence_paths) | (previously_committed or set()))
     tracked_outside = sorted(set(captured.tracked_paths) - authorized)
     if tracked_outside:
         raise HandoffError(

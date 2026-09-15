@@ -443,7 +443,8 @@ def remove_notes_hook(workspace_path: Path) -> None:
 
 def revert_unauthorized_changes(workspace_path: Path,
                                 allowed: set[str],
-                                sequence_paths: set[str] | None = None) -> None:
+                                sequence_paths: set[str] | None = None,
+                                previously_committed: set[str] | None = None) -> None:
     """Revert committed changes to unauthorized files.
 
     Working-tree changes are left alone (they are ephemeral and get
@@ -457,6 +458,13 @@ def revert_unauthorized_changes(workspace_path: Path,
             sequencer creates for the rest of a fix series. They are part of the
             selected operation even though the model may not write them, so
             stripping them here would silently mutilate an applied series.
+        previously_committed: Paths already committed between
+            ``original-version`` and the start of *this* attempt (i.e. work
+            landed and authorized by an earlier attempt in the same conflict
+            series). ``allowed`` narrows to each attempt's own conflicted
+            commit, so without this a later no-progress retry would see an
+            earlier attempt's already-committed file as unauthorized and
+            squash it back out, silently discarding validated prior work.
     """
 
     # Revert unauthorized committed changes.
@@ -486,7 +494,8 @@ def revert_unauthorized_changes(workspace_path: Path,
     committed = set(run_git_stdout(
         ['diff', '--name-only', 'original-version..HEAD'], workspace_path
     ).splitlines())
-    commit_unauthorized = committed - allowed - (sequence_paths or set())
+    commit_unauthorized = (
+        committed - allowed - (sequence_paths or set()) - (previously_committed or set()))
 
     if not commit_unauthorized:
         return
