@@ -23,6 +23,19 @@ names the line-addressed tools (`git_conflict_regions`, `read_file_range`,
 `replace_lines`/`apply_patch_hunks`) or explicit escalation as the required next
 action. Any mutation, build, or conflict reduction resets the count.
 
+A turn whose *only* non-progress reason is saturation — no stale repeat, no
+failed call — spends a separate grace budget instead of immediately charging
+the no-information ladder: a genuinely large conflict (many files, one very
+divergent region) can need more than 16 reads to plan correctly, and the model
+may still be mid-verification when it first crosses the threshold. Any other
+non-progress reason mixed into the same turn still charges the ladder
+directly. Grace resets alongside the no-information count whenever a turn
+makes real progress, so it is a reprieve for the *current* inspection streak,
+not a one-time whole-session allowance. Configure the bounded 1–10 grace
+budget with `--openai-max-saturation-grace-turns`, the matching environment
+variable, or `max_saturation_grace_turns` in a named profile. The default is
+three.
+
 Read-only tool payloads are re-sent on every later turn, so a long inspection
 phase inflates prefill cost and provider latency without adding information.
 Only the most recent read-only results stay expanded; older ones keep their tool

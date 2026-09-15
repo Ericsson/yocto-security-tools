@@ -36,7 +36,7 @@ _FALSE_VALUES = frozenset({"false", "no", "off", "0"})
 
 _OPENAI_KEYS = frozenset({
     "base_url", "model", "api_key_env", "max_steps", "max_tool_calls",
-    "max_consecutive_no_progress",
+    "max_consecutive_no_progress", "max_saturation_grace_turns",
     "max_output_tokens", "connect_timeout", "request_timeout",
     "allow_remote_endpoint", "allow_insecure_remote_http",
 })
@@ -75,6 +75,7 @@ _OPENAI_INTEGER_BOUNDS = {
     "max_steps": (1, 100),
     "max_tool_calls": (1, 1000),
     "max_consecutive_no_progress": (1, 10),
+    "max_saturation_grace_turns": (1, 10),
     "max_output_tokens": (1, 131072),
     "connect_timeout": (1, 300),
     "request_timeout": (1, 3600),

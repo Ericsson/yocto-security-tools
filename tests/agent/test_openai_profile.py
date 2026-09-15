@@ -28,6 +28,7 @@ model = profile-model
 max_steps = 30
 max_tool_calls = 150
 max_consecutive_no_progress = 4
+max_saturation_grace_turns = 5
 max_output_tokens = 4096
 connect_timeout = 9
 request_timeout = 300
@@ -104,6 +105,7 @@ def test_profile_supplies_required_model_and_all_portable_values(tmp_path):
     assert backend.config.max_steps == 30
     assert backend.config.max_tool_calls == 150
     assert backend.config.max_consecutive_no_progress == 4
+    assert backend.config.max_saturation_grace_turns == 5
     assert backend.config.max_output_tokens == 4096
     assert backend.config.connect_timeout == 9
     assert backend.config.request_timeout == 300
@@ -249,6 +251,7 @@ def test_profile_precedence_cli_then_profile_then_environment(tmp_path):
         "CVE_AGENT_OPENAI_BASE_URL": "http://localhost:9999/v1",
         "CVE_AGENT_OPENAI_MAX_STEPS": "3",
         "CVE_AGENT_OPENAI_MAX_CONSECUTIVE_NO_PROGRESS": "2",
+        "CVE_AGENT_OPENAI_MAX_SATURATION_GRACE_TURNS": "1",
         "CVE_AGENT_OPENAI_TEMPERATURE": "1.5",
         "CVE_AGENT_OPENAI_TOP_P": "0.2",
         "CVE_AGENT_OPENAI_REASONING_EFFORT": "high",
@@ -258,6 +261,7 @@ def test_profile_precedence_cli_then_profile_then_environment(tmp_path):
     assert backend.config.model == "profile-model"
     assert backend.config.max_steps == 30
     assert backend.config.max_consecutive_no_progress == 4
+    assert backend.config.max_saturation_grace_turns == 5
     assert backend.config.temperature == 0.0
     assert backend.config.top_p == 0.95
     assert backend.config.reasoning_effort == "none"
@@ -268,6 +272,7 @@ def test_profile_precedence_cli_then_profile_then_environment(tmp_path):
         openai_max_steps=2,
         openai_max_tool_calls=4,
         openai_max_consecutive_no_progress=5,
+        openai_max_saturation_grace_turns=6,
         openai_max_output_tokens=512,
         openai_connect_timeout=2,
         openai_request_timeout=8,
@@ -283,6 +288,7 @@ def test_profile_precedence_cli_then_profile_then_environment(tmp_path):
     assert config.max_steps == 2
     assert config.max_tool_calls == 4
     assert config.max_consecutive_no_progress == 5
+    assert config.max_saturation_grace_turns == 6
     assert config.max_output_tokens == 512
     assert config.connect_timeout == 2
     assert config.request_timeout == 8
