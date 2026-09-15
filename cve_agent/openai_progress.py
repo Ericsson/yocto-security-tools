@@ -187,6 +187,7 @@ class ProgressTracker:
         mutation_generation: int,
         validated_generation: int | None,
         consecutive_nonprogress: int,
+        nonprogress_threshold: int,
         turns_remaining: int,
         tool_calls_remaining: int,
         mutation_calls: int,
@@ -204,17 +205,29 @@ class ProgressTracker:
         else:
             build_state = "not run"
             required = "inspect new evidence, mutate, build, finish, or escalate"
+        strikes_left = max(0, nonprogress_threshold - consecutive_nonprogress)
         if consecutive_nonprogress == 1:
-            required = "use a different action class or explicit escalation"
+            required = (
+                "use a different action class (mutate, build, finish, or "
+                "escalate) or this session ends automatically in "
+                f"{strikes_left} more non-progressing turn(s)"
+            )
         elif consecutive_nonprogress >= 2:
-            required = "mutate/build/finish or provide a specific escalation blocker"
+            required = (
+                "mutate/build/finish or provide a specific escalation blocker "
+                f"now: only {strikes_left} more non-progressing turn(s) before "
+                "this session is terminated unresolved"
+            )
         if self.inspection_saturated:
             required = (
                 "stop inspecting: nothing has changed after "
                 f"{self.consecutive_inspections} inspections. Use "
                 "git_conflict_regions for exact conflict text, read_file_range "
                 "for exact numbered lines, then replace_lines or "
-                "apply_patch_hunks to edit; or escalate with a specific blocker"
+                "apply_patch_hunks to edit now"
+                + (f" — only {strikes_left} more non-progressing turn(s) before "
+                   "automatic termination" if consecutive_nonprogress > 0 else "")
+                + "; or escalate with a specific blocker"
             )
         fields = {
             "unresolved_conflicts": self.unresolved_conflicts,
@@ -223,6 +236,7 @@ class ProgressTracker:
             "validated_generation": validated_generation,
             "last_evidence_digest": self.last_evidence_digest,
             "repeated_no_information": consecutive_nonprogress,
+            "nonprogress_threshold": nonprogress_threshold,
             "consecutive_inspections": self.consecutive_inspections,
             "turns_remaining": max(0, turns_remaining),
             "tool_calls_remaining": max(0, tool_calls_remaining),
@@ -242,7 +256,8 @@ class ProgressTracker:
             f"Last progress: {self.last_progress}",
             f"Evidence digest: {self.last_evidence_digest}",
             f"State digest: {state_digest}",
-            f"Repeated no-information turns: {consecutive_nonprogress}",
+            f"Repeated no-information turns: {consecutive_nonprogress} of "
+            f"{nonprogress_threshold} (session ends automatically at the limit)",
             f"Inspections since last change: {self.consecutive_inspections}",
             f"Steps remaining: {max(0, turns_remaining)}",
             f"Tool calls remaining: {max(0, tool_calls_remaining)}",
