@@ -107,6 +107,7 @@ def test_state_summary_is_bounded_host_owned_and_secret_free():
         mutation_generation=2,
         validated_generation=1,
         consecutive_nonprogress=1,
+        nonprogress_threshold=3,
         turns_remaining=9,
         tool_calls_remaining=38,
         mutation_calls=2,
@@ -127,6 +128,44 @@ def test_non_json_progress_payload_fails_closed():
         tracker.observe(
             "read_file", "{}",
             _result("read_file", payload={"bad": object()}), dispatched=True)
+
+
+def test_state_summary_names_the_strike_countdown_to_termination():
+    """A weak tool-calling model needs the consequence spelled out, not just
+    a bare counter -- see cve_agent AGENT_NO_PROGRESS investigations where a
+    model kept inspecting through consecutive_nonprogress=1 and 2 without
+    ever mutating, apparently not connecting the number to session
+    termination at the (unstated) threshold."""
+    tracker = ProgressTracker()
+    one_left = tracker.state_summary(
+        mutation_generation=0,
+        validated_generation=None,
+        consecutive_nonprogress=1,
+        nonprogress_threshold=3,
+        turns_remaining=9,
+        tool_calls_remaining=38,
+        mutation_calls=0,
+        build_calls=0,
+        provider_retries=0,
+        deadline_remaining=100.0,
+    )
+    assert "2 more non-progressing turn(s)" in one_left
+    assert "Repeated no-information turns: 1 of 3" in one_left
+
+    two_left = tracker.state_summary(
+        mutation_generation=0,
+        validated_generation=None,
+        consecutive_nonprogress=2,
+        nonprogress_threshold=3,
+        turns_remaining=9,
+        tool_calls_remaining=38,
+        mutation_calls=0,
+        build_calls=0,
+        provider_retries=0,
+        deadline_remaining=100.0,
+    )
+    assert "only 1 more non-progressing turn(s)" in two_left
+    assert "terminated unresolved" in two_left
 
 
 def _inspect(tracker: ProgressTracker, index: int):
@@ -160,6 +199,7 @@ def test_saturated_state_summary_names_the_line_addressed_tools():
         mutation_generation=0,
         validated_generation=None,
         consecutive_nonprogress=0,
+        nonprogress_threshold=3,
         turns_remaining=4,
         tool_calls_remaining=200,
         mutation_calls=0,
@@ -174,6 +214,27 @@ def test_saturated_state_summary_names_the_line_addressed_tools():
     assert "replace_lines" in summary
     assert f"Inspections since last change: {MAX_CONSECUTIVE_INSPECTIONS + 1}" in summary
     assert len(summary.encode()) <= MAX_STATE_SUMMARY_BYTES
+
+
+def test_saturated_state_summary_adds_the_countdown_once_strikes_accrue():
+    tracker = ProgressTracker()
+    for index in range(MAX_CONSECUTIVE_INSPECTIONS + 1):
+        _inspect(tracker, index)
+
+    summary = tracker.state_summary(
+        mutation_generation=0,
+        validated_generation=None,
+        consecutive_nonprogress=2,
+        nonprogress_threshold=3,
+        turns_remaining=4,
+        tool_calls_remaining=200,
+        mutation_calls=0,
+        build_calls=0,
+        provider_retries=0,
+        deadline_remaining=100.0,
+    )
+    assert "stop inspecting" in summary
+    assert "1 more non-progressing turn(s) before automatic termination" in summary
 
 
 @pytest.mark.parametrize("tool,result_kwargs", [
