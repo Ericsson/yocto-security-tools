@@ -121,9 +121,9 @@ class OpenAIConfig:
             if not isinstance(reasoning_effort, str):
                 raise OpenAIConfigurationError("reasoning effort must be a string")
             reasoning_effort = reasoning_effort.strip()
-            if reasoning_effort not in {"none", "low", "medium", "high", "max"}:
+            if reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
                 raise OpenAIConfigurationError(
-                    "reasoning effort must be one of: none, low, medium, high, max")
+                    "reasoning effort must be one of: none, low, medium, high, xhigh, max")
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "base_url", normalized_url)
         object.__setattr__(self, "api_key_env", api_key_env)
@@ -339,9 +339,9 @@ def _resolve_reasoning_effort(
     if not isinstance(raw, str):
         raise OpenAIConfigurationError("reasoning effort must be a string")
     normalized = raw.strip()
-    if normalized not in {"none", "low", "medium", "high", "max"}:
+    if normalized not in {"none", "low", "medium", "high", "xhigh", "max"}:
         raise OpenAIConfigurationError(
-            "reasoning effort must be one of: none, low, medium, high, max")
+            "reasoning effort must be one of: none, low, medium, high, xhigh, max")
     return normalized
 
 

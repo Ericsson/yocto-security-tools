@@ -375,7 +375,7 @@ def _parse_args() -> argparse.Namespace:
                         help='Portable Chat Completions top_p (greater than 0 '
                              'through 1; CVE_AGENT_OPENAI_TOP_P)')
     openai_group.add_argument('--openai-reasoning-effort',
-                        choices=('none', 'low', 'medium', 'high', 'max'),
+                        choices=('none', 'low', 'medium', 'high', 'xhigh', 'max'),
                         help='Portable reasoning effort '
                              '(CVE_AGENT_OPENAI_REASONING_EFFORT)')
     openai_group.add_argument('--openai-allow-remote', action='store_true',
