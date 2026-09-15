@@ -747,6 +747,12 @@ class OpenAIAgentLoop:
                     )
             if turn_progress:
                 self._consecutive_nonprogress = 0
+                # Saturation grace is a reprieve for the *current* inspection
+                # streak, not a whole-session allowance: once real progress
+                # lands, a later unrelated saturation streak (a different
+                # file, a later conflict in the same series) deserves its own
+                # grace budget rather than inheriting an already-spent one.
+                self._saturation_grace_used = 0
             elif (saw_tool_call and turn_saturation_only
                     and self._saturation_grace_used
                     < self.limits.max_saturation_grace_turns):
