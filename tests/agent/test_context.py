@@ -22,6 +22,16 @@ def test_build_phase_instructions_conflict():
     assert "SPDX-License-Identifier" not in result
 
 
+def test_build_phase_instructions_conflict_permits_dropping_changelogs():
+    """Changelog/news conflicts add no functionality; the model should keep
+    the stable side and drop the upstream hunk instead of burning turns
+    resolving line-churn conflicts in CHANGES.rst/CHANGELOG/NEWS files."""
+    result = _build_phase_instructions(EXIT_CONFLICT)
+    assert "Changelog" in result
+    assert "no functional change" in result
+    assert "git checkout --ours <file>" in result
+
+
 def test_build_phase_instructions_build():
     """Build phase embeds ONLY the build fragment (§3)."""
     result = _build_phase_instructions(EXIT_BUILD_ERROR)
