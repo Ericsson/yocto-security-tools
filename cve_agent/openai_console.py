@@ -67,6 +67,19 @@ def _progress_warning(data: Mapping[str, object]) -> str:
     return f"progress_warning: consecutive={consecutive}/{threshold}"
 
 
+def _model_request(data: Mapping[str, object]) -> str:
+    # A visible turn boundary: several tool_request/tool_result/progress_event
+    # lines can belong to one turn, and a progress_warning only fires once
+    # per turn no matter how many calls it contained -- without this marker,
+    # 2-3 strikes packed into a handful of tool calls read as one
+    # undifferentiated block instead of "this whole turn made no progress."
+    turn = data.get("turn", "?")
+    nonprogress = data.get("consecutive_nonprogress")
+    if isinstance(nonprogress, int) and nonprogress > 0:
+        return f"--- turn {turn} (non-progress streak: {nonprogress}) ---"
+    return f"--- turn {turn} ---"
+
+
 def _progress_event(data: Mapping[str, object]) -> str | None:
     # Only surface the non-progressed classification: a plain "progressed"
     # event carries no diagnostic value on its own (the turn already reset
@@ -98,6 +111,7 @@ def _http_failure(data: Mapping[str, object]) -> str:
 
 
 _FORMATTERS: dict[str, _Formatter] = {
+    "model_request": _model_request,
     "tool_request": _tool_request,
     "assistant_response": _assistant_response,
     "tool_result": _tool_result,

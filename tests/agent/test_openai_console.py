@@ -7,6 +7,16 @@ from cve_agent.openai_console import format_console_line
 
 _CASES: list[tuple[str, dict[str, object], str]] = [
     (
+        "model_request",
+        {"sequence": 4, "turn": 1, "consecutive_nonprogress": 0},
+        "[#4] --- turn 1 ---",
+    ),
+    (
+        "model_request",
+        {"sequence": 133, "turn": 6, "consecutive_nonprogress": 1},
+        "[#133] --- turn 6 (non-progress streak: 1) ---",
+    ),
+    (
         "tool_request",
         {"sequence": 5, "tool": "read_file", "tool_call_id": "x"},
         "[#5] tool_request: read_file",
@@ -71,7 +81,6 @@ def test_format_console_line_exact_output(kind, data, expected):
 
 
 def test_unrecognized_kind_returns_none():
-    assert format_console_line("model_request", {"sequence": 1}) is None
     assert format_console_line("profile_loaded", {"sequence": 3}) is None
     assert format_console_line("http_attempt", {"sequence": 4}) is None
     assert format_console_line("nonexistent_kind", {"sequence": 5}) is None
@@ -168,3 +177,21 @@ def test_progress_event_shown_when_it_did_not_count_as_progress():
         {"sequence": 7, "tool": "git_log", "progressed": False,
          "progress_kind": "inspection_saturated"},
     ) == "[#7] progress_event: git_log \u2192 inspection_saturated"
+
+
+def test_model_request_shows_a_plain_turn_marker_with_no_streak():
+    assert format_console_line(
+        "model_request", {"sequence": 4, "turn": 1, "consecutive_nonprogress": 0},
+    ) == "[#4] --- turn 1 ---"
+    assert format_console_line(
+        "model_request", {"sequence": 4, "turn": 1},
+    ) == "[#4] --- turn 1 ---"
+
+
+def test_model_request_shows_the_nonprogress_streak_when_active():
+    assert format_console_line(
+        "model_request", {"sequence": 133, "turn": 6, "consecutive_nonprogress": 1},
+    ) == "[#133] --- turn 6 (non-progress streak: 1) ---"
+    assert format_console_line(
+        "model_request", {"sequence": 172, "turn": 7, "consecutive_nonprogress": 2},
+    ) == "[#172] --- turn 7 (non-progress streak: 2) ---"
