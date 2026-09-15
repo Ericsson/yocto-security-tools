@@ -502,6 +502,64 @@ def test_inspection_saturation_still_fails_once_grace_is_exhausted(tmp_path):
     assert len(warnings) == 3
 
 
+def test_saturation_grace_replenishes_after_real_progress(tmp_path):
+    """Grace is a reprieve for the current inspection streak, not a
+    whole-session allowance: spending it fully, then making real progress
+    (a mutation), then hitting a fresh, unrelated saturation streak must get
+    its own grace turns rather than immediately hard-striking on stale
+    grace usage from earlier in the session.
+    """
+    from cve_agent.openai_progress import MAX_CONSECUTIVE_INSPECTIONS
+
+    warmup = [
+        _response(_call(
+            f"id-{index}", "search_text", json.dumps({"query": f"probe-{index}"})))
+        for index in range(MAX_CONSECUTIVE_INSPECTIONS)
+    ]
+    # Spend all 3 grace turns on saturated (but novel, successful) inspections.
+    exhaust_grace = [
+        _response(_call(
+            f"grace-{index}", "search_text", json.dumps({"query": f"grace-{index}"})))
+        for index in range(3)
+    ]
+    # Real progress: a mutation resets both the strike counter and grace.
+    mutate = [_response(_call(
+        "mutate", "write_file",
+        '{"path":"a.c","content":"fixed","mode":"replace_only"}'))]
+    # A second, unrelated saturation streak long enough to re-saturate
+    # (mutating resets consecutive_inspections to 0 in ProgressTracker).
+    second_warmup = [
+        _response(_call(
+            f"id2-{index}", "search_text", json.dumps({"query": f"probe2-{index}"})))
+        for index in range(MAX_CONSECUTIVE_INSPECTIONS)
+    ]
+    second_saturated = [_response(_call(
+        "grace2-0", "search_text", '{"query":"grace2-0"}'))]
+    finish = [_response(_call(
+        "finish", "finish",
+        '{"status":"not_applicable","reason":"scripted end"}'))]
+
+    actions = (warmup + exhaust_grace + mutate + second_warmup
+               + second_saturated + finish)
+    result, client, _, _, _, events = _run(
+        tmp_path, actions,
+        limits=AgentLoopLimits(
+            100, 100, max_consecutive_nonprogress=3, max_saturation_grace_turns=3))
+
+    # The whole scripted sequence completes: no premature termination, and
+    # in particular no progress_warning fires for the second saturated call
+    # -- it is covered by a freshly replenished grace turn, not a stale one.
+    assert result.resolved
+    assert len(client.requests) == len(actions)
+    warnings = [event for event in events if event["event"] == "progress_warning"]
+    assert warnings == []
+    grace_events = [
+        event for event in events if event["event"] == "saturation_grace_used"]
+    # First streak spends grace turns 1, 2, 3; after the mutation resets it,
+    # the second streak's single saturated call spends grace turn 1 again.
+    assert [event["consecutive"] for event in grace_events] == [1, 2, 3, 1]
+
+
 def test_saturation_grace_does_not_cover_a_stale_repeated_call(tmp_path):
     """A genuine repeat mixed into a saturated turn still counts as a strike."""
     from cve_agent.openai_progress import MAX_CONSECUTIVE_INSPECTIONS
