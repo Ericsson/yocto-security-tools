@@ -929,6 +929,7 @@ def test_write_streams_lines_for_streamed_kinds_only(tmp_path):
     assert lines == [
         "[#1] tool_request: read_file",
         "[#2] tool_result: read_file \u2192 ok",
+        "[#3] --- turn 1 ---",
         "[#4] model: hello",
     ]
 
