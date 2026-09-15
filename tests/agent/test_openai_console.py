@@ -128,3 +128,43 @@ def test_wildly_typed_values_do_not_raise():
     # Non-mapping data would raise on .get() -- format_console_line itself
     # must still not propagate an exception past its boundary.
     assert format_console_line("tool_request", None) is None  # type: ignore[arg-type]
+
+
+def test_tool_request_shows_argument_summary_when_present():
+    assert format_console_line(
+        "tool_request",
+        {"sequence": 5, "tool": "read_file_range",
+         "argument_summary": "src/urllib3/response.py"},
+    ) == "[#5] tool_request: read_file_range (src/urllib3/response.py)"
+
+
+def test_tool_request_falls_back_without_argument_summary():
+    assert format_console_line(
+        "tool_request", {"sequence": 5, "tool": "git_status"},
+    ) == "[#5] tool_request: git_status"
+    assert format_console_line(
+        "tool_request", {"sequence": 5, "tool": "git_status", "argument_summary": None},
+    ) == "[#5] tool_request: git_status"
+
+
+def test_progress_event_hidden_when_it_counted_as_progress():
+    # A progressed event carries no diagnostic value on its own; showing it
+    # for every successful inspection would drown out the signal.
+    assert format_console_line(
+        "progress_event",
+        {"sequence": 6, "tool": "read_file", "progressed": True,
+         "progress_kind": "inspection"},
+    ) is None
+
+
+def test_progress_event_shown_when_it_did_not_count_as_progress():
+    assert format_console_line(
+        "progress_event",
+        {"sequence": 6, "tool": "read_file_range", "progressed": False,
+         "progress_kind": "no_new_evidence"},
+    ) == "[#6] progress_event: read_file_range \u2192 no_new_evidence"
+    assert format_console_line(
+        "progress_event",
+        {"sequence": 7, "tool": "git_log", "progressed": False,
+         "progress_kind": "inspection_saturated"},
+    ) == "[#7] progress_event: git_log \u2192 inspection_saturated"
