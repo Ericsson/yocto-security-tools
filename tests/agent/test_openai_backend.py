@@ -240,6 +240,7 @@ def test_cli_environment_and_default_precedence():
         "OPENAI_BASE_URL": "http://localhost:13000/v1",
         "CVE_AGENT_OPENAI_MAX_STEPS": "11",
         "CVE_AGENT_OPENAI_MAX_CONSECUTIVE_NO_PROGRESS": "4",
+        "CVE_AGENT_OPENAI_MAX_SATURATION_GRACE_TURNS": "7",
     }
     config = OpenAIConfig.from_sources(
         _options(model="cli-model", openai_base_url="http://localhost:14000/v1",
@@ -253,6 +254,7 @@ def test_cli_environment_and_default_precedence():
     assert private.base_url == "http://localhost:12000/v1"
     assert private.max_steps == 11
     assert private.max_consecutive_no_progress == 4
+    assert private.max_saturation_grace_turns == 7
 
     standard = OpenAIConfig.from_sources(
         _options(), {"OPENAI_BASE_URL": "http://localhost:15000/v1"})

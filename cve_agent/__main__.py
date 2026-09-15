@@ -359,6 +359,12 @@ def _parse_args() -> argparse.Namespace:
         '--openai-max-consecutive-no-progress', type=int,
         help='Consecutive host-observed no-progress turns before termination '
              '(1-10; CVE_AGENT_OPENAI_MAX_CONSECUTIVE_NO_PROGRESS; default: 3)')
+    openai_group.add_argument(
+        '--openai-max-saturation-grace-turns', type=int,
+        help='Extra turns granted when every non-progressing call was still-'
+             'novel inspection saturation, not a stale repeat or failure, '
+             'before it counts against --openai-max-consecutive-no-progress '
+             '(1-10; CVE_AGENT_OPENAI_MAX_SATURATION_GRACE_TURNS; default: 3)')
     openai_group.add_argument('--openai-max-output-tokens', type=int,
                         help='Maximum output tokens requested per response '
                              '(CVE_AGENT_OPENAI_MAX_OUTPUT_TOKENS; default: 8192)')

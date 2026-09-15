@@ -32,6 +32,7 @@ DEFAULT_OPENAI_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_MAX_STEPS = 20
 DEFAULT_MAX_TOOL_CALLS = 100
 DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS = 3
+DEFAULT_MAX_SATURATION_GRACE_TURNS = 3
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_REQUEST_TIMEOUT = 120
@@ -39,6 +40,7 @@ DEFAULT_REQUEST_TIMEOUT = 120
 MAX_STEPS_LIMIT = 100
 MAX_TOOL_CALLS_LIMIT = 1000
 MAX_CONSECUTIVE_NO_PROGRESS_LIMIT = 10
+MAX_SATURATION_GRACE_TURNS_LIMIT = 10
 MAX_OUTPUT_TOKENS_LIMIT = 131072
 MAX_CONNECT_TIMEOUT = 300
 MAX_REQUEST_TIMEOUT = 3600
@@ -68,6 +70,7 @@ class OpenAIConfig:
     allow_remote_endpoint: bool
     allow_insecure_remote_http: bool
     max_consecutive_no_progress: int = DEFAULT_MAX_CONSECUTIVE_NO_PROGRESS
+    max_saturation_grace_turns: int = DEFAULT_MAX_SATURATION_GRACE_TURNS
     temperature: float | None = None
     top_p: float | None = None
     reasoning_effort: str | None = None
@@ -103,6 +106,10 @@ class OpenAIConfig:
             "max_consecutive_no_progress": (
                 "maximum consecutive no-progress turns",
                 MAX_CONSECUTIVE_NO_PROGRESS_LIMIT,
+            ),
+            "max_saturation_grace_turns": (
+                "maximum saturation grace turns",
+                MAX_SATURATION_GRACE_TURNS_LIMIT,
             ),
         }
         for field, (label, upper) in bounds.items():
@@ -209,6 +216,18 @@ class OpenAIConfig:
             "maximum consecutive no-progress turns",
             MAX_CONSECUTIVE_NO_PROGRESS_LIMIT,
         )
+        max_saturation_grace_turns = _resolve_bounded_int(
+            _prefer_profile(
+                options.get("openai_max_saturation_grace_turns"),
+                profile_openai,
+                "max_saturation_grace_turns",
+            ),
+            environ,
+            "CVE_AGENT_OPENAI_MAX_SATURATION_GRACE_TURNS",
+            DEFAULT_MAX_SATURATION_GRACE_TURNS,
+            "maximum saturation grace turns",
+            MAX_SATURATION_GRACE_TURNS_LIMIT,
+        )
         connect_timeout = _resolve_bounded_int(
             _prefer_profile(
                 options.get("openai_connect_timeout"), profile_openai, "connect_timeout"),
@@ -259,6 +278,7 @@ class OpenAIConfig:
             allow_remote_endpoint=allow_remote,
             allow_insecure_remote_http=allow_insecure_remote,
             max_consecutive_no_progress=max_consecutive_no_progress,
+            max_saturation_grace_turns=max_saturation_grace_turns,
             temperature=temperature,
             top_p=top_p,
             reasoning_effort=reasoning_effort,
@@ -864,6 +884,8 @@ class OpenAICompatibleBackend(AIBackend):
                     max_total_tool_calls=primary_tool_limit,
                     max_consecutive_nonprogress=(
                         self._config.max_consecutive_no_progress),
+                    max_saturation_grace_turns=(
+                        self._config.max_saturation_grace_turns),
                 ),
                 complete_openai_tool_schemas(),
                 system_message,
@@ -1086,6 +1108,8 @@ class OpenAICompatibleBackend(AIBackend):
                     tool_limit,
                     max_consecutive_nonprogress=(
                         config.max_consecutive_no_progress),
+                    max_saturation_grace_turns=(
+                        config.max_saturation_grace_turns),
                 ),
                 tool_schemas,
                 self.assembled_instructions(),
