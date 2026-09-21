@@ -8,6 +8,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2] - 2026-09-21
+
+### Added
+
+- **cve-agent**: Line-addressed conflict resolution tools —
+  `git_conflict_regions` parses the merge markers in conflicted working-tree
+  files and returns each region's exact line numbers plus byte-exact
+  ours/base/theirs text (malformed markers are reported, not raised, and every
+  region is bounded to stay under the model-visible result ceiling);
+  `read_file_range` returns numbered lines with byte-exact whitespace, the file
+  SHA-256, and a `next_line` continuation; and `replace_lines` edits an exact
+  one-based line range guarded by that SHA-256 with no text-context
+  requirement. Together they resolve a conflict in a handful of calls that
+  previously took dozens of `search_text` probes to reconstruct indentation.
+- **cve-agent**: `max_saturation_grace_turns` knob (`1`–`10`) exposing the
+  reprieve for inspection-saturated turns as a CLI flag
+  (`--openai-max-saturation-grace-turns`), env var
+  (`CVE_AGENT_OPENAI_MAX_SATURATION_GRACE_TURNS`), and profile key, so a large
+  conflict or a weaker model can be granted more turns before termination.
+- **cve-agent**: `xhigh` reasoning-effort option for `--openai-reasoning-effort`,
+  accepted alongside `none`/`low`/`medium`/`high`/`max` in config validation and
+  profile parsing.
+- **cve-agent**: Transient Ollama connection retries — `OllamaPreparationClient`
+  now retries a connection blip or 502/503/504 up to four times with
+  exponential backoff (0.5s/1s/2s, capped at 5s) and emits an
+  `ollama_preparation_retry` transcript event per retry, instead of burning
+  session-level retries on the first failed `/api/show` call.
+- **tests/benchmark**: Per-CVE distribution chart (`cve_distribution.png`) —
+  per-CVE average duration, average tool calls, and reference-equivalent rate
+  pooled across every model that ran it, the transpose of the existing
+  per-model charts.
+- **tests/benchmark**: Local vs cloud-billed comparison chart
+  (`local_vs_remote.png`) — duration plotted against reference-equivalent rate,
+  marking locally hosted models (zero credit figures across every run) apart
+  from cloud-billed ones to make the local-time-vs-credit trade visible.
+- **docs**: Per-tool reference pages — `docs/README.md` index,
+  `docs/cve-metadata-extractor.md`, `docs/cve-corrector.md`,
+  `docs/cve-agent.md`, and `docs/configuration.md`, with all flag tables
+  extracted from the actual argparse help and exit codes from
+  `shared/exit_codes.py`. The README is restructured tool-first with dedicated
+  AI Backends and Documentation sections.
+
+### Changed
+
+- **cve-agent**: Inspection saturation is now a soft nudge, not a hard strike —
+  after 16 consecutive novel-but-fruitless inspections with no mutation, build,
+  conflict reduction, or terminal state, further inspections are classified
+  `inspection_saturated` and stop counting as progress; a grace budget is
+  granted before saturation is charged against the no-progress strike counter,
+  and superseded read-only tool results are digested out of message history to
+  stay within context budgets.
+- **cve-agent**: Allow dropping changelog conflicts during a backport — a
+  conflict in `CHANGES.rst`/`CHANGELOG`/`NEWS`/`HISTORY` may keep the stable
+  side (`git checkout --ours` / `git restore --staged`) and record the omission,
+  consistent with `semantic_validation.py`'s existing docs classification,
+  instead of burning tool-call turns resolving adjacent-entry line churn.
+- **cve-agent**: The host-owned state block now tells the model how many
+  non-progressing turns remain before automatic termination (`2 of 3`) at both
+  the first strike and the inspection-saturated override, instead of a bare
+  counter with no stated threshold.
+- **cve-agent**: Live log now marks model turn boundaries (`--- turn N ---`,
+  with the running non-progress streak) and shows tool target paths and
+  non-progress reasons (`no_new_evidence`/`inspection_saturated`), so a
+  `progress_warning` is visibly linked to the call and file that triggered it.
+- **cve-agent**: The line-editing patch tools use a single `new_text` field name
+  across `apply_patch_hunks`, `replace_lines`, and `replace_in_file`, fixing
+  repeated schema-validation failures when a model reused one tool's field name
+  on another.
+- **build**: `[tool.ruff] target-version` aligned to `py310` to match
+  `requires-python`, activating `UP045`/`UP035` (`Optional[X]` → `X | None`,
+  dropped deprecated `typing` imports) and `B905` (explicit `zip(..., strict=)`).
+- **tests**: `reset_oe_tree` pins to a fixed scarthgap commit
+  (`OE_SCARTHGAP_REF`, overridable) so repeated integration runs land on a
+  stable tree instead of the moving branch tip.
+- **tests/benchmark**: Roster metadata audited against OE-Core ground truth at a
+  fixed scarthgap ref — each CVE now names exactly the upstream commit(s)
+  OE-Core backported, resolved through the recipe's `SRC_URI`
+  require/include chains.
+- Routine dependency bumps: `step-security/harden-runner` and other GitHub
+  Actions in the `actions-deps` group.
+
+### Fixed
+
+- **cve-agent**: Prior attempts' commits are preserved during a no-progress
+  retry — `revert_unauthorized_changes` and `refresh_repository_handoff` now
+  recognize files a previous attempt already committed (`previously_committed`),
+  so cleanup no longer squashes an earlier attempt's fix out of a series and
+  crashes with `HANDOFF_RETRY_SCOPE_DRIFT`.
+- **cve-agent**: Host-driven cherry-pick sequences are accounted for — a
+  `git cherry-pick --continue` that applies the remaining commits of a
+  conflicted series is now trusted (`sequence_paths`), so the session can finish
+  or roll back instead of holding a correct, building fix it cannot land.
+- **cve-agent**: `finish(done)` and the retry handoff refresh now consult the
+  same `sequence_paths` that `_validate_trusted_sequence` accepts, fixing a
+  second-order gap where durable test-file changes from a trusted cherry-pick
+  sequence were still rejected as "outside allowed_files."
+- **cve-agent**: Reference scope is anchored across upstream directory renames —
+  when a fix commit's path was renamed after the recipe's release, the
+  byte-identical pre-image blob at the older path is authorized, fixing
+  `HANDOFF_UNKNOWN_OUT_OF_SCOPE` before any model call (e.g. CVE-2026-24049 /
+  python3-wheel).
+- **cve-agent**: The saturation grace budget resets when real progress lands,
+  so exhausting grace on one file early in a session no longer denies grace to
+  an unrelated saturation streak later in the same session.
+- **cve-agent**: Provider connect/read timeouts are retried like connection
+  errors (a Chat Completions request is stateless), bounded by the remaining
+  session deadline, so a single stalled call no longer tears down and replays a
+  whole AI session; a run-timeout floor is enforced alongside.
+- **cve-corrector**: Replayable recipe `SRC_URI` patches are kept on the CVE
+  branch even when they fail to cherry-pick cleanly, so a fix that depends on a
+  recipe patch's rewrite is no longer resolved against content the devtool
+  branch lacks and rejected with `TRANSFER_CONTEXT_MISMATCH` (e.g.
+  CVE-2025-47273 / python3-setuptools).
+- **tests/benchmark**: Fixed a `ValueError` crash in `plot_cost_by_model` from a
+  mismatched `zip(..., strict=True)` over three axes and two panels, and fixed
+  the roster test.
+
 ## [1.1.0] - 2026-09-07
 
 ### Added
@@ -469,7 +586,8 @@ Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
 - Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
-[1.1.0]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.5...v1.1.0
+[1.2]: https://github.com/Ericsson/yocto-security-tools/compare/v1.1...v1.2
+[1.1.0]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.5...v1.1
 [1.0.5]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.2...v1.0.3
