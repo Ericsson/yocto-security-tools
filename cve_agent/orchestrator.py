@@ -71,6 +71,25 @@ _PREP_CODE_RE = re.compile(r"\b(PREP_[A-Z0-9_]{1,96})\b")
 # backport over commit-message prose would be the worse outcome.
 _MAX_NOTE_REJECTS = 2
 
+# Provider failures that are a property of the request or of the endpoint's
+# dialect rather than of transient server state. A retry sends the same prompt
+# to the same endpoint and fails the same way — at temperature 0 it reproduces
+# the failure verbatim — so an unattended run escalates on the first occurrence
+# instead of spending the whole --max-retries budget (and the session timeout)
+# proving it. Interactive runs are unaffected: there a human is asked before the
+# retry and their explicit yes wins. Timeouts, rate limits, dropped connections,
+# and 5xx are deliberately absent: those are transient and worth retrying.
+_DETERMINISTIC_PROVIDER_FAILURES = frozenset({
+    "PROVIDER_AUTH",
+    "PROVIDER_MODEL_NOT_FOUND",
+    "PROVIDER_REQUEST_REJECTED",
+    "PROVIDER_TOOL_PROTOCOL_UNSUPPORTED",
+    "PROVIDER_REASONING_PROTOCOL_UNSUPPORTED",
+    "PROVIDER_RESPONSE_TRUNCATED",
+    "PROVIDER_MALFORMED_RESPONSE",
+    "PROVIDER_RESPONSE_TOO_LARGE",
+})
+
 
 @dataclasses.dataclass
 class _AttemptOutcome:
@@ -596,6 +615,17 @@ def _resolution_loop(config: AgentConfig, workspace_path: Path,
             # otherwise notes added during a build/ptest amend would never be
             # checked once the conflict phase spent the allowance.
             note_rejects = 0
+        elif (config.trust_mode and outcome.failure_outcome is not None
+                and outcome.failure_outcome.failure_code
+                in _DETERMINISTIC_PROVIDER_FAILURES):
+            print(f"Provider failure {outcome.failure_outcome.failure_code} is "
+                  f"deterministic; not retrying")
+            summary = f"Deterministic provider failure at step {current_step}"
+            if last_failure_reason:
+                summary += f": {last_failure_reason}"
+            return _make_result(
+                config.cve_id, ResultStatus.ESCALATED, total_attempts,
+                start_time, summary, last_failure_outcome)
 
     summary = f"Max retries ({config.max_retries}) exhausted at step {current_step}"
     if last_failure_reason:

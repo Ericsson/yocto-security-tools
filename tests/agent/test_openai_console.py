@@ -72,6 +72,24 @@ _CASES: list[tuple[str, dict[str, object], str]] = [
         {"sequence": 14, "failure": {"code": "connection_lost"}},
         "[#14] http_failure: connection_lost",
     ),
+    (
+        # The specific violation, not the mapped guidance session_end repeats.
+        "client_error",
+        {
+            "sequence": 15,
+            "error_type": "OpenAIResponseTruncatedError",
+            "message": "The model exhausted its output budget.",
+            "detail": "assistant message was truncated before any content",
+        },
+        "[#15] client_error: OpenAIResponseTruncatedError: "
+        "assistant message was truncated before any content",
+    ),
+    (
+        "client_error",
+        {"sequence": 16, "error_type": "OpenAIConnectionError",
+         "message": "Could not connect."},
+        "[#16] client_error: OpenAIConnectionError: Could not connect.",
+    ),
 ]
 
 

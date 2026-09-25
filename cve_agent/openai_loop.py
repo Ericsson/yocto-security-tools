@@ -29,6 +29,7 @@ from .openai_client import (
     OpenAIRateLimitError,
     OpenAIRequestTimeoutError,
     OpenAIResponseSizeError,
+    OpenAIResponseTruncatedError,
     OpenAIRetryableServerError,
 )
 from .openai_console import format_console_line
@@ -562,8 +563,14 @@ class OpenAIAgentLoop:
         except OpenAIClientError as exc:
             resolved = False
             reason = _user_facing_client_error(exc)
+            # `reason` stays the mapped operator guidance, but the exception's
+            # own message is the only record of which schema rule the response
+            # violated. It is our own bounded literal (redacted and length
+            # capped by the transcript), so retaining it as `detail` turns an
+            # otherwise opaque provider failure into a diagnosable one.
             self._best_effort_event(
-                "client_error", error_type=type(exc).__name__, message=reason)
+                "client_error", error_type=type(exc).__name__, message=reason,
+                detail=str(exc))
             failure_outcome = _failure_outcome(
                 FailureClass.PROVIDER_PROTOCOL, exc.code.value)
         except _NonprogressExhausted:
@@ -1239,6 +1246,11 @@ def _user_facing_client_error(error: OpenAIClientError) -> str:
         return (
             "Could not connect to the Chat Completions endpoint; check "
             "--openai-base-url and that the server is running.")
+    if isinstance(error, OpenAIResponseTruncatedError):
+        return (
+            "The model exhausted its output budget before producing content or "
+            "a tool call; raise --openai-max-output-tokens or lower "
+            "--openai-reasoning-effort.")
     if isinstance(error, (OpenAIMalformedJSONError, OpenAIProtocolError)):
         return (
             "The endpoint returned an incompatible Chat Completions response; "

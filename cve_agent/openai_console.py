@@ -61,6 +61,15 @@ def _session_error(data: Mapping[str, object]) -> str:
     return f"session_error: {error_type}: {message}"
 
 
+def _client_error(data: Mapping[str, object]) -> str:
+    # Prefer the exception's own message over the mapped operator guidance:
+    # session_end already mirrors the guidance, so the specific schema or
+    # transport violation is what this line adds.
+    error_type = data.get("error_type", "?")
+    detail = data.get("detail") or data.get("message", "")
+    return f"client_error: {error_type}: {detail}"
+
+
 def _progress_warning(data: Mapping[str, object]) -> str:
     consecutive = data.get("consecutive", "?")
     threshold = data.get("threshold", "?")
@@ -119,6 +128,7 @@ _FORMATTERS: dict[str, _Formatter] = {
     "terminal_result": _terminal_result,
     "session_end": _session_end,
     "session_error": _session_error,
+    "client_error": _client_error,
     "progress_warning": _progress_warning,
     "retry": _retry,
     "http_failure": _http_failure,
