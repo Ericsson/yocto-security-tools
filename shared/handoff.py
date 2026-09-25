@@ -340,12 +340,48 @@ def _tracked_objects(workspace: Path) -> dict[str, str]:
     return objects
 
 
+def _baseline_tracked_objects(workspace: Path) -> dict[str, str]:
+    """Return tracked path to blob object id for the pre-fix baseline tree.
+
+    Content-anchoring a renamed reference path (see
+    ``_content_anchored_path``) needs the pre-image blob that existed before
+    the selected commit's changes were applied. Reading the current index
+    instead is wrong whenever Git's own rename detection already rewrote that
+    path in place: a clean cherry-pick leaves the fixed content there, not
+    the pre-image, so the anchor can never match and the mapping silently
+    fails back to the unmapped upstream path.
+
+    ``original-version`` is tagged by the corrector before any cherry-pick
+    starts, so its tree still holds the untouched pre-image. Fall back to the
+    current index when the tag is unavailable (e.g. call sites that construct
+    a workspace without one).
+    """
+    result = subprocess.run(
+        ["git", "--no-pager", "ls-tree", "-r", "-z", "original-version"],
+        cwd=workspace, env=build_git_env(), stdin=subprocess.DEVNULL,
+        capture_output=True, encoding=TEXT_ENCODING, errors=TEXT_ERRORS,
+        check=False,
+    )
+    if result.returncode != 0:
+        return _tracked_objects(workspace)
+    objects: dict[str, str] = {}
+    for entry in result.stdout.split("\0"):
+        if "\t" not in entry:
+            continue
+        metadata, path = entry.split("\t", 1)
+        fields = metadata.split()
+        if len(fields) >= 3:
+            objects[path] = fields[2]
+    return objects
+
+
 def _workspace_reference_paths(
     workspace: Path, paths: list[str], base: str | None = None,
 ) -> tuple[str, ...]:
     """Map upstream-root paths onto an extracted tracked source root."""
     tracked_objects = _tracked_objects(workspace)
     tracked = set(tracked_objects)
+    baseline_objects = _baseline_tracked_objects(workspace)
     evidenced_prefixes: set[str] = set()
     for path in paths:
         if path in tracked:
@@ -378,7 +414,7 @@ def _workspace_reference_paths(
             continue
         anchored = (
             None if base is None
-            else _content_anchored_path(workspace, base, path, tracked_objects))
+            else _content_anchored_path(workspace, base, path, baseline_objects))
         mapped.add(anchored or path)
     return tuple(sorted(mapped))
 
