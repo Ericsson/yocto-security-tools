@@ -1257,7 +1257,7 @@ def filter_for_judging(agent_rows: list[dict],
 
 
 def judge_diff(diff_text: str, model: str = 'claude-opus-4.8',
-               backend: str = 'kiro') -> tuple[str, str, float | None]:
+               backend: str = 'kiro') -> tuple[str, str, str, float | None]:
     """Ask a fixed judge model whether a diff is meaningful or stylistic-only.
 
     Invokes either a one-shot, non-interactive ``kiro-cli chat`` call or one
@@ -1282,21 +1282,23 @@ def judge_diff(diff_text: str, model: str = 'claude-opus-4.8',
             supplies its model when *model* is empty.
 
     Returns:
-        A ``(judgment, reason, judge_credits)`` tuple. ``judgment`` is
-        ``'meaningful'``, ``'stylistic'``, or ``'comment-only'``; it defaults
-        to ``'meaningful'`` (the more conservative reading) if the response
-        has neither keyword. ``reason`` is the judge's own one-or-two-sentence
-        justification, flattened to a single line and truncated to
-        :data:`JUDGE_REASON_MAX_CHARS`; it is ``''`` when the model offered
-        none. ``judge_credits`` is the parsed credits figure, or ``None`` if
-        not present in the response (and always ``None`` when no call was
-        made).
+        A ``(judgment, reason, full_reason, judge_credits)`` tuple.
+        ``judgment`` is ``'meaningful'``, ``'stylistic'``, or
+        ``'comment-only'``; it defaults to ``'meaningful'`` (the more
+        conservative reading) if the response has neither keyword. ``reason``
+        is the judge's own one-or-two-sentence justification, flattened to a
+        single line and truncated to :data:`JUDGE_REASON_MAX_CHARS` for the
+        CSV; it is ``''`` when the model offered none. ``full_reason`` is the
+        same justification with no sentence or character limit, for callers
+        that persist it separately (e.g. as an artifact file) instead of
+        cramming it into a CSV cell. ``judge_credits`` is the parsed credits
+        figure, or ``None`` if not present in the response (and always
+        ``None`` when no call was made).
     """
     code_diff = strip_comment_only_changes(diff_text)
     if count_diff_changed_lines(code_diff) == 0:
-        return ('comment-only',
-                'Only comment lines differ; the code changes are identical.',
-                None)
+        reason = 'Only comment lines differ; the code changes are identical.'
+        return 'comment-only', reason, reason, None
 
     prompt = (
         "You are classifying a unified diff between two CVE backport "
@@ -1327,8 +1329,8 @@ def judge_diff(diff_text: str, model: str = 'claude-opus-4.8',
         output, credits = _run_openai_judge(prompt, backend, model)
     match = _JUDGMENT_RE.search(output)
     judgment = match.group(1).lower() if match else 'meaningful'
-    reason = _extract_judge_reason(output, match.end() if match else 0)
-    return judgment, reason, credits
+    reason, full_reason = _extract_judge_reason(output, match.end() if match else 0)
+    return judgment, reason, full_reason, credits
 
 
 def _run_openai_judge(prompt: str, backend: str,
@@ -1372,7 +1374,7 @@ def _run_openai_judge(prompt: str, backend: str,
     return response.content or '', None
 
 
-def _extract_judge_reason(output: str, verdict_end: int) -> str:
+def _extract_judge_reason(output: str, verdict_end: int) -> tuple[str, str]:
     """Pull the justification that follows the judge's verdict keyword.
 
     Args:
@@ -1382,10 +1384,13 @@ def _extract_judge_reason(output: str, verdict_end: int) -> str:
             keyword matched, in which case the whole response is considered.
 
     Returns:
-        The first one or two sentences after the verdict, flattened to a
-        single line and truncated to :data:`JUDGE_REASON_MAX_CHARS`. Empty
-        when the judge gave no prose. Credit/usage footers that ``kiro-cli``
-        appends are dropped.
+        A ``(reason, full_reason)`` pair. ``reason`` is the first one or two
+        sentences after the verdict, flattened to a single line and
+        truncated to :data:`JUDGE_REASON_MAX_CHARS`, for the CSV cell.
+        ``full_reason`` is the same flattened text with no sentence or
+        character limit, for callers that persist it separately. Both are
+        ``''`` when the judge gave no prose. Credit/usage footers that
+        ``kiro-cli`` appends are dropped from both.
     """
     tail = output[verdict_end:]
     lines = []
@@ -1398,7 +1403,7 @@ def _extract_judge_reason(output: str, verdict_end: int) -> str:
         lines.append(line)
     text = ' '.join(lines).strip()
     if not text:
-        return ''
+        return '', ''
     # Split only on a period followed by whitespace. Splitting on '!' or '?'
     # too would cut C identifiers apart ('!S_ISLNK', '!=', '?:'), and a period
     # with no following space keeps filenames like 'tar.c' intact.
@@ -1406,4 +1411,4 @@ def _extract_judge_reason(output: str, verdict_end: int) -> str:
     reason = ' '.join(s.strip() for s in sentences[:2]).strip()
     if len(reason) > JUDGE_REASON_MAX_CHARS:
         reason = reason[:JUDGE_REASON_MAX_CHARS - 1].rstrip() + '…'
-    return reason
+    return reason, text

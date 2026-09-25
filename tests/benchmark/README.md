@@ -176,6 +176,8 @@ overwrites another's:
 - `agent-artifacts/<cve>_<model>.<id>/` — the unique host-selected cve-agent
   data root. Durable status and telemetry are read only from the exact run
   beneath this root; `Artifacts:` lines in model-controlled output are ignored.
+  The judge phase also drops a `judge-reason.txt` file into this same run
+  directory (see `judge_results.csv` below) once the row is judged.
 - `run-manifest.json` — immutable roster/metadata digests and resolved agent and
   judge identities used to reject incompatible resumes
 
@@ -226,7 +228,7 @@ cve_id,model,judgment,reason,judge_credits,scope
   `structural-only` for a `partial` overlap whose shared files were identical,
   and `comment-only` when every remaining changed line was a comment (see the
   report note)
-- `reason` — the judge's own one-or-two-sentence justification, flattened to a single line and capped at `bench_lib.JUDGE_REASON_MAX_CHARS`. Free-form prose, so rows are written with `csv.writer` and must be read with a CSV parser rather than `cut -d,`
+- `reason` — the judge's own one-or-two-sentence justification, flattened to a single line and capped at `bench_lib.JUDGE_REASON_MAX_CHARS`. Free-form prose, so rows are written with `csv.writer` and must be read with a CSV parser rather than `cut -d,`. The judge's full, untruncated reasoning (not capped to two sentences) is written alongside this row's own `agent-artifacts/<cve>_<model>.<id>/.../results/cases/<cve>/<run>/judge-reason.txt`, found the same verified way `backfill_diffs.find_artifact_dir` resolves a row's run directory
 - `judge_credits` — credits spent on that one judge call; empty if unavailable (and always empty for `structural-only` and `comment-only`, which make no call)
 - `scope` — `full` when the verdict covers the whole patch (moderate/major rows), or `partial` when it covers only the shared files of a partial overlap
 
