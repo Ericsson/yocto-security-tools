@@ -825,9 +825,15 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase | No
             config, knowledge_base, summary, upstream_sha, recipe,
             details=details
         )
+        resolution_summary = f"Resolved via {config.backend}"
+        if validation.status not in {SecurityStatus.VERIFIED, SecurityStatus.EQUIVALENT}:
+            resolution_summary += (
+                f" — semantic validation {validation.status.value} "
+                f"({validation.reason_code}): {validation.reason}"
+            )
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.CONFLICT_RESOLVED,
-            attempt, start_time, f"Resolved via {config.backend}",
+            attempt, start_time, resolution_summary,
             _completed_semantic_outcome(validation),
         ))
 
