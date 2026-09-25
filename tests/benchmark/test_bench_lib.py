@@ -1216,33 +1216,33 @@ class TestJudgeDiff:
     def test_parses_meaningful(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("MEANINGFUL\nSome extra text.\n")
-            judgment, _, _ = judge_diff("-old\n+new\n")
+            judgment, _, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
 
     def test_parses_stylistic_case_insensitive_with_surrounding_text(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "  stylistic  \nThis is a purely cosmetic change.\n")
-            judgment, _, _ = judge_diff("-old\n+new\n")
+            judgment, _, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'stylistic'
 
     def test_defaults_to_meaningful_when_unparseable(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("I am not sure.\n")
-            judgment, _, _ = judge_diff("-old\n+new\n")
+            judgment, _, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
 
     def test_credits_parsing_delegates_to_parse_kiro_credits(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "MEANINGFUL\n\n Credits: 0.03 \u2022 Time: 1s\n")
-            _, _, credits = judge_diff("-old\n+new\n")
+            _, _, _, credits = judge_diff("-old\n+new\n")
         assert credits == pytest.approx(0.03)
 
     def test_no_credits_line_returns_none(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("STYLISTIC\n")
-            _, _, credits = judge_diff("-old\n+new\n")
+            _, _, _, credits = judge_diff("-old\n+new\n")
         assert credits is None
 
     def test_named_openai_judge_uses_native_single_request(self):
@@ -1250,7 +1250,7 @@ class TestJudgeDiff:
                 'tests.benchmark.bench_lib._run_openai_judge',
                 return_value=("STYLISTIC\nEquivalent condition.\n", None),
         ) as mock_openai, patch('subprocess.run') as mock_run:
-            judgment, reason, credits = judge_diff(
+            judgment, reason, full_reason, credits = judge_diff(
                 "-old\n+new\n",
                 model="",
                 backend="openai-qwen3.8-l40s",
@@ -1258,6 +1258,7 @@ class TestJudgeDiff:
 
         assert judgment == 'stylistic'
         assert reason == 'Equivalent condition.'
+        assert full_reason == 'Equivalent condition.'
         assert credits is None
         mock_openai.assert_called_once()
         assert mock_openai.call_args.args[1:] == (
@@ -1325,23 +1326,25 @@ class TestJudgeReason:
             mock_run.return_value = self._mock_result(
                 "MEANINGFUL\nThe backport adds a !S_ISLNK guard. "
                 "That changes which links are restored.\n")
-            judgment, reason, _ = judge_diff("-old\n+new\n")
+            judgment, reason, full_reason, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
         assert reason == ("The backport adds a !S_ISLNK guard. "
                           "That changes which links are restored.")
+        assert full_reason == reason
 
-    def test_keeps_at_most_two_sentences(self):
+    def test_keeps_at_most_two_sentences_but_full_reason_keeps_all(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "STYLISTIC\nOne. Two. Three. Four.\n")
-            _, reason, _ = judge_diff("-old\n+new\n")
+            _, reason, full_reason, _ = judge_diff("-old\n+new\n")
         assert reason == "One. Two."
+        assert full_reason == "One. Two. Three. Four."
 
     def test_reason_is_a_single_line(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "MEANINGFUL\nFirst part\nwrapped onto two lines.\n")
-            _, reason, _ = judge_diff("-old\n+new\n")
+            _, reason, _, _ = judge_diff("-old\n+new\n")
         assert '\n' not in reason
         assert reason == "First part wrapped onto two lines."
 
@@ -1349,22 +1352,25 @@ class TestJudgeReason:
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "STYLISTIC\nJust a rename.\n\n Credits: 0.02 \u2022 Time: 1s\n")
-            _, reason, credits = judge_diff("-old\n+new\n")
+            _, reason, full_reason, credits = judge_diff("-old\n+new\n")
         assert reason == "Just a rename."
+        assert full_reason == "Just a rename."
         assert credits == pytest.approx(0.02)
 
     def test_empty_reason_when_verdict_only(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result("MEANINGFUL\n")
-            _, reason, _ = judge_diff("-old\n+new\n")
+            _, reason, full_reason, _ = judge_diff("-old\n+new\n")
         assert reason == ''
+        assert full_reason == ''
 
-    def test_reason_is_length_capped(self):
+    def test_reason_is_length_capped_but_full_reason_is_not(self):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = self._mock_result(
                 "MEANINGFUL\n" + ("word " * 200) + "\n")
-            _, reason, _ = judge_diff("-old\n+new\n")
+            _, reason, full_reason, _ = judge_diff("-old\n+new\n")
         assert len(reason) <= JUDGE_REASON_MAX_CHARS
+        assert len(full_reason) > JUDGE_REASON_MAX_CHARS
 
 
 class TestCommentOnlyChanges:
@@ -1443,7 +1449,7 @@ class TestJudgeSkipsCommentOnlyDiffs:
         diff = ("--- b/foo.c\n+++ b/foo.c\n@@ -1,2 +1,2 @@\n"
                 " code();\n-// old\n+// new\n")
         with patch('subprocess.run') as mock_run:
-            judgment, reason, credits = judge_diff(diff)
+            judgment, reason, full_reason, credits = judge_diff(diff)
         mock_run.assert_not_called()
         assert judgment == 'comment-only'
         assert credits is None

@@ -1128,22 +1128,26 @@ for row in filter_for_judging(agent_rows, judge_rows):
             # stdout carries exactly two lines: the CSV row, then a short
             # human-readable summary for the console log.
             if ! payload=$(python3 - "$diff_patch" "$bucket" "$cve_id" \
-                    "$model" "$scope" "$JUDGE_BACKEND" "$JUDGE_MODEL" <<'PY'
+                    "$model" "$scope" "$JUDGE_BACKEND" "$JUDGE_MODEL" \
+                    "$RESULTS_DIR" "$AGENT_BACKEND" <<'PY'
 import csv
 import io
 import sys
 
+from tests.benchmark.backfill_diffs import find_artifact_dir
 from tests.benchmark.bench_lib import judge_diff, scope_diff_to_common_files
 
-diff_patch, bucket, cve_id, model, scope, backend, judge_model = sys.argv[1:]
+(diff_patch, bucket, cve_id, model, scope, backend, judge_model,
+ results_dir, agent_backend) = sys.argv[1:]
 with open(diff_patch, encoding='utf-8', errors='replace') as f:
     diff_text = f.read()
 if bucket == 'partial':
     diff_text = scope_diff_to_common_files(diff_text)
 if not diff_text.strip():
-    judgment, reason, credits = 'structural-only', 'Shared files are identical; only the set of touched files differs.', None
+    reason = 'Shared files are identical; only the set of touched files differs.'
+    judgment, full_reason, credits = 'structural-only', reason, None
 else:
-    judgment, reason, credits = judge_diff(
+    judgment, reason, full_reason, credits = judge_diff(
         diff_text, model=judge_model, backend=backend)
 buf = io.StringIO()
 csv.writer(buf, lineterminator='').writerow(
@@ -1151,6 +1155,15 @@ csv.writer(buf, lineterminator='').writerow(
      '' if credits is None else credits, scope])
 print(buf.getvalue())
 print(f'{judgment} (scope={scope}) -- {reason}'.replace(chr(10), ' '))
+
+# The CSV cell holds a truncated one-or-two-sentence summary; the judge's
+# full, untruncated reasoning is written alongside the case's own agent
+# artifacts instead, where it survives without a column-width tradeoff.
+from pathlib import Path
+run_dir = find_artifact_dir(Path(results_dir), cve_id, model, agent_backend)
+if run_dir is not None:
+    (run_dir / 'judge-reason.txt').write_text(
+        (full_reason or reason or '(no reason given)') + '\n', encoding='utf-8')
 PY
             ); then
                 die "Judge backend '$JUDGE_BACKEND' failed for $cve_id / $model"
