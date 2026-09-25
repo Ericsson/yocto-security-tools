@@ -520,6 +520,74 @@ class TestResolutionLoop:
         assert "model step limit" not in result.resolution_summary
 
     @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_deterministic_provider_failure_fails_fast(self, mock_attempt):
+        """A malformed/truncated provider response must not spend every retry.
+
+        The prompt and endpoint are unchanged between attempts, so at
+        temperature 0 a retry reproduces the failure verbatim.
+        """
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.PROVIDER_PROTOCOL,
+            "PROVIDER_RESPONSE_TRUNCATED",
+        )
+        mock_attempt.return_value = _AttemptOutcome(
+            failure_outcome=failure,
+            failure_reason="The model exhausted its output budget.",
+        )
+
+        result = _resolution_loop(
+            _cfg(max_retries=3, trust_mode=True), Path("/ws"), 1, {}, MagicMock())
+
+        assert mock_attempt.call_count == 1
+        assert result.status is ResultStatus.ESCALATED
+        assert result.outcome is failure
+        assert result.failure_code == "PROVIDER_RESPONSE_TRUNCATED"
+        assert "Deterministic provider failure" in result.resolution_summary
+        assert "output budget" in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_interactive_retry_decision_overrides_fail_fast(self, mock_attempt):
+        """Outside trust mode a human is asked first, so their yes still wins."""
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.PROVIDER_PROTOCOL,
+            "PROVIDER_MALFORMED_RESPONSE",
+        )
+        mock_attempt.return_value = _AttemptOutcome(
+            failure_outcome=failure, failure_reason="incompatible response")
+
+        result = _resolution_loop(
+            _cfg(max_retries=2), Path("/ws"), 1, {}, MagicMock())
+
+        assert mock_attempt.call_count == 2
+        assert "exhausted" in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
+    def test_transient_provider_failure_still_retries(self, mock_attempt):
+        """Rate limits and 5xx are transient, so they keep their retries."""
+        failure = ResultOutcome(
+            WorkflowStatus.FAILED,
+            BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED,
+            FailureClass.PROVIDER_PROTOCOL,
+            "PROVIDER_SERVER_ERROR",
+        )
+        mock_attempt.return_value = _AttemptOutcome(
+            failure_outcome=failure, failure_reason="endpoint unavailable")
+
+        result = _resolution_loop(
+            _cfg(max_retries=3, trust_mode=True), Path("/ws"), 1, {}, MagicMock())
+
+        assert mock_attempt.call_count == 3
+        assert result.status is ResultStatus.ESCALATED
+        assert "exhausted" in result.resolution_summary
+
+    @patch("cve_agent.orchestrator._run_single_resolution_attempt")
     def test_step_change_resets_counter(self, mock_attempt):
         calls = [0]
         def side_effect(*args, **kwargs):

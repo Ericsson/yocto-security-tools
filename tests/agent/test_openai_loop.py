@@ -18,6 +18,7 @@ from cve_agent.openai_client import (
     OpenAINotFoundError,
     OpenAIProtocolError,
     OpenAIRequestTimeoutError,
+    OpenAIResponseTruncatedError,
 )
 from cve_agent.openai_deadline import SessionDeadline
 from cve_agent.openai_loop import (
@@ -773,6 +774,8 @@ def test_all_host_terminal_statuses_map_to_resolved(tmp_path, status_value):
          "--openai-api-key-env"),
         (OpenAINotFoundError("private model response"), "CVE_AGENT_OPENAI_MODEL"),
         (OpenAIProtocolError("private schema response"), "assistant tool_calls"),
+        (OpenAIResponseTruncatedError("truncated before a tool call"),
+         "output budget"),
     ],
 )
 def test_expected_client_errors_map_to_safe_unresolved_result(
@@ -783,6 +786,21 @@ def test_expected_client_errors_map_to_safe_unresolved_result(
     assert str(error) not in result.failure_reason
     assert "super-secret" not in result.transcript_path.read_text(encoding="utf-8")
     assert any(event["event"] == "client_error" for event in events)
+
+
+def test_client_error_retains_the_specific_violation_as_detail(tmp_path):
+    """The mapped guidance is the returned reason; the event keeps the cause.
+
+    Without the detail, a provider failure is only ever reported as generic
+    endpoint-compatibility guidance, which hides which schema rule was broken.
+    """
+    error = OpenAIProtocolError("assistant message must contain content or tool calls")
+    result, _, _, _, _, events = _run(tmp_path, [error])
+    client_errors = [event for event in events if event["event"] == "client_error"]
+    assert len(client_errors) == 1
+    assert client_errors[0]["detail"] == str(error)
+    assert client_errors[0]["message"] == result.failure_reason
+    assert str(error) not in result.failure_reason
 
 
 def test_transcript_is_mode_0600_valid_ordered_redacted_and_closed(tmp_path):

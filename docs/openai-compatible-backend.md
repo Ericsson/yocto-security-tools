@@ -386,6 +386,19 @@ deadline. Connect and read timeouts are distinct. A failure after a response
 stream begins, malformed JSON, and truncated/partial tool arguments are not
 blindly retried; no partial tool JSON is executed. Redirects remain disabled.
 
+`PROVIDER_RESPONSE_TRUNCATED` also covers an assistant message that carries
+neither content nor a tool call under `finish_reason: length` — a reasoning
+model that spent its whole output budget thinking. Raise
+`--openai-max-output-tokens` or lower `--openai-reasoning-effort` rather than
+looking for an endpoint incompatibility.
+
+In trust mode, the codes above that are a property of the request or of the
+endpoint's dialect — everything except the timeouts, `PROVIDER_RATE_LIMIT`,
+`PROVIDER_SERVER_ERROR`, `PROVIDER_CONNECTION_LOST`, and
+`PROVIDER_DEADLINE_EXHAUSTED` — escalate on the first occurrence instead of
+consuming `--max-retries`: the retry would send the same prompt to the same
+endpoint. Interactive runs still honour an explicit retry answer.
+
 ### Optional Ollama preparation
 
 `[ollama]` is profile-only. Its native API origin must exactly match the

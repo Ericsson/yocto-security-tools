@@ -34,6 +34,7 @@ from cve_agent.openai_client import (
     OpenAIReasoningProtocolError,
     OpenAIRequestTimeoutError,
     OpenAIResponseSizeError,
+    OpenAIResponseTruncatedError,
     OpenAIRetryableServerError,
     OpenAIRetryPolicy,
     OpenAIToolProtocolError,
@@ -503,6 +504,34 @@ def test_protocol_shape_violations(payload, match):
     with pytest.raises(OpenAIProtocolError, match=match):
         _client(FakeTransport(FakeResponse(payload=payload))).complete(
             [{"role": "user", "content": "hello"}], [])
+
+
+def test_reasoning_only_truncation_is_reported_as_truncation():
+    """An exhausted output budget must not look like an incompatible endpoint.
+
+    A reasoning model can spend its whole ``max_tokens`` thinking: the server
+    then reports ``finish_reason: length`` with the text in a reasoning field
+    the profile does not read, leaving neither content nor a tool call.
+    Classifying that as a schema violation sends operators after the endpoint's
+    Chat Completions compatibility instead of the output budget.
+    """
+    payload = _text_payload(None, finish_reason="length")
+    choice = payload["choices"][0]
+    choice["message"]["reasoning"] = "Now I understand the conflict. Wait, let"
+    with pytest.raises(OpenAIResponseTruncatedError) as excinfo:
+        _client(FakeTransport(FakeResponse(payload=payload))).complete(
+            [{"role": "user", "content": "hello"}], [])
+    assert excinfo.value.code is ProviderErrorCode.RESPONSE_TRUNCATED
+
+
+def test_empty_message_without_length_finish_stays_a_schema_violation():
+    """Only an explicit length finish is truncation; anything else is malformed."""
+    payload = _text_payload(None, finish_reason="stop")
+    with pytest.raises(OpenAIProtocolError) as excinfo:
+        _client(FakeTransport(FakeResponse(payload=payload))).complete(
+            [{"role": "user", "content": "hello"}], [])
+    assert not isinstance(excinfo.value, OpenAIResponseTruncatedError)
+    assert excinfo.value.code is ProviderErrorCode.MALFORMED_RESPONSE
 
 
 @pytest.mark.parametrize("body", [b"not-json", b'{"choices":', b'{"x":NaN}'])

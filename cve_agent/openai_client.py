@@ -722,14 +722,24 @@ class OpenAIChatCompletionsClient:
             raise OpenAIProtocolError("assistant content exceeds the byte limit")
 
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
-        if content is None and not tool_calls:
-            raise OpenAIProtocolError(
-                "assistant message must contain content or tool calls")
         finish_reason = choice.get("finish_reason")
         if finish_reason is not None:
             if not isinstance(finish_reason, str):
                 raise OpenAIProtocolError("finish_reason must be a string or null")
             self._bounded_identifier(finish_reason, "finish_reason", allow_empty=True)
+        if content is None and not tool_calls:
+            # A reasoning model can spend its whole output budget thinking: the
+            # server then reports truncation with the text in a reasoning field
+            # the profile may not read, leaving neither content nor a tool call.
+            # finish_reason is therefore classified before the emptiness check,
+            # so an exhausted output budget is reported as truncation instead of
+            # an endpoint incompatibility the operator cannot act on.
+            if finish_reason == "length":
+                raise OpenAIResponseTruncatedError(
+                    "assistant message was truncated before any content or "
+                    "tool call")
+            raise OpenAIProtocolError(
+                "assistant message must contain content or tool calls")
         reasoning_replay: tuple[str, str] | None = None
         reasoning_field = self.capabilities.reasoning_response_field
         if reasoning_field != "none":
