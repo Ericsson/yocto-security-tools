@@ -144,3 +144,32 @@ def test_unmapped_reference_path_still_fails_handoff(renamed) -> None:
         emit_handoff(_state(repo, fix), repo.parent.parent / "cve_corrector")
 
     assert excinfo.value.code == "HANDOFF_UNKNOWN_OUT_OF_SCOPE"
+
+
+def test_clean_rename_mapped_pick_is_authorized(renamed) -> None:
+    """A cherry-pick Git resolves cleanly at the pre-rename path is in scope.
+
+    Reproduces the CVE-2026-24049 / python3-wheel handoff failure: unlike the
+    other cases here, nothing conflicts. Git's rename detection rewrites
+    ``OLD_PATH`` in place with the fixed content before the handoff ever
+    inspects the tree, so no tracked path still holds the pre-image blob the
+    old index-based anchor lookup needed. The anchor must be read from the
+    ``original-version`` baseline tree instead, where the pre-image still
+    exists untouched.
+    """
+    repo, fix = renamed
+    result = subprocess.run(["git", "cherry-pick", fix], cwd=repo,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "raise ValueError" in (repo / OLD_PATH).read_text(encoding="utf-8")
+    _git(repo, "tag", "-f", "current-head")
+    # emit_handoff diffs the *selected commit* against its parent to derive
+    # scope; replay the same cherry-pick state without committing so the
+    # workspace matches what the corrector hands off mid-conflict-free pick.
+    _git(repo, "reset", "--soft", "HEAD^")
+
+    manifest = emit_handoff(_state(repo, fix), repo.parent.parent / "cve_corrector")
+
+    assert OLD_PATH in manifest.allowed_paths
+    assert NEW_PATH not in manifest.allowed_paths
+    assert manifest.tracked_out_of_scope_paths == ()
