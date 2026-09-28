@@ -49,8 +49,10 @@ def load_config(config_path=None):
     cfg.setdefault('repo_dir', f'{_data}/repos')
     cfg.setdefault('debian_tracker_dir', f'{_shared_data}/security-tracker')
     cfg.setdefault('cvelistv5_dir', f'{_shared_data}/cvelistV5')
-    cfg.setdefault('nvd_dir', f'{_shared_data}/nvd')
     cfg.setdefault('uct_dir', f'{_shared_data}/ubuntu-cve-tracker')
+    # NVD is disabled by default (no default dir): it largely duplicates
+    # cvelistv5/debian/osv coverage and adds a multi-GB clone. Opt in with
+    # --nvd-dir.
 
     if config_path == str(_DEFAULT_CONFIG):
         _cached_config = cfg
