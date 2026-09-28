@@ -421,17 +421,17 @@ def main():
         print("WARNING: GITHUB_TOKEN not set. GitHub pull request metadata "
               "(commit series) will not be available.", file=sys.stderr)
 
-    # Setup all sources (auth, clone repos, load data)
-    for source in SOURCE_REGISTRY:
-        source.setup(args, cfg)
-
     # Determine which sources are active
     active_sources = [s for s in SOURCE_REGISTRY if s.is_enabled(args) and s.name]
     print(f"Active sources: {', '.join(s.name for s in active_sources)}")
 
+    # Setup active sources (auth, clone repos, load data)
+    for source in active_sources:
+        source.setup(args, cfg)
+
     # Initialize stats from active sources
     stats = {f'{s.name}_{k}': 0
-             for s in SOURCE_REGISTRY if s.name for k in ('hashes', 'patches')}
+             for s in active_sources if s.name for k in ('hashes', 'patches')}
 
     # OE token
     oe_token = args.oe_token or os.getenv('OPENEMBEDDED_TOKEN')
