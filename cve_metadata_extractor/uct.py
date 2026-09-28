@@ -62,6 +62,9 @@ class UctSource(CveSource):
         self._repo = None
 
     def setup(self, args, cfg):
+        if args.no_uct:
+            self._repo = None
+            return
         self._repo = ensure_data_repo(
             args.uct_dir, cfg.get('uct_url', UCT_URL),
             'Ubuntu CVE Tracker', cfg.get('uct_branch', UCT_BRANCH))

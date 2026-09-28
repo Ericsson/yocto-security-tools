@@ -235,6 +235,49 @@ class TestMain:
         data = json.loads(out_file.read_text())
         assert 'CVE-2025-0001' in data
 
+    @patch('cve_metadata_extractor.__main__.load_pr_cache')
+    @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')
+    def test_stateful_source_enabled_after_setup(
+            self, mock_load, mock_pr, tmp_path, monkeypatch):
+        '''A source whose is_enabled() depends on state populated by
+        setup() (e.g. debian, cvelistv5, nvd, bdba) must be activated.
+
+        Regression test: active_sources used to be computed from
+        is_enabled() *before* setup() ran, so any source relying on
+        setup()-populated state was always reported inactive and never
+        had extract() called, even when correctly configured.
+        '''
+        from cve_metadata_extractor.sources import CveSource
+
+        class FakeStatefulSource(CveSource):
+            name = 'fake_stateful'
+            _ready = False
+
+            def setup(self, args, cfg):
+                # Only becomes enabled once setup() has run, mirroring
+                # debian.py / cvelistv5.py / nvd.py / bdba.py.
+                self._ready = True
+
+            def is_enabled(self, args):
+                return self._ready
+
+            def extract(self, cve_id, stats):
+                return ([{'hash': 'abc', 'source': 'fake_stateful'}],
+                        [], [], [])
+
+        fake = FakeStatefulSource()
+        mock_load.return_value = [{'id': 'CVE-2025-0001', 'name': 'foo'}]
+        out_file = tmp_path / 'out.json'
+        monkeypatch.setattr('sys.argv', [
+            'prog', '--cve-id', 'CVE-2025-0001', '--output', str(out_file)])
+
+        with patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [fake]):
+            from cve_metadata_extractor.__main__ import main
+            main()
+
+        data = json.loads(out_file.read_text())
+        assert data['CVE-2025-0001']['hashes'] == ['abc']
+
     @patch('cve_metadata_extractor.__main__.SOURCE_REGISTRY', [])
     @patch('cve_metadata_extractor.__main__.load_pr_cache')
     @patch('cve_metadata_extractor.cve_sources.load_cves_from_sources')

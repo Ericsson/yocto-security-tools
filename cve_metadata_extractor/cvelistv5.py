@@ -135,7 +135,12 @@ class CVEListV5Source(CveSource):
 
 
 class NVDSource(CveSource):
-    '''National Vulnerability Database source.'''
+    '''National Vulnerability Database source.
+
+    Disabled by default (no default clone directory): largely overlaps
+    with cvelistv5/debian/osv coverage and adds a large data clone. Opt in
+    with --nvd-dir <path>.
+    '''
     name = 'nvd'
     _data_dir = None
     cli_args = [

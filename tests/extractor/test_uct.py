@@ -206,6 +206,7 @@ class TestUctSourceSetup(unittest.TestCase):
         works cleanly with no exception.'''
         args = MagicMock()
         args.uct_dir = '/nonexistent/uct'
+        args.no_uct = False
         source = UctSource()
         with patch('cve_metadata_extractor.uct.ensure_data_repo',
                    return_value=None):
