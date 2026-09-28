@@ -11,8 +11,11 @@ from cve_metadata_extractor.utils import (
     HASH_RE,
     URL_RE,
     extract_commit_hash,
+    merge_references,
     normalize_component_name,
+    poc_ref,
     resolve_url_refs,
+    tag_results,
 )
 
 
@@ -154,6 +157,79 @@ class TestResolveUrlRefs(unittest.TestCase):
     def test_non_matching_url_returns_none(self):
         '''URL with no commit hash and no PR/issue returns None.'''
         self.assertIsNone(resolve_url_refs('https://example.com/page', []))
+
+
+class TestTagResults(unittest.TestCase):
+    '''Test tag_results source attribution and optional PoC tagging.'''
+
+    def test_plain_url_reference_has_no_is_poc_key(self):
+        '''A plain URL string produces a reference dict without is_poc.'''
+        _, _, refs = tag_results([], [], ['https://example.com/adv'], 'osv')
+        self.assertEqual(refs, [{'url': 'https://example.com/adv',
+                                  'source': 'osv'}])
+        self.assertNotIn('is_poc', refs[0])
+
+    def test_poc_ref_sets_is_poc_true(self):
+        '''poc_ref(url) produces a reference dict with is_poc: True.'''
+        _, _, refs = tag_results(
+            [], [], [poc_ref('https://example.com/poc')], 'nvd')
+        self.assertEqual(refs, [{'url': 'https://example.com/poc',
+                                  'source': 'nvd', 'is_poc': True}])
+
+    def test_mixed_refs_only_tag_poc_entries(self):
+        '''Mixing plain strings and poc_ref() only tags the PoC ones.'''
+        _, _, refs = tag_results(
+            [], [], ['https://example.com/adv',
+                     poc_ref('https://example.com/poc')], 'nvd')
+        self.assertNotIn('is_poc', refs[0])
+        self.assertTrue(refs[1]['is_poc'])
+
+    def test_hashes_and_patches_still_tagged_with_source(self):
+        '''Existing hash/patch tagging behavior is unaffected.'''
+        hashes, patches, _ = tag_results(
+            [{'hash': 'abc123', 'url': 'https://x/commit/abc123'}],
+            [{'url': 'https://x/commit/abc123.patch'}],
+            [], 'osv')
+        self.assertEqual(hashes[0]['source'], 'osv')
+        self.assertEqual(patches[0]['source'], 'osv')
+
+
+class TestMergeReferences(unittest.TestCase):
+    '''Test merge_references dedup and is_poc stickiness.
+
+    Shared by both the single-CVE aggregation pass (processing.py) and the
+    cross-run merge pass (__main__.py._merge_results), so both call sites
+    stay consistent and are covered by one set of tests.
+    '''
+
+    def test_dedups_single_source_entries_by_url(self):
+        '''Entries with a single "source" key are grouped by url.'''
+        refs = [{'url': 'http://x', 'source': 'osv'},
+                {'url': 'http://x', 'source': 'nvd'}]
+        merged = merge_references(refs)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]['sources'], ['nvd', 'osv'])
+        self.assertNotIn('is_poc', merged[0])
+
+    def test_merges_already_merged_sources_list_entries(self):
+        '''Entries already carrying a "sources" list (re-merge) also work.'''
+        refs = [{'url': 'http://x', 'sources': ['osv']},
+                {'url': 'http://x', 'sources': ['nvd']}]
+        merged = merge_references(refs)
+        self.assertEqual(merged[0]['sources'], ['nvd', 'osv'])
+
+    def test_is_poc_sticky_regardless_of_which_entry_has_it(self):
+        '''If any entry for a url is flagged is_poc, the merged one keeps it.'''
+        refs = [{'url': 'http://poc', 'source': 'osv'},
+                {'url': 'http://poc', 'source': 'nvd', 'is_poc': True}]
+        merged = merge_references(refs)
+        self.assertTrue(merged[0]['is_poc'])
+
+    def test_no_is_poc_key_when_never_flagged(self):
+        '''A url no source ever flagged stays free of the is_poc key.'''
+        refs = [{'url': 'http://adv', 'source': 'osv'}]
+        merged = merge_references(refs)
+        self.assertNotIn('is_poc', merged[0])
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ from . import ubuntu as _ubuntu  # noqa: F401
 from . import uct as _uct  # noqa: F401
 from .config import load_config
 from .sources import SOURCE_REGISTRY
-from .utils import PR_CACHE, deduplicate_metadata
+from .utils import PR_CACHE, deduplicate_metadata, merge_references
 
 
 def _get_version() -> str:
@@ -317,16 +317,10 @@ def _merge_results(existing, new):
         existing.get('patch_details', []) + new.get('patch_details', [])))
     merged_hashes, merged_patches = deduplicate_metadata(all_hashes, all_patches)
 
-    # Merge references by url
-    ref_dict = {}
-    for ref in existing.get('references', []) + new.get('references', []):
-        url = ref['url']
-        if url not in ref_dict:
-            ref_dict[url] = {'url': url, 'sources': list(ref.get('sources', []))}
-        else:
-            ref_dict[url]['sources'].extend(ref.get('sources', []))
-    merged_refs = [{'url': r['url'], 'sources': sorted(set(r['sources']))}
-                   for r in ref_dict.values()]
+    # Merge references by url. is_poc is sticky: once any source flags a
+    # URL as a PoC/exploit reference, that carries through merges.
+    merged_refs = merge_references(
+        existing.get('references', []) + new.get('references', []))
 
     # Merge series by pull_url
     seen_series = {}

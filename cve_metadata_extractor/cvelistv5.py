@@ -11,6 +11,7 @@ from .sources import SOURCE_REGISTRY, CveSource
 from .utils import (
     _GITLAB_ISSUE_RE,
     extract_commit_hash,
+    poc_ref,
     process_gitlab_issue_url,
     process_pr_url,
     tag_results,
@@ -28,7 +29,9 @@ def _process_references(refs, patch_links, hashes, series, references):
     '''Process a list of CVE reference objects.'''
     for ref in refs:
         url = ref.get('url', '')
-        references.append(url)
+        tags = ref.get('tags') or []
+        is_poc = any(t.lower() in ('exploit', 'poc') for t in tags)
+        references.append(poc_ref(url) if is_poc else url)
         if '/pull/' in url:
             process_pr_url(url, series)
         elif _GITLAB_ISSUE_RE.match(url):

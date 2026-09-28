@@ -495,6 +495,74 @@ class TestExtractMetadataFromSources:
         result = extract_metadata_from_sources('CVE-1', [s1, s2], {})
         assert len(result['series']) == 1
 
+    def test_is_poc_reference_propagates(self):
+        '''A source-flagged PoC reference keeps is_poc through aggregation.'''
+        from cve_metadata_extractor.processing import extract_metadata_from_sources
+        s1 = MagicMock()
+        s1.extract.return_value = (
+            [], [],
+            [],
+            [{'url': 'http://poc', 'source': 's1', 'is_poc': True},
+             {'url': 'http://adv', 'source': 's1'}])
+        result = extract_metadata_from_sources('CVE-1', [s1], {})
+        by_url = {r['url']: r for r in result['references']}
+        assert by_url['http://poc']['is_poc'] is True
+        assert 'is_poc' not in by_url['http://adv']
+
+    def test_is_poc_sticky_across_sources_for_same_url(self):
+        '''If any source flags a shared URL as PoC, the merged ref keeps it.'''
+        from cve_metadata_extractor.processing import extract_metadata_from_sources
+        s1 = MagicMock()
+        s1.extract.return_value = (
+            [], [], [], [{'url': 'http://shared', 'source': 's1'}])
+        s2 = MagicMock()
+        s2.extract.return_value = (
+            [], [], [],
+            [{'url': 'http://shared', 'source': 's2', 'is_poc': True}])
+        result = extract_metadata_from_sources('CVE-1', [s1, s2], {})
+        by_url = {r['url']: r for r in result['references']}
+        assert by_url['http://shared']['is_poc'] is True
+        assert sorted(by_url['http://shared']['sources']) == ['s1', 's2']
+
+
+class TestMergeResults:
+    '''Test _merge_results reference merging, including is_poc stickiness.'''
+
+    def test_is_poc_preserved_when_only_in_existing(self):
+        from cve_metadata_extractor.__main__ import _merge_results
+        existing = {'references': [
+            {'url': 'http://poc', 'sources': ['nvd'], 'is_poc': True}]}
+        new = {'hashes': [], 'hash_details': [], 'patches': [],
+               'patch_details': [], 'references': [
+                   {'url': 'http://poc', 'sources': ['osv']}]}
+        merged = _merge_results(existing, new)
+        by_url = {r['url']: r for r in merged['references']}
+        assert by_url['http://poc']['is_poc'] is True
+        assert sorted(by_url['http://poc']['sources']) == ['nvd', 'osv']
+
+    def test_is_poc_preserved_when_only_in_new(self):
+        from cve_metadata_extractor.__main__ import _merge_results
+        existing = {'references': [
+            {'url': 'http://poc', 'sources': ['osv']}]}
+        new = {'hashes': [], 'hash_details': [], 'patches': [],
+               'patch_details': [], 'references': [
+                   {'url': 'http://poc', 'sources': ['nvd'],
+                    'is_poc': True}]}
+        merged = _merge_results(existing, new)
+        by_url = {r['url']: r for r in merged['references']}
+        assert by_url['http://poc']['is_poc'] is True
+
+    def test_no_is_poc_key_when_never_flagged(self):
+        '''References never flagged PoC stay free of the is_poc key.'''
+        from cve_metadata_extractor.__main__ import _merge_results
+        existing = {'references': [
+            {'url': 'http://adv', 'sources': ['osv']}]}
+        new = {'hashes': [], 'hash_details': [], 'patches': [],
+               'patch_details': [], 'references': [
+                   {'url': 'http://adv', 'sources': ['nvd']}]}
+        merged = _merge_results(existing, new)
+        assert 'is_poc' not in merged['references'][0]
+
 
 def _plugin_active():
     """Check if the elin_sec_bulletin_input plugin has monkey-patched load_cves_from_sources."""

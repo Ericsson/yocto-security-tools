@@ -3,7 +3,7 @@
 '''CVE processing and metadata aggregation.'''
 
 from .oe_status import do_check_status
-from .utils import deduplicate_metadata, normalize_component_name
+from .utils import deduplicate_metadata, merge_references, normalize_component_name
 
 
 def deduce_component_name(cve_id, cache, sources):
@@ -42,16 +42,9 @@ def extract_metadata_from_sources(cve_id, active_sources, stats):
             seen_series.add(s['pull_url'])
             unique_series.append(s)
 
-    ref_dict = {}
-    for ref in all_references:
-        url = ref['url']
-        if url not in ref_dict:
-            ref_dict[url] = {'url': url, 'sources': []}
-        ref_dict[url]['sources'].append(ref['source'])
-    unique_references = []
-    for ref in ref_dict.values():
-        ref['sources'] = sorted(set(ref['sources']))
-        unique_references.append(ref)
+    # Merge references by url. is_poc is sticky: once any source flags a
+    # URL as a PoC/exploit reference, that carries through merges.
+    unique_references = merge_references(all_references)
 
     return {'hashes': unique_hashes, 'patches': unique_patches,
             'series': unique_series, 'references': unique_references}
