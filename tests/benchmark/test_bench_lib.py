@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Tests for tests.benchmark.bench_lib."""
 import json
+import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1191,18 +1193,45 @@ class TestJudgeDiff:
         result.returncode = 0
         return result
 
-    def test_prompt_contains_diff_and_model(self):
-        with patch('subprocess.run') as mock_run:
-            mock_run.return_value = self._mock_result("MEANINGFUL\n")
+    def test_prompt_references_diff_file_and_model(self):
+        captured = {}
+
+        def _capture_and_respond(cmd, **kwargs):
+            match = re.search(r'(/\S*judge_diff\.patch)', cmd[-1])
+            captured['path'] = Path(match.group(1))
+            captured['content'] = captured['path'].read_text(encoding='utf-8')
+            captured['argv'] = cmd
+            return self._mock_result("MEANINGFUL\n")
+
+        with patch('subprocess.run', side_effect=_capture_and_respond):
             judge_diff("--- a/foo.c\n+++ b/foo.c\n-old\n+new\n",
                        model="claude-opus-4.8")
 
-        args = mock_run.call_args[0][0]
-        assert 'kiro-cli' in args
-        assert 'claude-opus-4.8' in args
-        prompt = args[-1]
-        assert '-old' in prompt
-        assert '+new' in prompt
+        assert 'kiro-cli' in captured['argv']
+        assert 'claude-opus-4.8' in captured['argv']
+        prompt = captured['argv'][-1]
+        # The diff itself is written to a temp file and referenced by path,
+        # not embedded in argv (avoids ARG_MAX with large diffs).
+        assert '-old' not in prompt
+        assert '+new' not in prompt
+        assert '-old' in captured['content']
+        assert '+new' in captured['content']
+
+    def test_diff_file_removed_after_call(self):
+        captured_path = {}
+
+        def _capture_and_respond(cmd, **kwargs):
+            match = re.search(r'(/\S*judge_diff\.patch)', cmd[-1])
+            captured_path['path'] = Path(match.group(1))
+            assert captured_path['path'].is_file()
+            return self._mock_result("MEANINGFUL\n")
+
+        with patch('subprocess.run', side_effect=_capture_and_respond):
+            judge_diff("-old\n+new\n", model="claude-opus-4.8")
+
+        # TemporaryDirectory cleanup removes the file (and its parent dir)
+        # once the subprocess call returns.
+        assert not captured_path['path'].exists()
 
     def test_no_interactive_and_no_agent_flag(self):
         with patch('subprocess.run') as mock_run:
@@ -1231,6 +1260,21 @@ class TestJudgeDiff:
             mock_run.return_value = self._mock_result("I am not sure.\n")
             judgment, _, _, _ = judge_diff("-old\n+new\n")
         assert judgment == 'meaningful'
+
+    def test_large_diff_keeps_argv_small(self):
+        # Regression test for the OSError: [Errno 7] Argument list too long
+        # failure: a multi-megabyte diff must not blow up argv size because
+        # it is written to a file instead of embedded in the prompt string.
+        huge_diff = "--- a/foo.c\n+++ b/foo.c\n" + "\n".join(
+            f"-old_{i}\n+new_{i}" for i in range(200_000))
+        assert len(huge_diff) > 2_000_000  # bigger than a typical ARG_MAX
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = self._mock_result("MEANINGFUL\n")
+            judge_diff(huge_diff, model="claude-opus-4.8")
+
+        args = mock_run.call_args[0][0]
+        total_argv_bytes = sum(len(a.encode('utf-8')) for a in args)
+        assert total_argv_bytes < 10_000
 
     def test_credits_parsing_delegates_to_parse_kiro_credits(self):
         with patch('subprocess.run') as mock_run:
@@ -1459,13 +1503,17 @@ class TestJudgeSkipsCommentOnlyDiffs:
         diff = ("--- b/foo.c\n+++ b/foo.c\n@@ -1,3 +1,3 @@\n"
                 "-// chatty note\n+// other note\n"
                 "-\tif (a) {\n+\tif (a && b) {\n")
-        with patch('subprocess.run') as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="MEANINGFUL\nAdded condition.\n", returncode=0)
+        captured = {}
+
+        def _capture_and_respond(cmd, **kwargs):
+            match = re.search(r'(/\S*judge_diff\.patch)', cmd[-1])
+            captured['content'] = Path(match.group(1)).read_text(encoding='utf-8')
+            return MagicMock(stdout="MEANINGFUL\nAdded condition.\n", returncode=0)
+
+        with patch('subprocess.run', side_effect=_capture_and_respond):
             judge_diff(diff)
-        prompt = mock_run.call_args[0][0][-1]
-        assert 'chatty note' not in prompt
-        assert 'if (a && b) {' in prompt
+        assert 'chatty note' not in captured['content']
+        assert 'if (a && b) {' in captured['content']
 
     def test_prompt_tells_the_judge_to_ignore_comments(self):
         with patch('subprocess.run') as mock_run:
