@@ -65,7 +65,7 @@ def resolve_agent_instructions() -> Path:
 
     ``cve_agent.setup.sync_agent_instructions()`` copies the packaged
     AGENT_INSTRUCTIONS.md to a stable, package-location-independent path
-    under data_dir() whenever agents are (re)installed. Prefer that copy so
+    under user_data_dir() whenever agents are (re)installed. Prefer that copy so
     behavior stays consistent with what the kiro agent JSON's ``prompt``
     field points at; fall back to the packaged file if the sync hasn't run
     yet (e.g. before the first ``ensure_agents()`` call, or when running the

@@ -1,6 +1,7 @@
 # Copyright (C) 2026 Ericsson AB
 # SPDX-License-Identifier: MIT
 """Tests for cve_agent.setup — agent verification and installation."""
+import importlib
 import json
 from unittest.mock import patch
 
@@ -47,6 +48,48 @@ def fake_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("cve_agent.setup.PACKAGED_AGENT_INSTRUCTIONS", packaged_instructions)
     monkeypatch.setattr("cve_agent.setup.STABLE_AGENT_INSTRUCTIONS", stable_instructions)
     return source, target
+
+
+class TestStableAgentInstructionsPath:
+    """Regression coverage for the CVE_TOOLS_DATA_DIR leak into global state.
+
+    cve_agent/setup.py's STABLE_AGENT_INSTRUCTIONS is referenced from
+    ~/.kiro/agents/*.json, a machine-global config shared by every kiro-cli
+    invocation on the host -- not scoped to one process/run. If it were
+    derived from shared.paths.data_dir() (which honors CVE_TOOLS_DATA_DIR),
+    every CI/benchmark run that sets that override to isolate its own
+    per-run artifacts (see tests/benchmark/run_benchmark.sh's
+    `CVE_TOOLS_DATA_DIR="$artifact_data_root"`) would repoint the global
+    agent JSONs' prompt at its own throwaway temp directory. The next
+    unrelated kiro-cli invocation on the host -- or the same benchmark after
+    that temp directory is cleaned up -- then fails with "Error: File URI
+    not found: file://.../AGENT_INSTRUCTIONS.md" (OSError-free but a hard
+    kiro-cli startup error), reproducing the reported bug.
+    """
+
+    def test_stable_instructions_path_ignores_cve_tools_data_dir(self, monkeypatch):
+        monkeypatch.delenv("CVE_TOOLS_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        importlib.reload(setup)
+        baseline = setup.STABLE_AGENT_INSTRUCTIONS
+        try:
+            monkeypatch.setenv("CVE_TOOLS_DATA_DIR", "/tmp/some-benchmark-run-artifacts")
+            importlib.reload(setup)
+            assert baseline == setup.STABLE_AGENT_INSTRUCTIONS
+        finally:
+            monkeypatch.delenv("CVE_TOOLS_DATA_DIR", raising=False)
+            importlib.reload(setup)
+
+    def test_stable_instructions_path_still_honors_xdg_data_home(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CVE_TOOLS_DATA_DIR", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        try:
+            importlib.reload(setup)
+            assert (
+                tmp_path / "yocto-security-tools" / "AGENT_INSTRUCTIONS.md") == setup.STABLE_AGENT_INSTRUCTIONS
+        finally:
+            monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+            importlib.reload(setup)
 
 
 def test_get_missing_agents_all_missing(fake_dirs):
