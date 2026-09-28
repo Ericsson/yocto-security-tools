@@ -27,6 +27,12 @@ MAX_SEMANTIC_SYMBOLS = 64
 MAX_SEMANTIC_TEXT_BYTES = 2 * 1024 * 1024
 MAX_SEMANTIC_REPORT_ITEMS = 64
 MAX_SEMANTIC_COMMAND_SECONDS = 30
+# Ref the corrector tags before any cherry-pick, so its tree still holds the
+# recipe's untouched pre-fix content.
+SEMANTIC_BASELINE_REF = "original-version"
+# Git's own default similarity index, i.e. the same detection that decides where
+# a cherry-pick applies an upstream hunk.
+SEMANTIC_RENAME_SIMILARITY = 50
 
 _SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -282,6 +288,11 @@ def build_reference_manifest(
         raise SemanticValidationError("semantic reference contains no changed paths")
     path_map = _path_map(metadata, cve_info)
     changed_paths = tuple(sorted(statuses))
+    # Trusted metadata wins; anything it leaves unmapped is resolved from Git
+    # evidence so an upstream rename cannot reject a correct backport.
+    derived_map = _anchored_path_map(workspace, parent, changed_paths, path_map)
+    if derived_map:
+        path_map = dict(sorted({**path_map, **derived_map}.items()))
     explicit_runtime = set(_string_tuple(
         metadata.get("runtime_paths"), "runtime_paths", paths=True))
     explicit_tests = set(_string_tuple(
@@ -416,6 +427,14 @@ def validate_semantic_result(
     generated_paths = set(generated.changed_paths)
     generated_runtime = expected_runtime & generated_paths
     missing_runtime = tuple(sorted(expected_runtime - generated_paths))
+    # Paths the reference changed whose security role could not be determined.
+    # A trust store (certifi's ``cacert.pem``) carries its fix as data, while the
+    # only runtime-classified file may hold nothing but a version bump, so a
+    # change here cannot be reported as "the fix is missing".
+    unclassified = {
+        manifest.path_map.get(path, path)
+        for path in (*manifest.uncertain_paths, *manifest.build_paths)}
+    generated_unclassified = unclassified & generated_paths
     expected_tests = {
         manifest.path_map.get(path, path) for path in manifest.required_tests}
     equivalent_tests = set(manifest.equivalent_tests)
@@ -509,6 +528,13 @@ def validate_semantic_result(
                 status=SecurityStatus.EQUIVALENT,
                 reason_code="preexisting_fix_proven",
                 reason="trusted baseline anchors prove the runtime fix was already present",
+                **common)
+        if generated_unclassified:
+            return SemanticValidation(
+                status=SecurityStatus.PLAUSIBLE_NEEDS_REVIEW,
+                reason_code="unclassified_change_requires_review",
+                reason=("the result changes reference paths whose security role "
+                        "could not be classified"),
                 **common)
         return SemanticValidation(
             status=SecurityStatus.REJECTED,
@@ -650,6 +676,183 @@ def _validate_path(path: str) -> str:
             or any(part in {"", ".", ".."} for part in path.split("/"))):
         raise SemanticValidationError("semantic metadata contains an unsafe path")
     return PurePosixPath(path).as_posix()
+
+
+def _suffix_related(source: str, target: str) -> bool:
+    """Report whether two paths share enough trailing components to relate."""
+    source_parts = PurePosixPath(source).parts
+    target_parts = PurePosixPath(target).parts
+    common = 0
+    for left, right in zip(reversed(source_parts), reversed(target_parts),
+                           strict=False):
+        if left != right:
+            break
+        common += 1
+    return common >= min(2, len(source_parts), len(target_parts))
+
+
+def _tree_objects(workspace: Path, tree: str) -> dict[str, str]:
+    """Return tracked path to blob id for *tree*, empty when unavailable."""
+    try:
+        output = _git(
+            workspace, ["ls-tree", "-r", "-z", "--full-tree", "--end-of-options",
+                        tree], MAX_SEMANTIC_GIT_BYTES)
+    except SemanticValidationError:
+        return {}
+    objects: dict[str, str] = {}
+    for entry in output.decode("utf-8", errors="replace").split("\x00"):
+        if "\t" not in entry:
+            continue
+        metadata, path = entry.split("\t", 1)
+        fields = metadata.split()
+        if len(fields) < 3 or fields[1] != "blob":
+            continue
+        try:
+            objects[_validate_path(path)] = fields[2]
+        except SemanticValidationError:
+            continue
+    return objects
+
+
+def _renamed_candidates(
+    workspace: Path, base: str, baseline: str, pending: Sequence[str],
+    objects: Mapping[str, str],
+) -> dict[str, list[str]]:
+    """Return rename targets Git detects between the reference and recipe trees.
+
+    Content drift defeats the byte-identical anchor whenever the recipe's
+    release is far behind the fix (dropbear's sources moving into ``src/``,
+    libsoup's into ``libsoup/websocket/``). Git's own similarity detection is
+    the mechanism that made the cherry-pick land on the recipe's file in the
+    first place, so it is the natural second source of host-owned evidence.
+
+    The diff is restricted to the unmapped reference paths plus the recipe paths
+    sharing their file names, which keeps rename detection possible while
+    bounding the work.
+    """
+    basenames = {PurePosixPath(path).name for path in pending}
+    pathspec = sorted(set(pending) | {
+        path for path in objects if PurePosixPath(path).name in basenames})
+    if not pathspec or len(pathspec) > MAX_SEMANTIC_PATHS:
+        return {}
+    try:
+        output = _git(workspace, [
+            "diff", f"--find-renames={SEMANTIC_RENAME_SIMILARITY}%",
+            "--name-status", "-z", "--no-ext-diff", "--no-textconv",
+            "--no-color", "--end-of-options", base, baseline, "--", *pathspec],
+            MAX_SEMANTIC_GIT_BYTES)
+    except SemanticValidationError:
+        return {}
+    tokens = output.decode("utf-8", errors="replace").split("\x00")
+    candidates: dict[str, list[str]] = {}
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        if not status:
+            continue
+        if status[0] not in {"R", "C"}:
+            index += 1
+            continue
+        if index + 1 >= len(tokens):
+            break
+        source, target = tokens[index], tokens[index + 1]
+        index += 2
+        try:
+            candidates.setdefault(
+                _validate_path(source), []).append(_validate_path(target))
+        except SemanticValidationError:
+            continue
+    return candidates
+
+
+def _anchored_path_map(
+    workspace: Path,
+    base: str,
+    reference_paths: Sequence[str],
+    declared: Mapping[str, str],
+    baseline: str = SEMANTIC_BASELINE_REF,
+) -> dict[str, str]:
+    """Derive rename mappings for reference paths the recipe tree lacks.
+
+    An upstream rename that lands after the recipe's release means the reference
+    commit's paths do not exist in the recipe's source tree. Git's own rename
+    detection still applies the fix to the older path, so the resolved backport
+    legitimately changes a path the reference never names. Without a mapping the
+    comparison sees no mapped runtime path and rejects a correct fix
+    (``runtime_change_missing``).
+
+    Two host-owned evidence stages are used, strongest first:
+
+    1. The candidate's blob in the pre-fix baseline tree is byte-identical to
+       the reference pre-image (the same evidence the corrector's patch transfer
+       and the repository handoff already require).
+    2. Git's similarity detection reports the move between the reference parent
+       and the baseline tree, which is the detection that made the cherry-pick
+       land on the recipe's path.
+
+    Both stages additionally require that the two paths share trailing
+    components or a file name, that the target exists in the recipe tree, and
+    that it is the only such candidate. Anything weaker stays unmapped so the
+    comparison keeps failing closed rather than guessing an equivalence. A
+    mapping only states which file corresponds to which; the fingerprint,
+    symbol and test evidence still decide the security verdict.
+
+    Args:
+        workspace: Devtool workspace repository.
+        base: Reference commit's parent, holding the pre-image blobs.
+        reference_paths: Paths changed by the reference commit.
+        declared: Already-trusted mappings, which are never overridden.
+        baseline: Ref for the recipe's pre-cherry-pick tree.
+
+    Returns:
+        Newly derived reference path to workspace path mappings.
+    """
+    pending = [path for path in reference_paths if path not in declared]
+    if not pending:
+        return {}
+    objects = _tree_objects(workspace, baseline)
+    if not objects:
+        return {}
+    by_blob: dict[str, list[str]] = {}
+    for path, blob in objects.items():
+        by_blob.setdefault(blob, []).append(path)
+    taken = set(declared.values())
+    derived: dict[str, str] = {}
+    # A path still present downstream was never renamed, so the reference name
+    # already addresses the right file.
+    unresolved = [path for path in pending if path not in objects]
+
+    def accept(path: str, candidates: Sequence[str]) -> bool:
+        selected = sorted(
+            candidate for candidate in candidates
+            if candidate in objects and candidate not in taken
+            and (_suffix_related(path, candidate)
+                 or PurePosixPath(candidate).name == PurePosixPath(path).name))
+        if len(selected) != 1:
+            return False
+        derived[path] = selected[0]
+        taken.add(selected[0])
+        return True
+
+    for path in unresolved:
+        try:
+            raw = _git(workspace, [
+                "rev-parse", "--verify", "--quiet", "--end-of-options",
+                f"{base}:{path}"], 1024)
+        except SemanticValidationError:
+            continue
+        anchor = raw.decode("utf-8", errors="replace").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40,64}", anchor):
+            continue
+        accept(path, by_blob.get(anchor, ()))
+
+    remaining = [path for path in unresolved if path not in derived]
+    if remaining:
+        candidates = _renamed_candidates(workspace, base, baseline, remaining, objects)
+        for path in remaining:
+            accept(path, candidates.get(path, ()))
+    return derived
 
 
 def _initialization_checks(value: object) -> tuple[InitializationCheck, ...]:
