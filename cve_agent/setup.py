@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from shared.exit_codes import EXIT_AGENT_ERROR
-from shared.paths import data_dir
+from shared.paths import user_data_dir
 
 # Agents required by cve_agent, defined in this package's .kiro/agents/
 REQUIRED_AGENTS = ("yocto-cve-backport", "yocto-cve-backport-interactive")
@@ -33,12 +33,23 @@ PACKAGED_AGENT_INSTRUCTIONS = Path(__file__).resolve().parent / "AGENT_INSTRUCTI
 # agent JSON's ``prompt`` field is pointed here (not at PACKAGED_AGENT_INSTRUCTIONS)
 # so it keeps working across editable-install moves, reinstalls into a
 # different venv/site-packages path, or package upgrades/uninstalls.
-STABLE_AGENT_INSTRUCTIONS = data_dir() / "AGENT_INSTRUCTIONS.md"
+#
+# Deliberately uses user_data_dir() rather than data_dir(): this file is
+# referenced from ~/.kiro/agents/*.json, a machine-global config shared by
+# every kiro-cli invocation on the host, not just this process's. data_dir()
+# honors CVE_TOOLS_DATA_DIR, which CI/benchmark runs point at a throwaway
+# per-run temp directory (see tests/benchmark/run_benchmark.sh) to isolate
+# that run's own artifacts -- if STABLE_AGENT_INSTRUCTIONS followed it, every
+# such run would repoint the global agent JSONs at its own temp dir, leaving
+# a dangling file:// URI (Error: File URI not found: ...) for any other
+# kiro-cli invocation on the host once that temp dir is gone or was never
+# reachable in the first place.
+STABLE_AGENT_INSTRUCTIONS = user_data_dir() / "AGENT_INSTRUCTIONS.md"
 
 
 def sync_agent_instructions() -> Path:
     """Write the kiro-preamble + packaged AGENT_INSTRUCTIONS.md to the
-    stable data_dir() path.
+    stable user_data_dir() path.
 
     The kiro agent JSON's ``prompt`` field points at this stable copy rather
     than at the package's own copy, so the prompt keeps resolving correctly
@@ -161,8 +172,8 @@ def install_agents(missing: list[str], quiet: bool = False) -> bool:
     Copies agent JSON files (rather than symlinking) so that relative file://
     URIs in the 'prompt' field are rewritten to absolute paths that kiro-cli
     can resolve regardless of working directory. The prompt is pointed at
-    the stable data_dir() copy (synced from the packaged file here), not at
-    the package's own copy, so it survives moves/reinstalls/upgrades.
+    the stable user_data_dir() copy (synced from the packaged file here), not
+    at the package's own copy, so it survives moves/reinstalls/upgrades.
 
     Always overwrites the destination JSONs so packaged config changes (e.g.
     ``execute_bash.allowedCommands``) propagate on every install.
@@ -228,7 +239,7 @@ def ensure_agents(interactive: bool = True) -> None:
     In interactive mode, prompts the user before installing.
     Exits with error if prerequisites cannot be met.
 
-    Always re-syncs the stable AGENT_INSTRUCTIONS.md copy (data_dir()) from
+    Always re-syncs the stable AGENT_INSTRUCTIONS.md copy (user_data_dir()) from
     the packaged file AND overwrites the installed agent JSONs from the
     packaged sources, even if they are already present — so content upgrades
     to the instructions or the agent configs (e.g. new
