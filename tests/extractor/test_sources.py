@@ -69,6 +69,41 @@ class TestCVEListV5Extractor(unittest.TestCase):
             self.assertEqual(len(patches), 0)
             self.assertEqual(stats['cvelistv5_hashes'], 0)
 
+    def test_exploit_tag_marks_reference_as_poc(self):
+        '''A reference tagged "Exploit" (as NVD does) is flagged is_poc.
+
+        Regression: NVD's local mirror already carries structured
+        Exploit/PoC tags on some references (verified against real
+        CVE-2024-6387 data), but they were previously discarded —
+        references were flattened to plain URLs with no signal that a
+        PoC/exploit writeup exists. This is additive: references without
+        an Exploit/PoC tag get no is_poc key at all.
+        '''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cve_data = {
+                'containers': {
+                    'cna': {
+                        'references': [
+                            {'url': 'https://example.com/advisory'},
+                            {'url': 'https://example.com/exploit-writeup',
+                             'tags': ['Exploit', 'Third Party Advisory']},
+                        ]
+                    }
+                }
+            }
+            cve_file = os.path.join(tmpdir, 'CVE-2024-1234.json')
+            with open(cve_file, 'w', encoding='utf-8') as f:
+                json.dump(cve_data, f)
+
+            stats = {'cvelistv5_hashes': 0, 'cvelistv5_patches': 0}
+            _, _, _, references = extract_from_cvelistv5(
+                'CVE-2024-1234', tmpdir, stats)
+
+            by_url = {r['url']: r for r in references}
+            self.assertNotIn('is_poc', by_url['https://example.com/advisory'])
+            self.assertTrue(
+                by_url['https://example.com/exploit-writeup']['is_poc'])
+
 
 class TestDebianExtractor(unittest.TestCase):
     '''Test Debian tracker source extractor.'''

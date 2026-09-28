@@ -74,6 +74,36 @@ def deduplicate_metadata(hashes, patches):
     return unique_hashes, unique_patches
 
 
+def merge_references(refs):
+    '''Deduplicate references by url, combining sources into a sorted list.
+
+    Accepts entries in either shape:
+    - Fresh from `tag_results`: {'url', 'source', 'is_poc'?} (single source)
+    - Already merged: {'url', 'sources', 'is_poc'?} (source list)
+
+    `is_poc` is sticky: once any entry for a url is flagged, the merged
+    entry keeps `is_poc: True`. It is a purely additive key — omitted
+    entirely for urls no source ever flagged as a PoC/exploit reference.
+    '''
+    merged = {}
+    for ref in refs:
+        url = ref['url']
+        entry = merged.setdefault(url, {'url': url, 'sources': set()})
+        if 'source' in ref:
+            entry['sources'].add(ref['source'])
+        entry['sources'].update(ref.get('sources', ()))
+        if ref.get('is_poc'):
+            entry['is_poc'] = True
+
+    result = []
+    for entry in merged.values():
+        out = {'url': entry['url'], 'sources': sorted(entry['sources'])}
+        if entry.get('is_poc'):
+            out['is_poc'] = True
+        result.append(out)
+    return result
+
+
 def process_pr_url(url, series):
     '''Process a GitHub PR URL and add commits to series if found.'''
     pr_commits = extract_github_pr_commits(url)
@@ -122,11 +152,40 @@ def resolve_url_refs(url, series):
     return extract_commit_hash(url)
 
 
+def poc_ref(url):
+    '''Mark a reference url as a PoC/exploit link for tag_results().
+
+    Use this instead of constructing a raw (url, True) tuple, so the one
+    place that defines what a "PoC reference" looks like on the wire is
+    this function, not a convention repeated at every call site.
+    '''
+    return (url, True)
+
+
 def tag_results(hashes, patches, refs, source):
-    '''Add source attribution to hashes, patches, and references.'''
+    '''Add source attribution to hashes, patches, and references.
+
+    Each entry in `refs` is normally a plain URL string. A source that can
+    structurally identify a reference as a proof-of-concept/exploit link
+    (e.g. an API label or reference-tag enum) marks it with `poc_ref(url)`
+    instead of a plain string; the resulting reference dict then carries
+    an optional `is_poc: True` key. Plain strings never get the key, so
+    this is purely additive and existing consumers of `references` are
+    unaffected.
+    '''
+    tagged_refs = []
+    for r in refs:
+        if isinstance(r, tuple):
+            url, is_poc = r
+        else:
+            url, is_poc = r, False
+        entry = {'url': url, 'source': source}
+        if is_poc:
+            entry['is_poc'] = True
+        tagged_refs.append(entry)
     return (
         [{'hash': h['hash'], 'url': h['url'], 'source': source}
          for h in hashes],
         [{'url': p['url'], 'source': source} for p in patches],
-        [{'url': r, 'source': source} for r in refs],
+        tagged_refs,
     )
