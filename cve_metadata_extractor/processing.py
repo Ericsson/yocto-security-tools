@@ -84,7 +84,7 @@ def process_cve(cve, idx, total, args, active_sources, stats, oe_token):
     if metadata.get('series'):
         result['series'] = metadata['series']
 
-    if getattr(args, 'check_oe', False) and oe_token:
+    if getattr(args, 'check_oe', False):
         result['upstream_status'] = {}
         for branch in getattr(args, 'oe_branch', []):
             try:
