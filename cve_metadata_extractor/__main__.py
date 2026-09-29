@@ -433,8 +433,12 @@ def main():
 
     # OE token
     oe_token = args.oe_token or os.getenv('OPENEMBEDDED_TOKEN')
-    if args.check_oe and oe_token and not os.path.isdir(args.repo_dir):
-        os.makedirs(args.repo_dir)
+    if args.check_oe:
+        if not oe_token:
+            print("WARNING: OPENEMBEDDED_TOKEN not set; "
+                  "mailing-list checks will be skipped.")
+        if not os.path.isdir(args.repo_dir):
+            os.makedirs(args.repo_dir)
 
     known_affected = _cve_sources.load_cves_from_sources(
         args.cve_id,

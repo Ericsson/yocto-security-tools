@@ -197,7 +197,8 @@ def do_check_status(token, repo_dir, cve, branch):
     if not _OE_STATUS_CACHE_FILE:
         _load_oe_cache(repo_dir)
 
-    cache_key = f"{cve}:{branch}"
+    cache_scope = 'with-token' if token else 'without-token'
+    cache_key = f"{cve}:{branch}:{cache_scope}"
     cached = _OE_STATUS_CACHE.get(cache_key)
     if cached is not None:
         age = _time.time() - cached.get('_ts', 0)
@@ -231,11 +232,12 @@ def _do_check_status_uncached(token, repo_dir, cve, branch):
         if status:
             return f"{status_hint}: {status}" if status_hint else status
 
-    for mailing_list in (OE_CORE_ID, OPENEMBEDDED_DEVEL_ID):
-        logging.debug("Checking %s", mailing_list)
-        status = check_cve(token, mailing_list, cve, branch)
-        if status:
-            return status
+    if token:
+        for mailing_list in (OE_CORE_ID, OPENEMBEDDED_DEVEL_ID):
+            logging.debug("Checking %s", mailing_list)
+            status = check_cve(token, mailing_list, cve, branch)
+            if status:
+                return status
     return "not_found"
 
 
