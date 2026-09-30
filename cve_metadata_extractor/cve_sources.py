@@ -11,6 +11,7 @@ def load_cves_from_sources(cve_id,
                            yocto_summary=None):
     '''Load CVEs from all provided sources'''
     cve_map = {}
+    requested_ids = set(cve_id if isinstance(cve_id, list) else [cve_id]) if cve_id else set()
 
     if yocto_summary:
         with open(yocto_summary, encoding='utf-8') as f:
@@ -26,7 +27,8 @@ def load_cves_from_sources(cve_id,
                 if (issue.get('status') == 'Unpatched'
                         or (historical
                             and issue.get('status') == 'Patched'
-                            and issue.get('detail') == 'backported-patch')):
+                            and issue.get('detail') == 'backported-patch')
+                        or (cve_id_key in requested_ids and cve_id_key not in cve_map)):
                     cve_map[cve_id_key] = {
                         'id': cve_id_key,
                         'name': normalize_component_name(

@@ -458,6 +458,22 @@ def main():
             print(f"WARNING: Could not load existing output: {e}", file=sys.stderr)
 
     results = dict(existing_results)
+
+    # Filter out CVEs that are no longer selected by the Yocto summary
+    if args.yocto_summary:
+        with open(args.yocto_summary, encoding='utf-8') as f:
+            summary = json.load(f)
+        summary_ids = {
+            issue['id']
+            for package in summary.get('package', [])
+            for issue in package.get('issue', [])
+            if issue.get('id')
+        }
+        selected_ids = {cve['id'] for cve in known_affected}
+        for cve_id in sorted((summary_ids - selected_ids) & results.keys()):
+            results.pop(cve_id, None)
+            print(f"Updated {cve_id}: removed from output (no longer selected by Yocto summary)")
+
     skipped = 0
     reprocessed = 0
     last_checkpoint = time.monotonic()
@@ -473,6 +489,13 @@ def main():
                     reprocessed += 1
                 else:
                     _accumulate_stats(existing_results[cve_id], stats)
+                    if args.yocto_summary:
+                        updated = dict(existing_results[cve_id])
+                        if updated.get('name') in (None, '', 'n/a', 'N/A') and cve.get('name'):
+                            updated['name'] = cve['name']
+                        if not updated.get('version') and cve.get('version'):
+                            updated['version'] = cve['version']
+                        results[cve_id] = updated
                     skipped += 1
                     continue
             result = process_cve(
