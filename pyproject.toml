@@ -51,6 +51,7 @@ Changelog = "https://github.com/Ericsson/yocto-security-tools/blob/main/CHANGELO
 cve-agent = "cve_agent.__main__:main"
 cve-corrector = "cve_corrector.__main__:main"
 cve-metadata-extractor = "cve_metadata_extractor.__main__:main"
+cve-oe-backport = "cve_oe_backport.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -61,7 +62,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["cve_agent", "cve_corrector", "cve_metadata_extractor", "shared"]
+source = ["cve_agent", "cve_corrector", "cve_metadata_extractor", "cve_oe_backport", "shared"]
 
 [tool.coverage.report]
 show_missing = true
@@ -77,7 +78,7 @@ check_untyped_defs = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "cve_metadata_extractor.*"
+module = ["cve_metadata_extractor.*", "cve_oe_backport.*"]
 disable_error_code = ["var-annotated"]
 
 [tool.ruff]
@@ -96,7 +97,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["cve_agent*", "cve_corrector*", "cve_metadata_extractor*", "shared*"]
+include = ["cve_agent*", "cve_corrector*", "cve_metadata_extractor*", "cve_oe_backport*", "shared*"]
 
 [tool.setuptools.package-data]
 cve_metadata_extractor = ["config.json"]

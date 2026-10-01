@@ -71,6 +71,14 @@ a fix already landed in an OpenEmbedded branch (`--check-oe`).
 
 → [Full reference](docs/cve-metadata-extractor.md)
 
+### cve-oe-backport
+
+Uses `oe-status-cache.json` and `cve-metadata.json` to copy a CVE patch from
+an existing OpenEmbedded repository clone into your layer and write a
+version-specific `.bbappend`. It does not build or validate the result.
+
+→ [Build-to-backport guide](docs/cve-oe-backport.md)
+
 ### cve-corrector
 
 Applies a fix to a recipe using `devtool`: cherry-picks the upstream commit into

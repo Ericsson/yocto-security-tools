@@ -41,6 +41,6 @@ jobs:
       - name: Ruff check
         run: ruff check .
       - name: Mypy
-        run: mypy cve_agent cve_corrector cve_metadata_extractor shared
+        run: mypy cve_agent cve_corrector cve_metadata_extractor cve_oe_backport shared
       - name: Tests
         run: pytest --cov --cov-report=term-missing

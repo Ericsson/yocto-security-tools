@@ -20,6 +20,9 @@
 │   │                            # (uct.py = Ubuntu CVE Tracker local clone, default-on;
 │   │                            #  ubuntu.py = legacy per-CVE HTTP API, deprecated/opt-in via --ubuntu-api)
 │   └── config.json              # Public URLs (override via CVE_EXTRACTOR_CONFIG)
+├── cve_oe_backport/             # Standalone OE patch + bbappend generator
+│   ├── backport.py              # Cache/metadata inputs, patch export, layer output
+│   └── __main__.py              # cve-oe-backport module entry point
 ├── cve_corrector/               # Tool 2: apply patches via devtool
 │   ├── workflow.py              # Main state machine (largest file)
 │   ├── state.py                 # WorkflowState + exception hierarchy
@@ -49,7 +52,7 @@
 │   └── instructions/           # Per-phase workflow fragments embedded into
 │                               # context.md by exit code (conflict/build/ptest)
 ├── extra/                       # Plugin directory (.gitignore'd .py files)
-└── tests/{agent,corrector,extractor,shared,benchmark,integration}/
+└── tests/{agent,backport,corrector,extractor,shared,benchmark,integration}/
     └── benchmark/                # cve-agent model benchmark (see its own README.md)
         ├── run_benchmark.sh      # Orchestrator: fixed CVE roster x models, then AI judge
         ├── bench_lib.py          # Pure-Python helpers (tiering, cost weight, judge call)
@@ -72,7 +75,7 @@
 
 1. **Plugin = new file only** — drop `.py` in `extra/`, never modify existing code
 2. **Process isolation** — agent invokes corrector via `subprocess.run([python, -m, cve_corrector])`
-3. **Acyclic deps** — shared ← extractor, shared ← corrector, shared ← agent
+3. **Acyclic deps** — shared ← extractor ← backport, shared ← corrector, shared ← agent
 4. **No internal deps** — only `requests` + `packaging` from PyPI
 5. **Public URLs only** — config.json points to github.com, salsa.debian.org, api.osv.dev
 

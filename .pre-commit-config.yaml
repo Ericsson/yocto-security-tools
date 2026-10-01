@@ -14,7 +14,7 @@ repos:
         additional_dependencies: [types-requests]
         args: [--ignore-missing-imports]
         pass_filenames: false
-        entry: mypy cve_agent cve_corrector cve_metadata_extractor shared
+        entry: mypy cve_agent cve_corrector cve_metadata_extractor cve_oe_backport shared
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.16.3
     hooks:
