@@ -22,6 +22,7 @@ TEST_TIMEOUT=3600  # 60 minutes per CVE
 MIN_YEAR="${MIN_YEAR:-2024}"  # Skip CVEs older than this year
 SKIP_MIRRORS=false
 FULL_ONLY=false
+ENRICHED_ROUND=false
 REQUIRE_SECURITY_STATUS="${REQUIRE_SECURITY_STATUS:-}"
 COMPONENTS=()  # empty = all
 RESULT_SCHEMA_TOOL="${SCRIPT_DIR}/result_schema.py"
@@ -343,7 +344,7 @@ run_loop() {
 
         if [[ -z "$schema_fields" ]]; then
             local -a schema_args=(fields "$status")
-            if [[ "$mode" == "full" && "$exit_code" -eq 0 ]]; then
+            if [[ ( "$mode" == "full" || "$mode" == "full-enriched" ) && "$exit_code" -eq 0 ]]; then
                 schema_args+=(--build-evidence)
             fi
             [[ "$status" == FAIL* ]] && schema_args+=(--failure-code "$exit_name")
@@ -423,6 +424,70 @@ verify_fetch() {
     fi
 }
 
+# ── Ground-truth enrichment (round 2) ───────────────────────────────────────
+# Produces a corrected copy of $CVE_METADATA using enrich_metadata_from_oe.py,
+# the same Upstream-Status-backed ground-truth recovery the benchmark roster
+# relies on (see tests/benchmark/README.md "Roster files" and
+# tests/integration/enrich_metadata_from_oe.py's module docstring). This finds
+# the upstream commit each OE-Core patch itself declares via
+# "Upstream-Status: Backport [<url>]" and prepends it ahead of whatever the
+# public trackers (Debian/OSV/CVEList/NVD/UCT) guessed, so round 2 measures
+# cve_corrector against the hash OE-Core actually backported rather than a
+# tracker's best guess.
+ENRICH_TOOL="${SCRIPT_DIR}/enrich_metadata_from_oe.py"
+ENRICHED_METADATA=""
+
+# Sets ENRICHED_METADATA to a corrected copy of $CVE_METADATA. Logs what the
+# enrichment changed to ${LOG_DIR}/enrich_metadata.log.
+prepare_enriched_metadata() {
+    local enrich_log="${LOG_DIR}/enrich_metadata.log"
+    ENRICHED_METADATA="${LOG_DIR}/enriched-cve-metadata.json"
+
+    log "=== Preparing enriched metadata (ground-truth Upstream-Status pass) ==="
+    cp "$CVE_METADATA" "$ENRICHED_METADATA"
+
+    if python3 "$ENRICH_TOOL" "$ENRICHED_METADATA" "${OE_DIR}/meta" \
+            --correct-existing > "$enrich_log" 2>&1; then
+        log "Enrichment complete, see $enrich_log"
+        cat "$enrich_log"
+    else
+        log "WARNING: enrich_metadata_from_oe.py failed, see $enrich_log — round 2 will reuse the original metadata"
+        cat "$enrich_log"
+        cp "$CVE_METADATA" "$ENRICHED_METADATA"
+    fi
+}
+
+# ── Backend preflight ────────────────────────────────────────────────────────
+# Verifies the agent backend/model actually responds before spending any
+# corrector/build time. Catches a misconfigured named OpenAI profile early
+# (e.g. a profile file that only exists outside the resolved config
+# directory -- --backend openai-<profile> loads ONLY
+# <repo>/etc/openai-<profile>.cfg or an absolute $CVE_AGENT_OPENAI_CONFIG_DIR;
+# it never searches a relative path, the workspace, or any parent directory).
+# Skipped automatically when no CVE in this run will ever reach the agent
+# (--full-only is not required for that -- corrector-only cases still skip
+# the agent on a clean exit).
+verify_agent_backend() {
+    log "=== Verifying agent backend ($AGENT_BACKEND${AGENT_MODEL:+, model: $AGENT_MODEL}) ==="
+    local verify_log="${LOG_DIR}/verify_backend.log"
+    local -a verify_flags=(--backend "$AGENT_BACKEND")
+    [[ -n "$AGENT_MODEL" ]] && verify_flags+=(--model "$AGENT_MODEL")
+    if python3 -m cve_agent "${verify_flags[@]}" --verify-backend > "$verify_log" 2>&1; then
+        log "Backend OK, see $verify_log"
+    else
+        log "FATAL: backend verification failed, see $verify_log"
+        cat "$verify_log"
+        if [[ "$AGENT_BACKEND" == openai-* ]]; then
+            log "Hint: --backend $AGENT_BACKEND loads openai-<profile>.cfg from"
+            log "  <repo>/etc/ or an ABSOLUTE \$CVE_AGENT_OPENAI_CONFIG_DIR only --"
+            log "  there is no relative-path or parent-directory fallback. If your"
+            log "  profile file lives elsewhere (e.g. ../openai/), export:"
+            log "    export CVE_AGENT_OPENAI_CONFIG_DIR=/absolute/path/to/that/dir"
+        fi
+        die "Fix the agent backend before running tests."
+    fi
+}
+
 # ── Main test loop ───────────────────────────────────────────────────────────
 run_tests() {
     log "=== Testing cve_corrector on each CVE ==="
@@ -445,8 +510,25 @@ run_tests() {
     FAILED_RECIPES=""
     verify_fetch "$cve_list"
 
+    # Round 1: tracker-sourced metadata, as recorded in $CVE_METADATA.
     [[ "$FULL_ONLY" != true ]] && run_loop "skip-build-ptest" "--skip-build --skip-ptest" "$cve_list" "$FAILED_RECIPES"
     run_loop "full" "" "$cve_list" "$FAILED_RECIPES"
+
+    if [[ "$ENRICHED_ROUND" == true ]]; then
+        # Round 2: same CVEs, same cve_list, but against metadata corrected
+        # with the ground-truth Upstream-Status hashes OE-Core's own patches
+        # declare. Distinct mode names (*-enriched) keep results/logs from
+        # colliding with round 1's. $CVE_METADATA is swapped for the duration
+        # of these two run_loop calls and restored immediately after, since
+        # run_cve_corrector/the agent subprocess both read it as a global at
+        # call time.
+        prepare_enriched_metadata
+        local original_metadata="$CVE_METADATA"
+        CVE_METADATA="$ENRICHED_METADATA"
+        [[ "$FULL_ONLY" != true ]] && run_loop "skip-build-ptest-enriched" "--skip-build --skip-ptest" "$cve_list" "$FAILED_RECIPES"
+        run_loop "full-enriched" "" "$cve_list" "$FAILED_RECIPES"
+        CVE_METADATA="$original_metadata"
+    fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -455,6 +537,7 @@ main() {
         case "$1" in
             --skip-mirrors) SKIP_MIRRORS=true ;;
             --full-only) FULL_ONLY=true ;;
+            --enriched-round) ENRICHED_ROUND=true ;;
             --resume)
                 shift
                 [[ $# -gt 0 ]] || die "--resume requires a directory argument"
@@ -487,9 +570,13 @@ main() {
 
     [[ -d "$OE_DIR/.git" ]] || die "$OE_DIR is not a git repository"
     [[ -f "$CVE_METADATA" ]] || die "CVE metadata not found: $CVE_METADATA"
+    if [[ "$ENRICHED_ROUND" == true ]]; then
+        [[ -f "$ENRICH_TOOL" ]] || die "enrich_metadata_from_oe.py not found: $ENRICH_TOOL"
+    fi
 
     mkdir -p "$LOG_DIR"
     source_build_env
+    verify_agent_backend
     run_tests
 
     log "Done. Results in $LOG_DIR"
