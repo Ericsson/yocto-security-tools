@@ -104,16 +104,40 @@ declare -A MIRRORS=(
     [zlib]="https://github.com/madler/zlib"
 )
 
+# Pull request commits (e.g. an unmerged series fix) often live only on a
+# PR ref, never on a branch or tag `remote update` would follow. Fetch those
+# into refs/pr/* on every mirror so is_bad_object()/apply_series() can find
+# a PR commit without the mirror having to carry every open PR as a branch.
+# GitLab has no equivalent public PR/MR ref, so this only applies to GitHub.
+fetch_pr_refs() {
+    local dest="$1" url="$2"
+    [[ "$url" == *github.com* ]] || return 0
+    git -C "$dest" fetch origin --prune \
+        '+refs/pull/*/head:refs/pr/*' >/dev/null 2>&1 || true
+}
+
 ok=0; fail=0
 for name in $(printf '%s\n' "${!MIRRORS[@]}" | grep -v '^busybox$' | sort; echo busybox); do
     url="${MIRRORS[$name]}"
     dest="$MIRROR_DIR/$name"
     if [[ -d "$dest" ]]; then
         log "Updating $name..."
-        git -C "$dest" remote update --prune && ok=$((ok+1)) || { log "WARN: update failed for $name"; fail=$((fail+1)); }
+        if git -C "$dest" remote update --prune; then
+            fetch_pr_refs "$dest" "$url"
+            ok=$((ok+1))
+        else
+            log "WARN: update failed for $name"
+            fail=$((fail+1))
+        fi
     else
         log "Cloning $name from $url..."
-        git clone --bare "$url" "$dest" && ok=$((ok+1)) || { log "WARN: clone failed for $name"; fail=$((fail+1)); }
+        if git clone --bare "$url" "$dest"; then
+            fetch_pr_refs "$dest" "$url"
+            ok=$((ok+1))
+        else
+            log "WARN: clone failed for $name"
+            fail=$((fail+1))
+        fi
     fi
 done
 
