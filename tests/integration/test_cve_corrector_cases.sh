@@ -62,6 +62,45 @@ source "${SCRIPT_DIR}/test_common.sh"
 source_build_env
 setup_oe_git
 
+# ── Backend preflight ────────────────────────────────────────────────────────
+# Agent test cases are 6, 11, and 13. Verify the backend/model actually
+# responds before spending any corrector/build time on them -- catches a
+# misconfigured named OpenAI profile early (e.g. a profile file that only
+# exists outside the resolved config directory: --backend openai-<profile>
+# loads ONLY <repo>/etc/openai-<profile>.cfg or an absolute
+# $CVE_AGENT_OPENAI_CONFIG_DIR; it never searches a relative path, the
+# workspace, or any parent directory).
+AGENT_TEST_NUMS=(6 11 13)
+needs_agent_backend() {
+    [[ -z "$RUN_TEST" ]] && return 0
+    local n
+    for n in "${AGENT_TEST_NUMS[@]}"; do
+        [[ "$RUN_TEST" == "$n" ]] && return 0
+    done
+    return 1
+}
+
+if needs_agent_backend; then
+    log "=== Verifying agent backend ($AGENT_BACKEND${AGENT_MODEL:+, model: $AGENT_MODEL}) ==="
+    verify_log="${LOG_DIR}/verify_backend.log"
+    verify_flags=(--backend "$AGENT_BACKEND")
+    [[ -n "$AGENT_MODEL" ]] && verify_flags+=(--model "$AGENT_MODEL")
+    if python3 -m cve_agent "${verify_flags[@]}" --verify-backend > "$verify_log" 2>&1; then
+        log "Backend OK, see $verify_log"
+    else
+        log "FATAL: backend verification failed, see $verify_log"
+        cat "$verify_log"
+        if [[ "$AGENT_BACKEND" == openai-* ]]; then
+            log "Hint: --backend $AGENT_BACKEND loads openai-<profile>.cfg from"
+            log "  <repo>/etc/ or an ABSOLUTE \$CVE_AGENT_OPENAI_CONFIG_DIR only --"
+            log "  there is no relative-path or parent-directory fallback. If your"
+            log "  profile file lives elsewhere (e.g. ../openai/), export:"
+            log "    export CVE_AGENT_OPENAI_CONFIG_DIR=/absolute/path/to/that/dir"
+        fi
+        die "Fix the agent backend before running tests."
+    fi
+fi
+
 # Extract sorted list of file://...patch entries from a recipe's directory
 get_recipe_patches() {
     local meta_layer="$1"
