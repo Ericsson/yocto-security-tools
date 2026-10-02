@@ -155,16 +155,62 @@ def checkout_version(repo_path: Path, version: str, branch_name: str,
     return True
 
 
+def _is_local_path(url: str) -> bool:
+    """Return whether a git remote URL is a local filesystem path."""
+    return '://' not in url and not url.startswith('git@')
+
+
+def _mirror_origin_url(mirror_path: Path) -> str | None:
+    """Return a local mirror's own ``origin`` remote URL, if any.
+
+    ``upstream`` in a devtool workspace is often set to a local mirror
+    directory (``--mirror-dir``) rather than the canonical upstream URL.
+    When that mirror itself is stale and lacks an object, fetching
+    ``upstream`` again is a no-op: it can only ever serve what it already
+    has. The mirror's own ``origin`` is the actual canonical source and may
+    have the object even when the local mirror has not been refreshed.
+    """
+    result = run_cmd_capture(
+        ['git', 'remote', 'get-url', 'origin'], cwd=mirror_path)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
 def is_bad_object(workspace_path: Path, commit_hash: str) -> bool:
     """Check if a commit hash is a bad/missing object in the repo."""
     result = run_cmd_capture(
         ['git', 'cat-file', '-e', commit_hash], cwd=workspace_path)
-    if result.returncode != 0:
-        # Try fetching from upstream in case it's not yet available locally
-        run_cmd_capture(
-            ['git', 'fetch', 'upstream', commit_hash], cwd=workspace_path)
-        result = run_cmd_capture(
-            ['git', 'cat-file', '-e', commit_hash], cwd=workspace_path)
+    if result.returncode == 0:
+        return False
+
+    # Try fetching from upstream in case it's not yet available locally.
+    run_cmd_capture(
+        ['git', 'fetch', 'upstream', commit_hash], cwd=workspace_path)
+    result = run_cmd_capture(
+        ['git', 'cat-file', '-e', commit_hash], cwd=workspace_path)
+    if result.returncode == 0:
+        return False
+
+    # 'upstream' may itself be a local mirror directory (--mirror-dir) that
+    # is stale, in which case the fetch above was a no-op. Fall back to the
+    # mirror's own 'origin' — its canonical upstream — which may have the
+    # object even though the local mirror does not.
+    upstream_url_result = run_cmd_capture(
+        ['git', 'remote', 'get-url', 'upstream'], cwd=workspace_path)
+    if upstream_url_result.returncode == 0:
+        upstream_url = upstream_url_result.stdout.strip()
+        if upstream_url and _is_local_path(upstream_url):
+            mirror_path = Path(upstream_url)
+            origin_url = _mirror_origin_url(mirror_path)
+            if origin_url and not _is_local_path(origin_url):
+                run_cmd_capture(
+                    ['git', 'fetch', origin_url, commit_hash],
+                    cwd=workspace_path)
+                result = run_cmd_capture(
+                    ['git', 'cat-file', '-e', commit_hash], cwd=workspace_path)
+
     return result.returncode != 0
 
 

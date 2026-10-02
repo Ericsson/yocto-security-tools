@@ -87,8 +87,9 @@ class TestIsBadObject:
     def test_bad_object_after_fetch(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=1),  # first cat-file
-            MagicMock(returncode=0),  # fetch
+            MagicMock(returncode=0),  # fetch upstream <sha>
             MagicMock(returncode=1),  # second cat-file
+            MagicMock(returncode=1),  # remote get-url upstream (not found)
         ]
         assert is_bad_object(Path("/repo"), "abc123") is True
 
@@ -96,10 +97,62 @@ class TestIsBadObject:
     def test_bad_then_good_after_fetch(self, mock_run):
         mock_run.side_effect = [
             MagicMock(returncode=1),  # first cat-file
-            MagicMock(returncode=0),  # fetch
+            MagicMock(returncode=0),  # fetch upstream <sha>
             MagicMock(returncode=0),  # second cat-file
         ]
         assert is_bad_object(Path("/repo"), "abc123") is False
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_falls_back_to_mirror_origin_when_upstream_is_local_path(self, mock_run):
+        """upstream=stale local mirror; mirror's own origin has the object.
+
+        A workspace whose 'upstream' remote is a --mirror-dir path cannot be
+        rescued by re-fetching 'upstream' when that mirror itself lacks the
+        object. The real canonical source is the mirror's own 'origin'.
+        """
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # first cat-file: missing
+            MagicMock(returncode=0),  # fetch upstream <sha>: no-op (stale mirror)
+            MagicMock(returncode=1),  # second cat-file: still missing
+            MagicMock(returncode=0, stdout="/home/user/git/avahi\n"),  # upstream url
+            MagicMock(returncode=0, stdout="https://github.com/lathiat/avahi\n"),
+            MagicMock(returncode=0),  # fetch <mirror origin url> <sha>: succeeds
+            MagicMock(returncode=0),  # third cat-file: now present
+        ]
+        assert is_bad_object(Path("/repo"), "5b0ae7cf6dee2e32ca2ad2e0f95fb9b534764aa1") is False
+        fetch_calls = [c for c in mock_run.call_args_list if c.args[0][1] == "fetch"]
+        assert fetch_calls[-1].args[0] == [
+            "git", "fetch", "https://github.com/lathiat/avahi",
+            "5b0ae7cf6dee2e32ca2ad2e0f95fb9b534764aa1",
+        ]
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_mirror_fallback_still_missing_reports_bad(self, mock_run):
+        """Mirror's origin also lacks the object — correctly reported bad."""
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # first cat-file: missing
+            MagicMock(returncode=0),  # fetch upstream <sha>: no-op
+            MagicMock(returncode=1),  # second cat-file: still missing
+            MagicMock(returncode=0, stdout="/home/user/git/avahi\n"),  # upstream url
+            MagicMock(returncode=0, stdout="https://github.com/lathiat/avahi\n"),
+            MagicMock(returncode=1),  # fetch <mirror origin url> <sha>: fails
+            MagicMock(returncode=1),  # third cat-file: still missing
+        ]
+        assert is_bad_object(Path("/repo"), "deadbeef") is True
+
+    @patch("cve_corrector.git_ops.run_cmd_capture")
+    def test_no_fallback_when_upstream_is_already_a_remote_url(self, mock_run):
+        """upstream is already the canonical remote — no mirror to fall back to."""
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # first cat-file: missing
+            MagicMock(returncode=0),  # fetch upstream <sha>: no-op
+            MagicMock(returncode=1),  # second cat-file: still missing
+            MagicMock(returncode=0, stdout="https://github.com/lathiat/avahi\n"),
+        ]
+        assert is_bad_object(Path("/repo"), "deadbeef") is True
+        # Only one remote lookup (upstream's own URL) — no further fetch
+        # attempted since upstream is not a local mirror path.
+        assert mock_run.call_count == 4
 
 
 class TestIsAncestorOfHead:
