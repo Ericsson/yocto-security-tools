@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Ericsson AB
+# Copyright (C) 2026 Triet Hoang <triet.hoang.dev@gmail.com>
 # SPDX-License-Identifier: MIT
 """Tests for generating layer backports from the OE status cache."""
 

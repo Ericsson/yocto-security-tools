@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Ericsson AB
+# Copyright (C) 2026 Triet Hoang <triet.hoang.dev@gmail.com>
 # SPDX-License-Identifier: MIT
 """Prepare patches and bbappends from cached OpenEmbedded status results."""
 
