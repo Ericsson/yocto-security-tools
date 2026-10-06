@@ -12,6 +12,7 @@ from pathlib import Path
 
 from cve_metadata_extractor.oe_status import _get_repo_url
 from shared import TEXT_ENCODING, TEXT_ERRORS
+from shared.patch import annotate_patch_text
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d+$")
 _RECIPE_RE = re.compile(r"^[A-Za-z0-9.+_-]+$")
@@ -134,15 +135,7 @@ def _annotate_patch(patch: str, cve: str, upstream_url: str) -> str:
     """Add standard CVE and Upstream-Status headers to a format-patch result."""
     if "\n---\n" not in patch:
         raise ValueError("Git did not produce a format-patch message")
-    before, after = patch.split("\n---\n", 1)
-    headers = []
-    if f"CVE: {cve}" not in before:
-        headers.append(f"CVE: {cve}")
-    if "Upstream-Status:" not in before:
-        headers.append(f"Upstream-Status: Backport [{upstream_url}]")
-    if headers:
-        before = before.rstrip("\n") + "\n\n" + "\n".join(headers)
-    return before + "\n---\n" + after
+    return annotate_patch_text(patch, cve, upstream_url)
 
 def _commit_patches(repo: Path, commit: str, recipe_path: str,
                     cve: str) -> list[str]:
