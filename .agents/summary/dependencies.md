@@ -66,9 +66,15 @@ graph TD
     end
     subgraph "Project Packages"
         extractor["cve_metadata_extractor"]
+        backport["cve_oe_backport"]
         corrector["cve_corrector"]
+        shared["shared"]
         agent["cve_agent"]
     end
+    extractor --> shared
+    backport --> extractor & shared
+    corrector --> shared
+    agent --> shared
     extractor --> requests
     corrector --> packaging
     corrector --> git & devtool & bitbake

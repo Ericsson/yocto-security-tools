@@ -36,6 +36,7 @@ mypy cve_agent cve_corrector cve_metadata_extractor shared
 ```
 ├── shared/                  # Shared utilities (leaf module, no upward deps)
 ├── cve_metadata_extractor/  # Tool 1: find fix commits
+├── cve_oe_backport/         # Standalone OE patch and bbappend generator
 ├── cve_corrector/           # Tool 2: apply patches via devtool
 ├── cve_agent/               # Tool 3: AI-assisted conflict resolution
 ├── extra/                   # Plugin directory (private, .gitignore'd)

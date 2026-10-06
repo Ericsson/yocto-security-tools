@@ -20,6 +20,7 @@ graph TB
     subgraph "Source Packages"
         shared["shared/"]
         extractor["cve_metadata_extractor/"]
+        backport["cve_oe_backport/"]
         corrector["cve_corrector/"]
         agent["cve_agent/"]
     end
@@ -28,6 +29,8 @@ graph TB
         tests["tests/"]
     end
     extractor --> shared
+    backport --> extractor
+    backport --> shared
     corrector --> shared
     agent --> shared
     agent -.->|subprocess| corrector
@@ -40,6 +43,7 @@ graph TB
 | Command | Module | Purpose |
 |---------|--------|---------|
 | `cve-metadata-extractor` | `cve_metadata_extractor.__main__:main` | Find fix commits from public sources |
+| `cve-oe-backport` | `cve_oe_backport.__main__:main` | Generate patches and bbappends from merged OE fixes |
 | `cve-corrector` | `cve_corrector.__main__:main` | Apply CVE patches via devtool |
 | `cve-agent` | `cve_agent.__main__:main` | AI-orchestrated conflict resolution |
 

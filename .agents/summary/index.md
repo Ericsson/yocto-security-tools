@@ -4,7 +4,7 @@
 
 ## Project Summary
 
-**yocto-security-tools** is a Python 3.9+ toolchain for automated CVE management in Yocto/OpenEmbedded. It consists of three CLI tools forming a pipeline: metadata extraction → patch application → AI-assisted conflict resolution. The codebase has four Python packages (`shared`, `cve_metadata_extractor`, `cve_corrector`, `cve_agent`) with a strict acyclic dependency graph and a plugin system for extensibility.
+**yocto-security-tools** is a Python 3.10+ toolchain for automated CVE management in Yocto/OpenEmbedded. It provides four CLI tools: metadata extraction, OE backport generation, patch application, and AI-assisted conflict resolution. The codebase has five Python packages (`shared`, `cve_metadata_extractor`, `cve_oe_backport`, `cve_corrector`, `cve_agent`) with a strict acyclic dependency graph and a plugin system for extensibility.
 
 ## Documentation Files
 

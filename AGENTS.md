@@ -11,6 +11,7 @@
 │   ├── paths.py                 # XDG Base Directory paths (data_dir, cache_dir)
 │   ├── json_cache.py            # Gzip-compressed JSON cache (atomic writes)
 │   ├── handoff.py               # Corrector-to-agent repository state contract
+│   ├── patch.py                 # Shared patch metadata and format-patch helpers
 │   └── url_parser.py            # URL → commit hash/PR extraction
 ├── cve_metadata_extractor/      # Tool 1: find fix commits
 │   ├── sources.py               # CveSource base + SOURCE_REGISTRY + plugin loader
@@ -21,7 +22,7 @@
 │   │                            #  ubuntu.py = legacy per-CVE HTTP API, deprecated/opt-in via --ubuntu-api)
 │   └── config.json              # Public URLs (override via CVE_EXTRACTOR_CONFIG)
 ├── cve_oe_backport/             # Standalone OE patch + bbappend generator
-│   ├── backport.py              # Cache/metadata inputs, patch export, layer output
+│   ├── backport.py              # Cache/metadata inputs, shared patch annotation, layer output
 │   └── __main__.py              # cve-oe-backport module entry point
 ├── cve_corrector/               # Tool 2: apply patches via devtool
 │   ├── workflow.py              # Main state machine (largest file)
@@ -75,7 +76,7 @@
 
 1. **Plugin = new file only** — drop `.py` in `extra/`, never modify existing code
 2. **Process isolation** — agent invokes corrector via `subprocess.run([python, -m, cve_corrector])`
-3. **Acyclic deps** — shared ← extractor ← backport, shared ← corrector, shared ← agent
+3. **Acyclic deps** — shared ← extractor ← backport; backport, corrector, and agent also depend directly on shared
 4. **No internal deps** — only `requests` + `packaging` from PyPI
 5. **Public URLs only** — config.json points to github.com, salsa.debian.org, api.osv.dev
 
