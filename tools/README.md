@@ -113,3 +113,62 @@ The pure data layer (`classify_outcome`, `aggregate`, `rank_models`,
 Those tests do not import matplotlib — the plotting functions import it
 lazily for exactly that reason — so they run in CI without adding a
 dependency.
+
+## plot_corrector_results.py
+
+Plots a bulk `cve-corrector`/`cve-agent` integration test run — the
+`results_<mode>.csv` written by `tests/integration/test_cve_corrector.sh`
+(see `tests/integration/result_schema.py` for the status/outcome columns).
+Generates 3 PNG charts:
+
+| File | Shows |
+|------|-------|
+| `status_distribution.png` | Every distinct `status` value the test runner can emit, colored by outcome family |
+| `family_breakdown.png` | The same data collapsed into a single stacked bar of five outcome families |
+| `recipe_breakdown.png` | Outcome family per recipe, so a recipe that always needs agent involvement or review stands out from one that resolves identically every time |
+
+The outcome taxonomy (`classify_family`) groups the raw `status` column into
+five families:
+
+- **direct success** — `IDENTICAL`, `SUCCESS`, `ALREADY_APPLIED`: `cve-corrector`
+  alone reached this result, no AI backend was ever invoked.
+- **agent-resolved (verified)** — `AGENT_RESOLVED`: `cve-agent` resolved a
+  conflict/build/ptest failure and the result passed the semantic
+  security-equivalence gate (`SECURITY_VERIFIED`).
+- **produced a patch, needs review** — `SECURITY_REVIEW_REQUIRED`,
+  `WORKFLOW_COMPLETED_UNVERIFIED`: a patch exists and the workflow/build
+  completed, but automatic verification could not confirm it is a correct
+  fix. Kept visually distinct from a verified success on purpose — "a patch
+  was produced" is not the same claim as "the fix was confirmed correct".
+- **skipped** — any `SKIP*` status (pre-existing build/ptest failure, not
+  applicable, fetch failed).
+- **failed** — any `FAIL*` status, and any future status this script does
+  not yet recognize (fails loud as a visible red bar rather than silently
+  vanishing from the chart).
+
+Colors come from the Okabe-Ito palette (distinguishable under the common
+forms of color blindness) and every bar is annotated with its value, so no
+chart depends on hue alone being read correctly.
+
+### Usage
+
+Requires `matplotlib`, which is intentionally **not** a runtime dependency of
+this project. Install it in your virtualenv first:
+
+```bash
+pip install matplotlib==3.10.1
+python3 tools/plot_corrector_results.py \
+    tests/integration/test-results/bulk_20261001_153754 --mode full-enriched
+```
+
+PNGs are written into the results directory by default; use `--output-dir` to
+send them elsewhere. `--mode` is only required if the directory has more than
+one `results_*.csv` (e.g. from different test modes); it is auto-detected
+otherwise. The script also prints the same figures as a text table to
+stdout, so a run can be quoted into a report without opening the images.
+
+The pure data layer (`classify_family`, `status_counts`, `family_counts`,
+`recipe_breakdown`, `find_results_csv`, `read_results_csv`) is covered by
+`tests/tools/test_plot_corrector_results.py`. Those tests do not import
+matplotlib — the plotting functions import it lazily for exactly that
+reason — so they run in CI without adding a dependency.
