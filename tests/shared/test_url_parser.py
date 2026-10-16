@@ -108,6 +108,26 @@ class TestExtractCommitHash:
                "h=d1458933830456e54223d9fc61f0d9b3a19256f5")
         assert extract_commit_hash(url) is None
 
+    def test_gitlab_merge_request_diff_commit_id(self):
+        # Regression for CVE-2025-46421 (libsoup): the OE patch's
+        # Upstream-Status trailer named this URL shape and extract_commit_hash
+        # returned None, so cve_corrector fell back to the patch's git
+        # format-patch From-header SHA as a last resort — a commit that
+        # never existed upstream, causing "Missing fix commit(s) after
+        # canonical fetch" even though the real fix commit was right there
+        # in the URL.
+        url = ("https://gitlab.gnome.org/GNOME/libsoup/-/merge_requests/436/"
+               "diffs?commit_id=3e5c26415811f19e7737238bb23305ffaf96f66b")
+        assert extract_commit_hash(url) == (
+            "3e5c26415811f19e7737238bb23305ffaf96f66b")
+
+    def test_gitlab_merge_request_diff_without_commit_id_is_not_a_commit(self):
+        # The bare MR diff view (no commit_id) covers every commit in the
+        # MR, not one commit, so it must not be treated as a commit
+        # reference.
+        url = "https://gitlab.com/project/repo/-/merge_requests/27783/diffs"
+        assert extract_commit_hash(url) is None
+
     def test_hex_in_repo_name_not_mistaken_for_hash(self):
         # Previously returned 'ec61850', taken from the repository name.
         url = ("https://github.com/mz-automation/libiec61850/commit/"

@@ -67,7 +67,9 @@ def extract_commit_hash(url: str) -> str | None:
     ``/stable/c/<hash>``
     shortlinks, Pagure ``/c/<hash>``, SourceForge ``/ci/<hash>``,
     Gitiles ``/+/<hash>``, Fossil ``/info/<hash>``, 9front
-    ``/<hash>/commit.html``, and patch artifacts named ``/<hash>.patch``.
+    ``/<hash>/commit.html``, GitLab merge request diff view scoped to one
+    commit (``/-/merge_requests/<n>/diffs?commit_id=<hash>``), and patch
+    artifacts named ``/<hash>.patch``.
 
     This avoids treating arbitrary hexadecimal-looking document IDs,
     advisory UUIDs, message IDs or Gerrit change IDs as Git commits.
@@ -101,6 +103,17 @@ def extract_commit_hash(url: str) -> str | None:
     raw_query = re.sub('%3B', ';', parsed.query, flags=re.IGNORECASE)
     query = dict(parse_qsl(raw_query.replace(';', '&'),
                            keep_blank_values=True))
+
+    # GitLab merge request diff view scoped to one commit:
+    # /-/merge_requests/<n>/diffs?commit_id=<hash>. Without commit_id the
+    # same path shows every commit in the MR, which does not name a single
+    # commit, so commit_id must be present and not just the path shape.
+    if 'merge_requests' in parsed.path and 'diffs' in parsed.path:
+        commit_id = query.get('commit_id', '')
+        if HASH_RE.fullmatch(commit_id):
+            return _non_numeric_hash(commit_id)
+        return None
+
     path_parts = {part for part in parsed.path.split('/') if part}
     action = query.get('a')
     is_commit_view = (
