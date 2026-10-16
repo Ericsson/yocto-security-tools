@@ -29,8 +29,9 @@ fi
 : "${MIRROR_DIR:=${HOME}/git}"
 
 # meta-openembedded layers (meta-oe, meta-networking, meta-python,
-# meta-filesystems) are a separate checkout, sibling to OE_DIR, each its
-# own layer root (unlike openembedded-core, which nests every layer under
+# meta-filesystems, meta-gnome, meta-multimedia, meta-webserver, meta-xfce,
+# meta-perl, meta-initramfs) are a separate checkout, sibling to OE_DIR, each
+# its own layer root (unlike openembedded-core, which nests every layer under
 # meta/). remove_cve_patch must search these too, or any CVE whose patch
 # lives there is unconditionally reported NOTFOUND. Override with
 # META_OE_LAYERS (space-separated absolute paths) if your checkout differs.
@@ -39,7 +40,9 @@ fi
 if [[ -z "${META_OE_LAYERS+x}" ]]; then
     _meta_oe_root="$(dirname "$OE_DIR")/meta-openembedded"
     META_OE_LAYERS=""
-    for _layer in meta-oe meta-networking meta-python meta-filesystems; do
+    for _layer in meta-oe meta-networking meta-python meta-filesystems \
+                  meta-gnome meta-multimedia meta-webserver meta-xfce \
+                  meta-perl meta-initramfs; do
         if [[ -d "${_meta_oe_root}/${_layer}" ]]; then
             META_OE_LAYERS="${META_OE_LAYERS} ${_meta_oe_root}/${_layer}"
         fi
