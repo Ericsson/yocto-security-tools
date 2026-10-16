@@ -176,7 +176,7 @@ def find_mirror_repo(mirror_dir: Path, recipe_name: str,
     names = [recipe_name, _MIRROR_ALIASES.get(recipe_name, recipe_name)]
     if hash_details:
         for d in hash_details:
-            url = d.get('url', '')
+            url = d.get('url') or ''
             parts = url.replace('/commit/', '/').replace('/pull/', '/').split('/')
             for i, part in enumerate(parts):
                 if part in ('github.com', 'gitlab.com') and i + 2 < len(parts):

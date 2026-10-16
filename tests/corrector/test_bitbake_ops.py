@@ -20,6 +20,17 @@ def test_find_mirror_repo_missing(tmp_path):
     assert find_mirror_repo(tmp_path, "nonexistent") is None
 
 
+def test_find_mirror_repo_hash_details_with_null_url(tmp_path):
+    """Regression test: hash_details entries with url=None (e.g. a
+    git-format-patch 'From <sha>' header with no Upstream-Status URL) must
+    not crash find_mirror_repo. See CVE-2025-13151 full-roster run."""
+    (tmp_path / "libtasn1").mkdir()
+    hash_details = [
+        {"hash": "abc123", "patch": "CVE-2025-13151.patch", "source": "oe_patch_header", "url": None},
+    ]
+    assert find_mirror_repo(tmp_path, "libtasn1", hash_details) == tmp_path / "libtasn1"
+
+
 def test_update_recipe_patch(tmp_path):
     from cve_corrector.recipe_ops import update_recipe_patch
     recipe_dir = tmp_path / "recipes-foo" / "foo"

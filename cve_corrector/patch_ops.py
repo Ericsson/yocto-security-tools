@@ -129,7 +129,7 @@ def update_patches_with_metadata(state: WorkflowState) -> None:
     # Deduce repo base URL for constructing commit URLs
     repo_base_url = ''
     for d in state.hash_details:
-        url = d.get('url', '')
+        url = d.get('url') or ''
         if '/commit/' in url:
             repo_base_url = url.split('/commit/')[0]
             break
