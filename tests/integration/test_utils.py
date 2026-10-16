@@ -154,7 +154,22 @@ def remove_single_patch(path, patch_filename):
 
 
 def remove_patches_from_position(path, patch_filename):
-    """Remove a patch and all subsequent patches from SRC_URI."""
+    """Remove a patch and all subsequent patches from SRC_URI.
+
+    "Subsequent" means later in the file, not merely later within the same
+    ``SRC_URI`` statement: many recipes declare one patch per
+    ``SRC_URI += "file://..."`` line rather than a single multi-line
+    ``SRC_URI = "... \\"`` block (e.g. glib-networking). Resetting
+    ``found_target`` whenever a self-closing statement ends — the historical
+    behavior — stopped looking for "subsequent" patches at the end of the
+    target's own statement, so a dependent patch declared on the very next
+    ``SRC_URI +=`` line was left behind. That silently produced a broken
+    patch stack: removing the earlier patch without also removing a later
+    one that assumes it is already applied makes the later patch fail to
+    apply on its own (verified against glib-networking's
+    CVE-2025-60018.patch / CVE-2025-60019.patch, which both touch
+    gtlscertificate-openssl.c and only apply in that order).
+    """
     try:
         with open(path) as f:
             content = f.read()
@@ -188,14 +203,17 @@ def remove_patches_from_position(path, patch_filename):
                         and not line.rstrip().endswith('\\"')):
                     removed_closing_quote = True
                     in_src_uri = False
-                    found_target = False
+                    # found_target is deliberately NOT reset here: a
+                    # self-closing SRC_URI += statement ending does not mean
+                    # the file is done declaring patches, only that this
+                    # particular statement is. Later statements may still
+                    # carry patches that depend on the one just removed.
                 continue
 
             if (removed_opener and found_target and in_src_uri
                     and re.match(r'^\s*"\s*$', line)):
                 removed_opener = False
                 in_src_uri = False
-                found_target = False
                 continue
 
             new_lines.append(line)
@@ -205,7 +223,6 @@ def remove_patches_from_position(path, patch_filename):
                 if (line.rstrip().endswith('"')
                         and not line.rstrip().endswith('\\"')):
                     in_src_uri = False
-                    found_target = False
 
         if not removed:
             return []
