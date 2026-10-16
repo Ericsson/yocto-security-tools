@@ -315,6 +315,20 @@ already-resolved commits of the series one at a time — a fresh
 `git cherry-pick <sha>` for a commit the host already attempted as part of
 this sequence will not reconcile the sequencer state.
 
+**Exception — `--continue` auto-applied a later commit in the series and it
+conflicted on a file that is not in Allowed Files.** The commit you resolved
+is not the only one the host trusts the sequencer to apply on its own; any
+commit still queued behind it is too, and one of those can conflict in its
+own right. `git_conflict_regions`/`git_status` showing a conflicted path you
+cannot write to is the signal — do not call `git_restore_conflict` or any
+file-editing tool against that path and retry hoping a different attempt
+succeeds; the host authorized that path only for the sequencer's own
+auto-apply, never for you, and repeating the call wastes turns until the
+session times out. Treat this exactly like the out-of-scope `--skip` case
+above: `git cherry-pick --abort` the whole sequence immediately and escalate
+per **(E) Escalate to human review**, naming the newly-conflicted commit as a
+`suggested_commits` entry.
+
 **Case 2 — already committed, but only the content is wrong.** You do not need
 to undo the commit. Correct the tree and amend in place:
 ```bash
