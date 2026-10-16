@@ -125,7 +125,14 @@ test_single_cve() {
         wait "$agent_pid" 2>/dev/null || agent_exit=$?
         kill "$watchdog_pid" 2>/dev/null; wait "$watchdog_pid" 2>/dev/null || true
         local durable_artifacts
-        durable_artifacts=$(grep '^Artifacts: ' "$agent_log" | tail -n 1 | cut -d' ' -f2- || true)
+        # -a: the agent log can contain multi-byte UTF-8 (warning icons,
+        # em-dashes in escalation messages) that grep's binary-content
+        # heuristic misdetects as a binary file, silently suppressing
+        # stdout and losing the Artifacts: line entirely -- which drops a
+        # valid SECURITY_REVIEW_REQUIRED/escalated durable result down to
+        # the coarse agent_exit-code fallback below and misclassifies it
+        # as a plain failure.
+        durable_artifacts=$(grep -a '^Artifacts: ' "$agent_log" | tail -n 1 | cut -d' ' -f2- || true)
         local copied_artifacts="" agent_result=""
         if [[ -n "$durable_artifacts" && -d "$durable_artifacts" ]]; then
             copied_artifacts="${LOG_DIR}/${cve_id}_${mode}_artifacts"
@@ -416,7 +423,10 @@ verify_fetch() {
     log "Fetching ${#recipe_array[@]} recipes..."
     fetch_log="${LOG_DIR}/fetch.log"
     bitbake -k "${recipe_array[@]}" -c fetch 2>&1 | tee "$fetch_log" || true
-    FAILED_RECIPES=$(grep -i 'ERROR.*do_fetch' "$fetch_log" | grep -oP '[^/]+(?=_[^_]+\.bb)' | sort -u || true)
+    # -a: bitbake fetch output can include non-UTF8 bytes from a tool's
+    # own stderr; grep's binary-content heuristic would otherwise silently
+    # suppress stdout and this check would never see a real fetch failure.
+    FAILED_RECIPES=$(grep -ai 'ERROR.*do_fetch' "$fetch_log" | grep -oP '[^/]+(?=_[^_]+\.bb)' | sort -u || true)
     if [[ -n "$FAILED_RECIPES" ]]; then
         log "WARNING: bitbake fetch failed for:"
         echo "$FAILED_RECIPES" | while read -r r; do log "  $r"; done
