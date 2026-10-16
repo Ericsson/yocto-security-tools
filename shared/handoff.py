@@ -233,7 +233,7 @@ def capture_handoff_state(workspace: Path) -> CapturedHandoffState:
     canonical = workspace.resolve(strict=True)
     head = _git(canonical, "rev-parse", "--verify", "HEAD^{commit}").strip()
     tree = _git(canonical, "rev-parse", "--verify", "HEAD^{tree}").strip()
-    index = _git(canonical, "ls-files", "--stage", "-z")
+    index_fingerprint = _git_fingerprint(canonical, "ls-files", "--stage", "-z")
     status = _git(
         canonical, "status", "--porcelain=v2", "-z", "--untracked-files=all")
     tracked, conflicted = _tracked_status_paths(status)
@@ -244,7 +244,7 @@ def capture_handoff_state(workspace: Path) -> CapturedHandoffState:
     return CapturedHandoffState(
         head=head,
         tree=tree,
-        index_fingerprint=hashlib.sha256(index.encode("utf-8")).hexdigest(),
+        index_fingerprint=index_fingerprint,
         worktree_fingerprint=hashlib.sha256(status.encode("utf-8")).hexdigest(),
         tracked_paths=tracked,
         conflicted_paths=conflicted,
@@ -520,6 +520,40 @@ def _git(workspace: Path, *arguments: str) -> str:
     if len(result.stdout.encode("utf-8")) > 8 * 1024 * 1024:
         raise HandoffError("HANDOFF_CAPTURE_LIMIT", "repository capture exceeded limit")
     return result.stdout
+
+
+def _git_fingerprint(workspace: Path, *arguments: str) -> str:
+    """Run a git command and return a SHA-256 hex digest of its stdout.
+
+    Only a stable digest of the full output is ever needed here (the index
+    listing's own fingerprint, not its content), so this streams stdout
+    straight into the hash instead of buffering it as a size-capped string
+    the way ``_git`` does for output that is actually parsed. A repository
+    whose tracked file count makes ``git ls-files --stage`` exceed that cap
+    (e.g. qemu, which vendors several large subtrees as regular tracked
+    files) previously made ``capture_handoff_state`` raise
+    HANDOFF_CAPTURE_LIMIT with nothing catching it, crashing the corrector
+    before any handoff was written — surfacing downstream as HANDOFF_MISSING.
+    """
+    process = subprocess.Popen(
+        ["git", "--no-pager", *arguments], cwd=workspace,
+        env=build_git_env(), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    digest = hashlib.sha256()
+    try:
+        while True:
+            chunk = process.stdout.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    finally:
+        process.stdout.close()
+        process.wait()
+    if process.returncode != 0:
+        raise HandoffError("HANDOFF_GIT_FAILED", "fixed repository inspection failed")
+    return digest.hexdigest()
 
 
 def _tracked_status_paths(output: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
