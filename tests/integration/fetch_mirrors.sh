@@ -37,6 +37,7 @@ declare -A MIRRORS=(
     [cups-filters]="https://github.com/OpenPrinting/cups-filters"
     [curl]="https://github.com/curl/curl"
     [dash]="https://git.kernel.org/pub/scm/utils/dash/dash.git"
+    [django]="https://github.com/django/django"
     [dnsmasq]="https://thekelleys.org.uk/git/dnsmasq.git"
     [dpkg]="https://git.dpkg.org/git/dpkg/dpkg.git"
     [dropbear]="https://github.com/mkj/dropbear"
