@@ -28,10 +28,35 @@ fi
 : "${BUILD_DIR:?Set BUILD_DIR to your Yocto build directory (or source oe-init-build-env first)}"
 : "${MIRROR_DIR:=${HOME}/git}"
 
+# meta-openembedded layers (meta-oe, meta-networking, meta-python,
+# meta-filesystems) are a separate checkout, sibling to OE_DIR, each its
+# own layer root (unlike openembedded-core, which nests every layer under
+# meta/). remove_cve_patch must search these too, or any CVE whose patch
+# lives there is unconditionally reported NOTFOUND. Override with
+# META_OE_LAYERS (space-separated absolute paths) if your checkout differs.
+# META_OE_DIR is the single git repo root all those layers share -- reset
+# and commit operations run against it once, not per-layer.
+if [[ -z "${META_OE_LAYERS+x}" ]]; then
+    _meta_oe_root="$(dirname "$OE_DIR")/meta-openembedded"
+    META_OE_LAYERS=""
+    for _layer in meta-oe meta-networking meta-python meta-filesystems; do
+        if [[ -d "${_meta_oe_root}/${_layer}" ]]; then
+            META_OE_LAYERS="${META_OE_LAYERS} ${_meta_oe_root}/${_layer}"
+        fi
+    done
+    META_OE_LAYERS="${META_OE_LAYERS# }"
+fi
+if [[ -z "${META_OE_DIR:-}" ]]; then
+    _candidate="$(dirname "$OE_DIR")/meta-openembedded"
+    [[ -d "${_candidate}/.git" ]] && META_OE_DIR="$_candidate"
+fi
+: "${META_OE_DIR:=}"
+
 # Pinned to a fixed scarthgap commit rather than the moving origin/scarthgap
 # branch tip, so integration test runs are reproducible over time. Override
 # with a newer commit/tag when intentionally moving the pin forward.
 : "${OE_SCARTHGAP_REF:=310eec2cb646d7d1a3ca99bad7e37495bb418a0d}"
+: "${META_OE_SCARTHGAP_REF:=bec755063a8b5da65df626f5749496aadaa4f4bb}"
 
 # Optional
 BUILDTOOLS_ENV="${BUILDTOOLS_ENV:-}"
@@ -78,6 +103,17 @@ reset_oe_tree() {
     git clean -fd 2>&1 | tail -1
     git checkout "$OE_SCARTHGAP_REF" 2>&1
     log "Reset complete."
+
+    if [[ -n "$META_OE_DIR" ]]; then
+        log "Resetting meta-openembedded to clean state (pinned to $META_OE_SCARTHGAP_REF)..."
+        cd "$META_OE_DIR"
+        git am --abort 2>/dev/null || true
+        git cherry-pick --abort 2>/dev/null || true
+        git reset --hard "$META_OE_SCARTHGAP_REF" 2>&1
+        git clean -fd 2>&1 | tail -1
+        git checkout "$META_OE_SCARTHGAP_REF" 2>&1
+        log "meta-openembedded reset complete."
+    fi
 }
 
 setup_oe_git() {
@@ -87,9 +123,19 @@ setup_oe_git() {
     trap "cd '$OE_DIR' && git checkout '$orig_branch' 2>/dev/null || true" EXIT
     git fetch origin
     git for-each-ref --format='%(refname:short)' 'refs/heads/test/**' | xargs -r git branch -D 2>/dev/null || true
+
+    if [[ -n "$META_OE_DIR" ]]; then
+        cd "$META_OE_DIR"
+        git for-each-ref --format='%(refname:short)' 'refs/heads/test/**' | xargs -r git branch -D 2>/dev/null || true
+    fi
 }
 
-# Setup per-CVE branch and commit patch removal.
+# Setup per-CVE branch and commit patch removal. Mirrors the same
+# branch/commit cycle in META_OE_DIR when set, since remove_cve_patch may
+# modify files there instead of (or in addition to) OE_DIR -- without this,
+# a meta-openembedded-only patch removal has nothing to commit in OE_DIR
+# (GIT_ERROR) and the meta-openembedded working tree is left dirty,
+# leaking uncommitted changes into every subsequent test iteration.
 # Sets global SETUP_CVE_STATUS to OK/NOTFOUND/GIT_ERROR.
 setup_cve_branch() {
     local cve_id="$1" log_file="$2" mode="${3:-default}"
@@ -97,6 +143,10 @@ setup_cve_branch() {
     reset_oe_tree >> "$log_file" 2>&1
     cd "$OE_DIR"
     git checkout -B "$branch_name"
+    if [[ -n "$META_OE_DIR" ]]; then
+        cd "$META_OE_DIR"
+        git checkout -B "$branch_name"
+    fi
 
     local remove_output
     remove_output=$(remove_cve_patch "$cve_id" "$mode")
@@ -106,8 +156,36 @@ setup_cve_branch() {
         SETUP_CVE_STATUS="NOTFOUND"
         return
     fi
+
+    cd "$OE_DIR"
     git add -A
-    if git commit -m "test: remove $cve_id for testing" >> "$log_file" 2>&1; then
+    local oe_dir_has_changes=1
+    git diff --cached --quiet || oe_dir_has_changes=0
+
+    local meta_oe_committed=1
+    if [[ -n "$META_OE_DIR" ]]; then
+        cd "$META_OE_DIR"
+        git add -A
+        if ! git diff --cached --quiet; then
+            if git commit -m "test: remove $cve_id for testing" >> "$log_file" 2>&1; then
+                meta_oe_committed=0
+            fi
+        else
+            meta_oe_committed=0  # nothing to commit here is fine if OE_DIR has it
+        fi
+    fi
+
+    cd "$OE_DIR"
+    local oe_dir_committed=1
+    if [[ "$oe_dir_has_changes" == 0 ]]; then
+        if git commit -m "test: remove $cve_id for testing" >> "$log_file" 2>&1; then
+            oe_dir_committed=0
+        fi
+    else
+        oe_dir_committed=0  # nothing to commit here is fine if META_OE_DIR has it
+    fi
+
+    if [[ "$oe_dir_committed" == 0 && "$meta_oe_committed" == 0 ]]; then
         SETUP_CVE_STATUS="OK"
     else
         SETUP_CVE_STATUS="GIT_ERROR"
@@ -147,7 +225,7 @@ run_cve_corrector() {
 }
 
 remove_cve_patch() {
-    python3 "${_COMMON_DIR}/test_utils.py" remove_cve "$OE_DIR" "$1" "$LOG_DIR" "${2:-}"
+    python3 "${_COMMON_DIR}/test_utils.py" remove_cve "$OE_DIR" "$1" "$LOG_DIR" "${2:-}" "${META_OE_LAYERS:-}"
 }
 
 compare_patches() {
