@@ -177,6 +177,14 @@ and exist only so `devtool build` succeeds.
 When the fix references code that is missing or conflicts, first decide WHICH
 situation you are in — **most cases are adaptation, not a real dependency.**
 
+**Step 0 — is the conflicting/queued commit a pure version bump or release
+housekeeping commit** (bumps a version string in `configure.ac`,
+`Makefile.am`, `meson.build`, a `*.spec` file, or similar — no functional
+code change)? It is never a prerequisite for a CVE fix and never belongs in
+Allowed Files. See the version-bump row of **Common Conflict Patterns** and
+the series exception in **Undoing a Bad Cherry-Pick** for how to drop it
+instead of trying to adapt it.
+
 **Step 1 — does the referenced symbol already EXIST in the stable branch under
 a different name, signature, or location?**
 If a function was renamed, a signature changed, a struct member renamed, or a
@@ -272,10 +280,40 @@ turns probing for one. Identify which case you are in and follow it.
 (it reports "You are currently cherry-picking"), then:
 ```bash
 git cherry-pick --abort     # discard this cherry-pick entirely
-git cherry-pick --skip      # drop just this commit, continue the sequence
+git cherry-pick --skip      # drop just this commit — ONLY if no further
+                             # commits are queued; see the exception below
 ```
 This is a true, complete undo. Always prefer it while a cherry-pick is in
-progress.
+progress — but check the exception below first if this cherry-pick started
+from more than one commit (a dependent `--fix-url` chain, or a commit range).
+
+**Exception — a multi-commit series still has further commits queued, at ANY
+point in the series, including what you believe is the last commit.**
+`git_cherry_pick_skip` is a host-enforced tool, not a plain `git` call: it
+checks the sequencer state itself and raises `ToolPolicyError("skip is not
+allowed for a multi-commit sequence")` whenever it finds one, regardless of
+how many commits you believe remain. **Do not try to verify "is this really
+the last one" and retry `--skip` anyway — the host's check is authoritative,
+not yours; a wrong guess here is exactly the case the check exists for.**
+Once you have called `git_cherry_pick_skip` and it returned this error, that
+avenue is closed for the rest of this cherry-pick: do not call it again, do
+not retry `--continue` hoping it reinterprets the state, and do not spend
+further turns probing for a workaround — none exists. Go straight to:
+```bash
+git cherry-pick --abort
+```
+If the commit you need to drop touches only Allowed Files, resolve the
+conflict and `--continue`; the rest of the sequence then applies normally.
+If it touches a file **outside** Allowed Files — version bumps to
+`configure.ac`/`Makefile.am`/`meson.build`, changelog entries, or any other
+housekeeping commit a dependent chain happened to include between two real
+fix commits — `--abort` the whole sequence and escalate per **(E) Escalate to
+human review**, naming the specific out-of-scope commit as a
+`suggested_commits` entry so a human can re-run with it included and your
+scope widened. Do not try to manually re-cherry-pick only the earlier,
+already-resolved commits of the series one at a time — a fresh
+`git cherry-pick <sha>` for a commit the host already attempted as part of
+this sequence will not reconcile the sequencer state.
 
 **Case 2 — already committed, but only the content is wrong.** You do not need
 to undo the commit. Correct the tree and amend in place:
