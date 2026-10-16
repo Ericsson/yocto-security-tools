@@ -158,6 +158,7 @@ _MIRROR_ALIASES = {
     'libsoup-2.4': 'libsoup',
     'python3': 'cpython',
     'python3-certifi': 'certifi',
+    'python3-django': 'django',
     'python3-urllib3': 'urllib3',
     'python3-xmltodict': 'xmltodict',
     'python3-zipp': 'zipp',
