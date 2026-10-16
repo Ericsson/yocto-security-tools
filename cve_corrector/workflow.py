@@ -886,9 +886,20 @@ def initialize_cve_workflow(
         run_cmd(['bitbake', '-c', 'clean', recipe])
 
     post_validation_tracked = _capture_tracked_paths(workspace_path)
-    # No CVE commit has been applied yet. Every tracked worktree change at
-    # this boundary is therefore pre-existing corrector/build state, not an
-    # agent patch path, and may be restored narrowly when emitting a handoff.
+    # No CVE commit has been applied yet, so every tracked worktree change at
+    # this boundary is pre-existing corrector/build state (e.g. a
+    # ``configure`` script `autotools-brokensep` regenerates in place during
+    # the pre-patch build above), never something the cherry-pick is meant to
+    # carry. Restore it now: left dirty, it makes git refuse to even start a
+    # cherry-pick ("local changes would be overwritten by merge") before any
+    # conflict state exists, which previously surfaced as a handoff that was
+    # never written (HANDOFF_MISSING) — the conflict path's recovery assumed
+    # a handoff had already been emitted. ``known_generated_paths`` below
+    # still records this set so a later handoff recognizes any of it that
+    # reappears as pre-existing, not an agent-authored change.
+    if post_validation_tracked:
+        from shared.handoff import restore_tracked_paths
+        restore_tracked_paths(workspace_path, tuple(sorted(post_validation_tracked)))
     prepatch_generated_paths = sorted(post_validation_tracked)
 
     def make_state(commit_hash, series_state=None):

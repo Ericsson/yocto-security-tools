@@ -1000,12 +1000,79 @@ def test_initialize_records_prepatch_build_side_effects_in_state(tmp_path):
             patch("cve_corrector.workflow._clean_and_reset_sstate"), \
             patch("cve_corrector.workflow.run_cmd", return_value=0), \
             patch("cve_corrector.workflow._capture_tracked_paths", capture), \
+            patch("shared.handoff.restore_tracked_paths") as mock_restore, \
             patch("cve_corrector.workflow.apply_single_commits",
                   return_value=(True, commit)):
         state = initialize_cve_workflow(cve_data, "CVE-2026-1234", config)
 
+    mock_restore.assert_called_once_with(
+        workspace, ("already-dirty", "config.guess", "configure"))
     assert state.known_generated_paths == [
         "already-dirty", "config.guess", "configure"]
+
+
+def test_initialize_restores_tracked_file_the_build_regenerated(tmp_path):
+    """A tracked file an autotools-brokensep build regenerates in place
+    (e.g. cups' committed ``configure`` script) must be restored before
+    cherry-pick attempts begin.
+
+    Left dirty, git refuses to even start the cherry-pick ("local changes
+    would be overwritten by merge") before any conflict state exists —
+    which previously surfaced as HANDOFF_MISSING, because the conflict
+    path's handoff/restore logic only runs once a conflict is reached
+    (regression: cups CVE-2025-61915)."""
+    workspace = tmp_path / "build" / "workspace" / "sources" / "cups"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"],
+                   cwd=workspace, check=True)
+    (workspace / "configure").write_text("original configure\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=workspace, check=True)
+
+    commit = "a" * 40
+    cve_data = {
+        "CVE-2025-61915": {
+            "name": "cups", "hashes": [commit], "hash_details": [],
+        },
+    }
+    config = WorkflowConfig(
+        mirror_path=None, mirror_dir=None, meta_layer=None,
+        skip_build=False, clean=False, skip_ptest=True, edit_mode=False,
+        skip_cve_applicability=True,
+    )
+
+    def fake_build(cmd, **_kw):
+        if cmd[:2] == ["devtool", "build"]:
+            # Simulate autotools-brokensep regenerating a tracked file
+            # in place during the build.
+            (workspace / "configure").write_text("regenerated\n", encoding="utf-8")
+        return 0
+
+    empty = SimpleNamespace(stdout="", returncode=0)
+    with patch("cve_corrector.workflow.check_cve_status", return_value=None), \
+            patch("cve_corrector.workflow.check_cve_patch_in_src_uri",
+                  return_value=None), \
+            patch("cve_corrector.workflow.setup_devtool_workspace",
+                  return_value=(workspace, "2.4.11")), \
+            patch("cve_corrector.workflow.setup_upstream_remote", return_value=None), \
+            patch("cve_corrector.workflow.prepare_cve_branch",
+                  return_value=(True, [])), \
+            patch("cve_corrector.workflow.run_cmd_capture", return_value=empty), \
+            patch("cve_corrector.workflow._clean_and_reset_sstate"), \
+            patch("cve_corrector.workflow.run_cmd", side_effect=fake_build), \
+            patch("cve_corrector.workflow.apply_single_commits",
+                  return_value=(True, commit)):
+        state = initialize_cve_workflow(cve_data, "CVE-2025-61915", config)
+
+    assert "configure" in state.known_generated_paths
+    assert (workspace / "configure").read_text(
+        encoding="utf-8") == "original configure\n"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=workspace,
+        check=True, capture_output=True, text=True).stdout
+    assert status.strip() == "", "worktree must be clean before cherry-pick attempts"
 
 
 class TestRunBuildStep:
@@ -1386,8 +1453,7 @@ class TestSetupUpstreamRemoteFixSource:
         assert [call.args[2] for call in fix_fetches] == [
             "https://github.com/example/repo-b"]
 
-    @patch("cve_corrector.workspace._commit_exists",
-           side_effect=[False, False])
+    @patch("cve_corrector.workspace._commit_exists", return_value=False)
     @patch("cve_corrector.workspace._fetch_remote", return_value=True)
     def test_rejects_fix_hash_still_missing_after_fetch(
             self, _mock_fetch, _mock_exists, tmp_path):
@@ -1413,6 +1479,170 @@ class TestSetupUpstreamRemoteFixSource:
                     ),
                 }],
             )
+
+    @patch("cve_corrector.workspace.run_cmd")
+    @patch("cve_corrector.workspace._commit_exists")
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_resolves_missing_hash_via_direct_sha_fetch(
+            self, _mock_fetch, mock_exists, mock_cmd, tmp_path):
+        """A commit absent from every fetched branch/tag (e.g. it only lives
+        on a short-lived/deleted MR branch) must be recovered by fetching its
+        SHA directly, instead of failing the whole run (regression: libsoup
+        commit 07b94e27afaf existed upstream but was unreachable from any
+        fetched ref after a normal `git fetch --tags`)."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        commit_hash = "d" * 40
+
+        # First call is the initial mirror scan (missing). All later calls
+        # simulate the commit becoming resolvable only once the direct SHA
+        # fetch for it has actually been attempted at least once.
+        direct_fetch_attempted = False
+
+        def commit_exists_side_effect(path, commit):
+            nonlocal direct_fetch_attempted
+            return direct_fetch_attempted
+
+        def run_cmd_side_effect(cmd, **_kw):
+            nonlocal direct_fetch_attempted
+            if cmd[:2] == ['git', 'fetch'] and len(cmd) == 4 and cmd[3] == commit_hash:
+                direct_fetch_attempted = True
+            return 0
+
+        mock_exists.side_effect = commit_exists_side_effect
+        mock_cmd.side_effect = run_cmd_side_effect
+
+        with patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            result = setup_upstream_remote(
+                ws,
+                mirror,
+                None,
+                "libsoup",
+                hash_details=[{
+                    "hash": commit_hash,
+                    "url": f"https://gitlab.gnome.org/GNOME/libsoup/-/commit/{commit_hash}",
+                }],
+            )
+
+        assert result == "mirror"
+        assert direct_fetch_attempted, "expected a direct `git fetch <remote> <sha>` call"
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=1)
+    @patch("cve_corrector.workspace._commit_exists", return_value=False)
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_raises_when_direct_sha_fetch_also_fails(
+            self, _mock_fetch, _mock_exists, _mock_cmd, tmp_path):
+        """If the commit truly doesn't exist anywhere, the direct SHA fetch
+        fallback must not mask that — still raise GitError."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        commit_hash = "e" * 40
+
+        with patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            with pytest.raises(GitError, match="Missing fix commit"):
+                setup_upstream_remote(
+                    ws,
+                    mirror,
+                    None,
+                    "missing-fix",
+                    hash_details=[{
+                        "hash": commit_hash,
+                        "url": f"https://github.com/example/repo/commit/{commit_hash}",
+                    }],
+                )
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=1)
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_unattributed_header_hash_ignored_when_series_resolves(
+            self, _mock_fetch, _mock_cmd, tmp_path):
+        """An unattributed From-header hash (url=None) with no source
+        attribution must not block the workflow when an independent series
+        already supplies a complete, verified fix chain (regression: hdf5
+        CVE-2025-6269/6270/6516 and opensc CVE-2025-66215, whose header
+        hashes genuinely do not exist on GitHub while the real fix commits
+        were already captured in `series`)."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        series_a = "a" * 40
+        series_b = "b" * 40
+        header_hash = "c" * 40  # url=None, never resolves anywhere
+
+        def commit_exists_side_effect(_path, commit):
+            return commit in (series_a, series_b)
+
+        with patch("cve_corrector.workspace._commit_exists",
+                   side_effect=commit_exists_side_effect), \
+             patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            result = setup_upstream_remote(
+                ws,
+                mirror,
+                None,
+                "hdf5",
+                hash_details=[
+                    {"hash": series_a,
+                     "url": f"https://github.com/HDFGroup/hdf5/commit/{series_a}",
+                     "source": "oe_patch"},
+                    {"hash": series_b,
+                     "url": f"https://github.com/HDFGroup/hdf5/commit/{series_b}",
+                     "source": "oe_patch"},
+                    {"hash": header_hash, "url": None,
+                     "source": "oe_patch_header"},
+                ],
+                series=[{"pull_url": "oe_patch:x.patch",
+                         "commits": [series_a, series_b]}],
+            )
+
+        assert result == "mirror"
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=1)
+    @patch("cve_corrector.workspace._commit_exists", return_value=False)
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_unattributed_header_hash_still_blocks_when_series_also_missing(
+            self, _mock_fetch, _mock_exists, _mock_cmd, tmp_path):
+        """The relaxation only applies once the series itself is verified to
+        resolve. If the series commits are also missing, an unattributed
+        header hash is still the only lead available and must still fail."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        series_a = "a" * 40
+        header_hash = "c" * 40
+
+        with patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            with pytest.raises(GitError, match="Missing fix commit"):
+                setup_upstream_remote(
+                    ws,
+                    mirror,
+                    None,
+                    "hdf5",
+                    hash_details=[
+                        {"hash": series_a,
+                         "url": f"https://github.com/HDFGroup/hdf5/commit/{series_a}",
+                         "source": "oe_patch"},
+                        {"hash": header_hash, "url": None,
+                         "source": "oe_patch_header"},
+                    ],
+                    series=[{"pull_url": "oe_patch:x.patch", "commits": [series_a]}],
+                )
 
 
 class TestProtocolFallback:

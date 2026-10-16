@@ -135,8 +135,31 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
 
     if mirror_path:
         upstream_url: str | None = str(mirror_path.absolute())
+        # A hash_details entry with no url (source 'oe_patch_header') is an
+        # unattributed From-header SHA scraped as a last resort when no
+        # Upstream-Status hash was found — frequently a local/rebased commit
+        # that never existed upstream (see discover_cves_from_layers.py's
+        # module docstring). When an independent series already supplies a
+        # complete, verified fix chain, such an entry is not a prerequisite:
+        # demanding it also resolve turns a working series-based fix into a
+        # hard failure (observed for hdf5 CVE-2025-6269/6270/6516 and opensc
+        # CVE-2025-66215, whose header hashes genuinely do not exist on
+        # GitHub while the real fix commits were already captured in
+        # `series`). Only relax the check when the series itself fully
+        # resolves — otherwise an unattributed hash is still the only lead
+        # the workflow has, and the strict check must stand.
+        series_commits = [
+            commit for entry in (series or [])
+            for commit in entry.get('commits', [])
+            if isinstance(commit, str)
+        ]
+        series_resolves = bool(series_commits) and all(
+            _commit_exists(mirror_path, commit) for commit in series_commits)
+        checkable_details = (
+            [detail for detail in hash_details if detail.get('url')]
+            if series_resolves else hash_details)
         missing_details = [
-            detail for detail in hash_details
+            detail for detail in checkable_details
             if isinstance(detail.get('hash'), str)
             and not _commit_exists(mirror_path, detail['hash'])
         ]
@@ -271,6 +294,33 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
         commit_hash for commit_hash in missing_hashes
         if not _commit_exists(workspace_path, commit_hash)
     ]
+    if unresolved_hashes:
+        # A commit may not be reachable from any fetched branch tip or tag
+        # (e.g. it only lives on a short-lived/deleted MR branch that the
+        # host still serves by SHA). `git fetch <remote> --tags` above only
+        # walks refs, so retry each unresolved hash as a direct oid fetch
+        # against every remote configured for this workspace before giving
+        # up — most git hosts (GitHub, GitLab) allow fetching a bare commit
+        # SHA even when it is not pointed to by any ref.
+        result = run_cmd_capture(['git', 'remote'], cwd=workspace_path)
+        remote_names = result.stdout.split()
+        still_unresolved = []
+        for commit_hash in unresolved_hashes:
+            if _commit_exists(workspace_path, commit_hash):
+                continue
+            resolved = False
+            for remote_name in remote_names:
+                if run_cmd(['git', 'fetch', remote_name, commit_hash],
+                           cwd=workspace_path) == 0 and _commit_exists(
+                               workspace_path, commit_hash):
+                    logger.info(
+                        "Resolved fix commit %s via direct SHA fetch from %s",
+                        commit_hash[:12], remote_name)
+                    resolved = True
+                    break
+            if not resolved:
+                still_unresolved.append(commit_hash)
+        unresolved_hashes = still_unresolved
     if unresolved_hashes:
         abbreviated = ', '.join(commit_hash[:12] for commit_hash in unresolved_hashes)
         raise GitError(

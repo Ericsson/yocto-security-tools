@@ -269,6 +269,58 @@ def test_unsupported_changes_are_rejected_and_rolled_back(tmp_path, kind):
     assert _git(repo, "status", "--porcelain") == ""
 
 
+def test_binary_file_creation_is_transferred_verbatim(tmp_path):
+    """A brand-new binary file (e.g. a fuzzer-crash test fixture a CVE fix
+    adds alongside its real, text-only source change) has no existing
+    content to adapt against — target == old == b"" — so writing it
+    verbatim carries none of the unverifiable-diff risk the binary
+    rejection in `_apply_entries` exists to guard against. Rejecting the
+    whole transfer over an unrelated new binary asset previously surfaced
+    as TRANSFER_UNSUPPORTED_FILE_TYPE even though the actual fix (in a
+    sibling text file in the same commit) was perfectly transferable
+    (regression: jasper CVE-2025-8835/8836/8837, CVE-2024-31744)."""
+    repo = _new_repo(tmp_path)
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/api.c").write_bytes(b"old\n")
+    parent = _commit(repo, "base")
+    (repo / "src/api.c").write_bytes(b"fixed\n")
+    (repo / "data/test").mkdir(parents=True)
+    (repo / "data/test/poc.bin").write_bytes(b"\x00\x01\xffPOC")
+    commit = _commit(repo, "security fix with new binary test fixture")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+
+    manifest = _transfer(repo, commit)
+
+    assert (repo / "src/api.c").read_bytes() == b"fixed\n"
+    assert (repo / "data/test/poc.bin").read_bytes() == b"\x00\x01\xffPOC"
+    assert set(manifest.final_changed_paths) == {"src/api.c", "data/test/poc.bin"}
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_binary_modification_is_still_rejected_when_sibling_file_is_created(tmp_path):
+    """The creation relaxation must stay scoped to entries with no
+    predecessor on either side — a binary *modification* bundled in the
+    same commit as a new text file must still be rejected, proving the
+    fix does not weaken the binary-modification guard for any entry that
+    actually requires unverifiable adaptation."""
+    repo = _new_repo(tmp_path)
+    (repo / "assets").mkdir(parents=True)
+    (repo / "assets/logo.png").write_bytes(b"\x00old\xff")
+    parent = _commit(repo, "base")
+    (repo / "assets/logo.png").write_bytes(b"\x00new\xff")
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/added.c").write_bytes(b"added\n")
+    commit = _commit(repo, "mixed binary modification and text creation")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+    head = _git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(TransferError) as raised:
+        _transfer(repo, commit)
+    assert raised.value.code is TransferCode.UNSUPPORTED_FILE_TYPE
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "status", "--porcelain") == ""
+
+
 def test_unique_context_allows_legitimate_branch_adaptation(tmp_path):
     repo = _new_repo(tmp_path)
     _, commit = _source_change(

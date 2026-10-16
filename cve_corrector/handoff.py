@@ -16,6 +16,7 @@ from shared.handoff import (
     write_handoff,
 )
 
+from .git_ops import reset_submodules
 from .state import WorkflowState
 from .transfer import transfer_manifest_path, verified_transfer_paths
 
@@ -65,6 +66,14 @@ def _pending_sequence_paths(
 def emit_handoff(state: WorkflowState, state_dir: Path) -> RepositoryHandoff:
     """Classify repository state, narrowly clean generated paths, and emit."""
     workspace = state.workspace_path.resolve(strict=True)
+    # A submodule left checked out at a stale commit (or with leftover local
+    # modifications) by a prior checkout reports as a dirty tracked path even
+    # when the cherry-pick never touched it — e.g. coreutils' gnulib or jq's
+    # vendored oniguruma. Reset submodule working trees first so that drift
+    # is never misclassified as an out-of-scope change below. This only acts
+    # on registered submodule directories (nested .git) and never touches
+    # the superproject's conflicted files.
+    reset_submodules(workspace)
     allowed, selected_parent = reference_change_paths(
         workspace, state.commit_hash, state.mainline_parent)
     generated = tuple(sorted(set(state.known_generated_paths) - set(allowed)))

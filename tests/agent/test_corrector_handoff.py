@@ -202,6 +202,50 @@ def test_unknown_tracked_out_of_scope_fails_with_bounded_manifest(tmp_path):
     assert persisted.tracked_out_of_scope_paths == ("generated.txt",)
 
 
+def test_stale_submodule_checkout_is_not_treated_as_out_of_scope(tmp_path, monkeypatch):
+    """A submodule left checked out at a stale commit by a prior checkout
+    (e.g. coreutils' gnulib, jq's vendored oniguruma) must not fail the
+    handoff — it was never part of the cherry-pick's actual diff."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    _git(sub, "init", "-q")
+    _git(sub, "config", "user.name", "Test")
+    _git(sub, "config", "user.email", "test@example.com")
+    (sub / "f.txt").write_text("v1\n", encoding="utf-8")
+    _commit(sub, "v1")
+    sub_v1 = _git(sub, "rev-parse", "HEAD")
+    (sub / "f.txt").write_text("v2\n", encoding="utf-8")
+    _commit(sub, "v2")
+    sub_v2 = _git(sub, "rev-parse", "HEAD")
+
+    repo = tmp_path / "build" / "workspace" / "sources" / "recipe"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    (repo / "source.c").write_text("old\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "submodule", "add", "-q", str(sub), "vendor/sub"],
+        cwd=repo, check=True)
+    _git(repo / "vendor" / "sub", "checkout", "-q", sub_v1)
+    _commit(repo, "base")
+    _git(repo, "tag", "original-version")
+    (repo / "source.c").write_text("fixed\n", encoding="utf-8")
+    selected = _commit(repo, "fix")
+
+    # Simulate drift: a prior checkout left the submodule at a different
+    # commit than the one registered in the tree, unrelated to the fix.
+    _git(repo / "vendor" / "sub", "checkout", "-q", sub_v2)
+    assert "vendor/sub" in _git(repo, "status", "--porcelain=v2")
+
+    state_dir = repo.parent.parent / "cve_corrector"
+    manifest = emit_handoff(_state(repo, selected), state_dir)
+
+    assert manifest.allowed_paths == ("source.c",)
+    assert manifest.tracked_out_of_scope_paths == ()
+
+
 @pytest.mark.parametrize(
     ("upstream_path", "workspace_path"),
     [
