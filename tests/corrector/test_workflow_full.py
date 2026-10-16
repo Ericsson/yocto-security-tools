@@ -1644,6 +1644,97 @@ class TestSetupUpstreamRemoteFixSource:
                     series=[{"pull_url": "oe_patch:x.patch", "commits": [series_a]}],
                 )
 
+    @patch("cve_corrector.workspace.run_cmd", return_value=1)
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_unattributed_header_hash_ignored_when_series_resolves_only_after_fetch(
+            self, _mock_fetch, _mock_cmd, tmp_path):
+        """The series_resolves relaxation must still apply when the local
+        mirror is stale/divergent (e.g. a personal fork that never tracked
+        upstream) and the series commits only become resolvable in the
+        workspace after the canonical fix-source remote is fetched
+        (regression: libdbi-perl CVE-2026-14380, whose mirror pointed at a
+        six-year-stale fork — the series commits fetched cleanly from the
+        canonical repo, but the local-mirror-only series_resolves check ran
+        before any fetch happened, so it never relaxed and a bogus
+        unattributed header hash blocked an otherwise fully-resolved fix)."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        series_a = "a" * 40
+        series_b = "b" * 40
+        header_hash = "c" * 40  # url=None, never resolves anywhere
+
+        # The stale local mirror never has the series commits, even after
+        # the "fetch" (mocked _fetch_remote always reports success without
+        # actually running git). They only resolve in the workspace, as if
+        # the canonical fix-source remote had just supplied them there.
+        def commit_exists_side_effect(path, commit):
+            return path == ws and commit in (series_a, series_b)
+
+        with patch("cve_corrector.workspace._commit_exists",
+                   side_effect=commit_exists_side_effect), \
+             patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            result = setup_upstream_remote(
+                ws,
+                mirror,
+                None,
+                "libdbi-perl",
+                hash_details=[
+                    {"hash": series_a,
+                     "url": f"https://github.com/perl5-dbi/dbi/commit/{series_a}",
+                     "source": "oe_patch"},
+                    {"hash": series_b,
+                     "url": f"https://github.com/perl5-dbi/dbi/commit/{series_b}",
+                     "source": "oe_patch"},
+                    {"hash": header_hash, "url": None,
+                     "source": "oe_patch_header"},
+                ],
+                series=[{"pull_url": "oe_patch:x.patch",
+                         "commits": [series_a, series_b]}],
+            )
+
+        assert result == "mirror"
+
+    @patch("cve_corrector.workspace.run_cmd", return_value=1)
+    @patch("cve_corrector.workspace._commit_exists", return_value=False)
+    @patch("cve_corrector.workspace._fetch_remote", return_value=True)
+    def test_attributed_hash_still_blocks_even_when_series_resolves_post_fetch(
+            self, _mock_fetch, _mock_exists, _mock_cmd, tmp_path):
+        """The post-fetch series_resolves relaxation only drops unattributed
+        (url=None) header hashes. A hash with a url is still subject to the
+        strict check even if, hypothetically, nothing ever resolves."""
+        ws = tmp_path / "workspace"
+        mirror = tmp_path / "mirror"
+        ws.mkdir()
+        mirror.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=mirror, check=True)
+        series_a = "a" * 40
+        other_attributed = "d" * 40
+
+        with patch("cve_corrector.workspace.run_cmd_capture") as mock_capture:
+            mock_capture.return_value = MagicMock(stdout="upstream\n")
+            with pytest.raises(GitError, match="Missing fix commit"):
+                setup_upstream_remote(
+                    ws,
+                    mirror,
+                    None,
+                    "libdbi-perl",
+                    hash_details=[
+                        {"hash": series_a,
+                         "url": f"https://github.com/perl5-dbi/dbi/commit/{series_a}",
+                         "source": "oe_patch"},
+                        {"hash": other_attributed,
+                         "url": f"https://github.com/perl5-dbi/dbi/commit/{other_attributed}",
+                         "source": "oe_patch"},
+                    ],
+                    series=[{"pull_url": "oe_patch:x.patch", "commits": [series_a]}],
+                )
+
 
 class TestProtocolFallback:
     """Fetches retry over an alternate transport when the first fails

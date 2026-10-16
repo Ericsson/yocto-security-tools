@@ -132,6 +132,11 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
     # it is fetched as a secondary remote so the fix commits/tags are reachable.
     fix_repo_urls: list[str] = []
     missing_hashes: list[str] = []
+    series_commits: list[str] = [
+        commit for entry in (series or [])
+        for commit in entry.get('commits', [])
+        if isinstance(commit, str)
+    ]
 
     if mirror_path:
         upstream_url: str | None = str(mirror_path.absolute())
@@ -148,11 +153,6 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
         # `series`). Only relax the check when the series itself fully
         # resolves — otherwise an unattributed hash is still the only lead
         # the workflow has, and the strict check must stand.
-        series_commits = [
-            commit for entry in (series or [])
-            for commit in entry.get('commits', [])
-            if isinstance(commit, str)
-        ]
         series_resolves = bool(series_commits) and all(
             _commit_exists(mirror_path, commit) for commit in series_commits)
         checkable_details = (
@@ -321,6 +321,28 @@ def setup_upstream_remote(workspace_path: Path, mirror_path: Path | None,
             if not resolved:
                 still_unresolved.append(commit_hash)
         unresolved_hashes = still_unresolved
+    if unresolved_hashes and series_commits and all(
+            _commit_exists(workspace_path, commit) for commit in series_commits):
+        # The local-mirror-only series_resolves check above runs before any
+        # network fetch, so a stale/divergent local mirror (e.g. a personal
+        # fork that was never kept in sync with upstream) can never satisfy
+        # it even when the canonical fix-source remote fetched above has the
+        # full series. Re-check against the now-fetched workspace: if the
+        # series fully resolves here, the same relaxation applies — drop any
+        # still-unresolved hash_details entries that have no url (source
+        # 'oe_patch_header'), since those are last-resort From-header SHAs
+        # that are frequently local/rebased commits with no upstream
+        # existence, and the independently-verified series already supplies
+        # a complete fix chain. Entries with a url remain subject to the
+        # strict check (see the module-docstring precedent above).
+        headerless_hashes = {
+            detail['hash'] for detail in hash_details
+            if not detail.get('url') and isinstance(detail.get('hash'), str)
+        }
+        unresolved_hashes = [
+            commit_hash for commit_hash in unresolved_hashes
+            if commit_hash not in headerless_hashes
+        ]
     if unresolved_hashes:
         abbreviated = ', '.join(commit_hash[:12] for commit_hash in unresolved_hashes)
         raise GitError(
