@@ -253,6 +253,42 @@ def test_no_patches_when_all_from_other_recipes(mock_modify, mock_capture, mock_
     mock_modify.assert_not_called()
 
 
+@mock_patch("cve_corrector.recipe_ops._find_recipe_file")
+@mock_patch("cve_corrector.patch_ops.update_recipe_patch")
+@mock_patch("cve_corrector.patch_ops.run_cmd_capture")
+@mock_patch("cve_corrector.patch_ops.modify_patch")
+def test_hash_details_with_null_url_does_not_crash(
+        mock_modify, mock_capture, mock_update, mock_find, tmp_path):
+    """Regression test: a hash_details entry with url=None (e.g. a
+    git-format-patch 'From <sha>' header with no Upstream-Status URL, or an
+    Upstream-Status URL shape extract_commit_hash could not parse) must not
+    crash the repo-base-URL deduction. Previously
+    ``url = d.get('url', '')`` left url as None whenever the key was present
+    with an explicit None value — only an absent key fell back to '' — so
+    ``'/commit/' in url`` raised TypeError. See CVE-2024-52531 full-roster
+    run (merge_requests/diffs Upstream-Status URLs were unparsed before
+    shared.url_parser gained support for that shape)."""
+    state = _make_state(tmp_path, recipe="busybox")
+    state.hash_details = [
+        {"hash": "abc123", "patch": "CVE-2025-0001.patch",
+         "source": "oe_patch_header", "url": None},
+    ]
+    recipe_dir = state.meta_layer / "recipes-core" / "busybox"
+    recipe_dir.mkdir(parents=True)
+    patch_own = recipe_dir / "files" / "CVE-2025-0001.patch"
+    patch_own.parent.mkdir(parents=True)
+    patch_own.write_text(MINIMAL_PATCH)
+
+    mock_find.return_value = recipe_dir / "busybox_1.36.bb"
+    mock_capture.return_value = MagicMock(
+        returncode=0,
+        stdout="recipes-core/busybox/files/CVE-2025-0001.patch\n")
+
+    update_patches_with_metadata(state)
+
+    assert mock_modify.call_count == 1
+
+
 # --- Tests for prerequisite-aware CVE tagging ---
 
 from cve_corrector.patch_ops import (
