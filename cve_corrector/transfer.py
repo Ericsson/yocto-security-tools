@@ -358,12 +358,25 @@ def _apply_entries(
         total += len(old_data) + len(new_data)
         if total > MAX_TRANSFER_TOTAL_BYTES:
             raise TransferError(TransferCode.APPLY_FAILED, "transfer byte limit exceeded")
-        if b"\0" in old_data or b"\0" in new_data:
-            raise TransferError(TransferCode.UNSUPPORTED_FILE_TYPE, "binary change")
         target_old = entry.target_old_path
         target_new = entry.target_new_path
+        # A pure creation (status "A": no source predecessor, and nothing at
+        # the target path yet) has no existing content to adapt against —
+        # `_adapt_text` would just hand back `new_data` unchanged via its
+        # `target == old` short-circuit (both empty). Binary content is
+        # therefore safe to write verbatim here with no anchoring or
+        # unverifiable diffing involved; the NUL-byte rejection below still
+        # applies to every modification, rename, or deletion, where
+        # `_adapt_text`'s line-based text diff is the only verification this
+        # module has for the change it is transferring (e.g. a CVE fix that
+        # adds a new binary fuzzer-crash test fixture alongside the actual
+        # text-only source fix must not fail the whole transfer).
+        is_pure_creation = entry.source_old_path is None and target_old is None
+        if not is_pure_creation and (b"\0" in old_data or b"\0" in new_data):
+            raise TransferError(TransferCode.UNSUPPORTED_FILE_TYPE, "binary change")
         target_data = (_read_target(workspace, target_old) if target_old else b"")
-        adapted = _adapt_text(old_data, new_data, target_data)
+        adapted = new_data if is_pure_creation else _adapt_text(
+            old_data, new_data, target_data)
         if target_old and target_new and target_old != target_new:
             _unlink_target(workspace, target_old)
         if target_new is None:
