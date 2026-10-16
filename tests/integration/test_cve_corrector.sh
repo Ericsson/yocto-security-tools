@@ -286,6 +286,8 @@ run_loop() {
             10) exit_name="BUILD_PREEXISTING" ;;
             11) exit_name="ALREADY_APPLIED" ;;
             12) exit_name="NOT_APPLICABLE" ;;
+            16) exit_name="IGNORED_BY_STATUS" ;;
+            17) exit_name="PREP_BASE_MISMATCH" ;;
             99) exit_name="TIMEOUT" ;;
             *) exit_name="UNKNOWN_${exit_code}" ;;
         esac

@@ -273,33 +273,61 @@ def _validate_src_uri(path):
               f"(started line {block_start})")
 
 
-def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None):
-    """Remove a CVE patch and its recipe references."""
-    os.chdir(oe_dir)
+def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
+    """Remove a CVE patch and its recipe references.
+
+    Searches ``oe_dir`` (openembedded-core, patches live under ``meta/``)
+    plus any ``extra_roots`` (e.g. meta-openembedded's meta-oe,
+    meta-networking, meta-python, meta-filesystems layers, each a layer
+    root in its own right rather than nested under a shared ``meta/``).
+    Without ``extra_roots``, any CVE whose patch lives outside oe_dir is
+    unconditionally reported NOTFOUND even though the patch exists and the
+    metadata is correct -- this was silently mis-skipping every
+    meta-openembedded-sourced CVE in the discovered roster.
+    """
     cve_lower = cve_id.lower().replace('cve-', '')
-    modified_recipes = set()
     file_prefix = f"{prefix}_" if prefix else ""
 
+    # (root_dir, glob_prefix) pairs: openembedded-core nests all layers
+    # under meta/, meta-openembedded's layers are each their own root.
+    roots = [(oe_dir, 'meta')]
+    for extra in (extra_roots or []):
+        roots.append((extra, '.'))
+
+    def _glob(suffix):
+        """Yield (root_dir, relative_path) across all configured roots."""
+        for root_dir, glob_prefix in roots:
+            pattern = f'{glob_prefix}/**/{suffix}' if glob_prefix != '.' else f'**/{suffix}'
+            cwd = os.getcwd()
+            try:
+                os.chdir(root_dir)
+                for rel in glob.glob(pattern, recursive=True):
+                    yield root_dir, rel
+            finally:
+                os.chdir(cwd)
+
+    modified_recipes = set()
+
     patch_files = []
-    for f in glob.glob('meta/**/*.patch', recursive=True):
+    for root_dir, f in _glob('*.patch'):
         if re.search(rf'[Cc][Vv][Ee]-?{re.escape(cve_lower)}', f, re.IGNORECASE):
-            patch_files.append(f)
+            patch_files.append((root_dir, f))
 
     if not patch_files:
-        for f in glob.glob('meta/**/*.patch', recursive=True):
+        for root_dir, f in _glob('*.patch'):
             try:
-                with open(f) as pf:
+                with open(os.path.join(root_dir, f)) as pf:
                     content = pf.read(4096)
                     if re.search(rf'^CVE:.*{re.escape(cve_id)}', content,
                                  re.MULTILINE | re.IGNORECASE):
-                        patch_files.append(f)
+                        patch_files.append((root_dir, f))
             except Exception:
                 pass
 
     if patch_files:
         all_removed_files = set()
-        for patch_file in patch_files:
-            patch_path = os.path.abspath(patch_file)
+        for root_dir, patch_file in patch_files:
+            patch_path = os.path.abspath(os.path.join(root_dir, patch_file))
             if not os.path.exists(patch_path):
                 continue
             patch_filename = os.path.basename(patch_file)
@@ -308,28 +336,55 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None):
             print(f"PATCH:{patch_path}")
             os.remove(patch_path)
 
-            for pattern in ['meta/**/*.bb', 'meta/**/*.inc',
-                            'meta/**/*.bbappend']:
-                for path in glob.glob(pattern, recursive=True):
-                    removed_patches = remove_patches_from_position(
-                        path, patch_filename)
-                    if removed_patches:
-                        print(f"RECIPE:{os.path.abspath(path)}")
-                        modified_recipes.add(os.path.abspath(path))
-                        for extra in removed_patches[1:]:
-                            extra_path = os.path.join(
-                                os.path.dirname(patch_path), extra)
-                            if os.path.exists(extra_path):
-                                os.remove(extra_path)
-                                print(f"REMOVED_SUBSEQUENT:{extra_path}")
-                            all_removed_files.add(extra)
+            for recipe_root, path in _glob('*.bb'):
+                removed_patches = remove_patches_from_position(
+                    os.path.join(recipe_root, path), patch_filename)
+                if removed_patches:
+                    abs_path = os.path.abspath(os.path.join(recipe_root, path))
+                    print(f"RECIPE:{abs_path}")
+                    modified_recipes.add(abs_path)
+                    for extra in removed_patches[1:]:
+                        extra_path = os.path.join(
+                            os.path.dirname(patch_path), extra)
+                        if os.path.exists(extra_path):
+                            os.remove(extra_path)
+                            print(f"REMOVED_SUBSEQUENT:{extra_path}")
+                        all_removed_files.add(extra)
+            for recipe_root, path in _glob('*.inc'):
+                removed_patches = remove_patches_from_position(
+                    os.path.join(recipe_root, path), patch_filename)
+                if removed_patches:
+                    abs_path = os.path.abspath(os.path.join(recipe_root, path))
+                    print(f"RECIPE:{abs_path}")
+                    modified_recipes.add(abs_path)
+                    for extra in removed_patches[1:]:
+                        extra_path = os.path.join(
+                            os.path.dirname(patch_path), extra)
+                        if os.path.exists(extra_path):
+                            os.remove(extra_path)
+                            print(f"REMOVED_SUBSEQUENT:{extra_path}")
+                        all_removed_files.add(extra)
+            for recipe_root, path in _glob('*.bbappend'):
+                removed_patches = remove_patches_from_position(
+                    os.path.join(recipe_root, path), patch_filename)
+                if removed_patches:
+                    abs_path = os.path.abspath(os.path.join(recipe_root, path))
+                    print(f"RECIPE:{abs_path}")
+                    modified_recipes.add(abs_path)
+                    for extra in removed_patches[1:]:
+                        extra_path = os.path.join(
+                            os.path.dirname(patch_path), extra)
+                        if os.path.exists(extra_path):
+                            os.remove(extra_path)
+                            print(f"REMOVED_SUBSEQUENT:{extra_path}")
+                        all_removed_files.add(extra)
 
         if all_removed_files:
-            for pattern in ['meta/**/*.bb', 'meta/**/*.inc',
-                            'meta/**/*.bbappend']:
-                for path in glob.glob(pattern, recursive=True):
+            for suffix in ('*.bb', '*.inc', '*.bbappend'):
+                for recipe_root, path in _glob(suffix):
+                    abs_path = os.path.abspath(os.path.join(recipe_root, path))
                     try:
-                        with open(path) as f:
+                        with open(abs_path) as f:
                             content = f.read()
                     except Exception:
                         continue
@@ -337,23 +392,22 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None):
                     for fname in all_removed_files:
                         if fname not in content:
                             continue
-                        removed = remove_patches_from_position(path, fname)
+                        removed = remove_patches_from_position(abs_path, fname)
                         if removed:
                             changed = True
-                            with open(path) as f:
+                            with open(abs_path) as f:
                                 content = f.read()
-                    if changed:
-                        abs_path = os.path.abspath(path)
-                        if abs_path not in modified_recipes:
-                            print(f"RECIPE:{abs_path}")
-                            modified_recipes.add(abs_path)
+                    if changed and abs_path not in modified_recipes:
+                        print(f"RECIPE:{abs_path}")
+                        modified_recipes.add(abs_path)
 
     modified_any = False
-    for pattern in ['meta/**/*.bb', 'meta/**/*.inc', 'meta/**/*.bbappend']:
-        for path in glob.glob(pattern, recursive=True):
-            if remove_cve_from_file(path, cve_id):
-                print(f"RECIPE:{os.path.abspath(path)}")
-                modified_recipes.add(os.path.abspath(path))
+    for suffix in ('*.bb', '*.inc', '*.bbappend'):
+        for recipe_root, path in _glob(suffix):
+            abs_path = os.path.abspath(os.path.join(recipe_root, path))
+            if remove_cve_from_file(abs_path, cve_id):
+                print(f"RECIPE:{abs_path}")
+                modified_recipes.add(abs_path)
                 modified_any = True
 
     if not patch_files and not modified_any:
@@ -877,6 +931,29 @@ MIRROR_MAP = {
     'python3-wheel': 'wheel',
     'rust-llvm': 'llvm-project',
     'vim-tiny': 'vim',
+    'hostapd': 'hostap',
+    'minifi-cpp': 'spdlog',
+    'libxml': 'libxml2',
+    'rust': 'cargo',
+    'alsa': 'alsa-lib',
+    'xorg-xserver': 'xserver',
+    'xwayland': 'xserver',
+    'libtiff': 'tiff',
+    'llvm': 'llvm-project',
+    'python3-aiohttp': 'aiohttp',
+    'python3-cbor2': 'cbor2',
+    'python3-ecdsa': 'python-ecdsa',
+    'python3-eventlet': 'eventlet',
+    'python3-flask': 'flask',
+    'python3-pillow': 'Pillow',
+    'python3-protobuf': 'protobuf',
+    'python3-pyjwt': 'pyjwt',
+    'python3-requests': 'requests',
+    'python3-sqlparse': 'sqlparse',
+    'python3-tornado': 'tornado',
+    'python3-twisted': 'twisted',
+    'python3-virtualenv': 'virtualenv',
+    'python3-grpcio': 'grpc',
 }
 
 SKIP_RECIPES = {'linux-dummy', 'network_security_services', 'rust-llvm'}
@@ -936,7 +1013,9 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
     if cmd == 'remove_cve':
         prefix = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None
-        remove_cve_patch(sys.argv[2], sys.argv[3], sys.argv[4], prefix=prefix)
+        extra_roots = sys.argv[6].split() if len(sys.argv) > 6 and sys.argv[6] else None
+        remove_cve_patch(sys.argv[2], sys.argv[3], sys.argv[4], prefix=prefix,
+                          extra_roots=extra_roots)
     elif cmd == 'compare':
         compare_patches(sys.argv[2], sys.argv[3])
     elif cmd == 'compare_detailed':
