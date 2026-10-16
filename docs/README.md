@@ -8,6 +8,7 @@ Start with the tool you're using, then follow into the design docs as needed.
 | Doc | Covers |
 |-----|--------|
 | [cve-metadata-extractor](cve-metadata-extractor.md) | Inputs, data sources, output format, Ubuntu sources, extractor config keys |
+| [cve-oe-backport](cve-oe-backport.md) | From a Yocto CVE report through OE patch preparation and build validation |
 | [cve-corrector](cve-corrector.md) | Workflow modes, dependent commit chains, build control, exit codes |
 | [cve-agent](cve-agent.md) | AI backends, `--verify-backend`, session limits, security gate, agent exit codes |
 | [Configuration](configuration.md) | XDG storage locations and environment variables |

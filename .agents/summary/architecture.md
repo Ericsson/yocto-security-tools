@@ -32,15 +32,20 @@ graph LR
 graph BT
     shared["shared (leaf)"]
     extractor["cve_metadata_extractor"]
+    backport["cve_oe_backport"]
     corrector["cve_corrector"]
     agent["cve_agent"]
     extractor --> shared
+    backport --> extractor
+    backport --> shared
     corrector --> shared
     agent --> shared
     agent -.->|subprocess only| corrector
 ```
 
-**Invariant**: `shared` has zero upward dependencies. No package imports from a sibling package at the Python level. The agent invokes the corrector only via `subprocess.run()`.
+**Invariant**: `shared` has zero upward dependencies. The only tool-package dependency is `cve_oe_backport` importing OE repository configuration from `cve_metadata_extractor`; all packages may depend on `shared`. The agent invokes the corrector only via `subprocess.run()`.
+
+`cve_oe_backport` depends on the extractor for OE repository configuration and on `shared` for patch metadata annotation. The corrector uses the same `shared.patch` helpers while keeping workflow-state decisions in `cve_corrector`.
 
 ## Process Isolation
 

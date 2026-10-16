@@ -9,6 +9,7 @@ graph TB
         paths["paths.py"]
         json_cache["json_cache.py"]
         shared_handoff["handoff.py"]
+        shared_patch["patch.py"]
         url_parser["url_parser.py"]
         shared_init["__init__.py (build_git_env)"]
     end
@@ -42,6 +43,11 @@ graph TB
         transfer["transfer.py"]
         corrector_handoff["handoff.py"]
     end
+    subgraph backport["cve_oe_backport/ — OE Backport Generation"]
+        backport_module["backport.py"]
+    end
+    shared_patch --> patch_ops
+    shared_patch --> backport_module
     subgraph agent["cve_agent/ — AI Orchestration"]
         orchestrator["orchestrator.py"]
         session["session.py"]
@@ -67,6 +73,7 @@ graph TB
 | `paths.py` | XDG-compliant `data_dir()` and `cache_dir()` with env overrides |
 | `json_cache.py` | Gzip-compressed JSON cache with atomic writes (`cache_load`, `cache_dump`) |
 | `handoff.py` | Versioned corrector-to-agent repository state and scope contract |
+| `patch.py` | Shared patch metadata annotation, format-patch subject parsing, commit subject lookup, and cherry-pick SHA extraction |
 | `url_parser.py` | Structure-aware commit-URL parsing (GitHub/GitLab, cgit, gitweb, Gitiles, kernel.org shortlinks, Pagure, SourceForge, Fossil), extract hashes, fetch PR commit lists. `HASH_RE` is shared and intentionally unanchored — `cve_metadata_extractor/debian.py` scans free-text notes with `findall()` |
 | `__init__.py` | `GIT_ENV_ALLOWLIST` and `build_git_env()` for safe subprocess environments |
 
@@ -99,7 +106,7 @@ graph TB
 | `git_ops.py` | Git operations: checkout, tag matching, monorepo detection, strip level |
 | `bitbake_ops.py` | BitBake integration: meta-layer resolution, mirror lookup, workspace cleanup |
 | `recipe_ops.py` | Recipe file manipulation: SRC_URI patching, bbappend handling, patch naming |
-| `patch_ops.py` | Patch file operations: metadata insertion, patch modification |
+| `patch_ops.py` | Workflow-aware patch processing; delegates metadata edits and format-patch helpers to `shared.patch` |
 | `workspace.py` | devtool workspace setup: `setup_devtool_workspace()`, upstream remote, CVE branch |
 | `ptest.py` | ptest execution: enable ptest, run tests, compare before/after results |
 | `meta_layer.py` | Meta-layer commit creation: CVE status writing, patch export |
@@ -108,6 +115,13 @@ graph TB
 | `handoff.py` | Produce the trusted corrector-to-agent repository manifest |
 | `__main__.py` | CLI entry point: argument parsing, bitbake env validation, interrupt handling |
 | `version.py` | PEP 440-compatible version comparison for tag matching |
+
+## cve_oe_backport/
+
+| File | Responsibility |
+|------|---------------|
+| `backport.py` | Generate patches and bbappends from merged OE fixes; reuse `shared.patch` for patch metadata annotation |
+| `__main__.py` | CLI entry point |
 
 ## cve_agent/
 
@@ -162,7 +176,7 @@ Plugin directory (`.gitignore`'d). Contains symlinks to private plugins. Auto-di
 | `tests/agent/test_openai_live.py` | Explicitly opted-in disposable Ollama read/finish smoke; skipped by default |
 | `tests/corrector/` | Workflow, cherry-pick, blame, git ops, recipe ops, state, ptest, monorepo |
 | `tests/extractor/` | Each source (debian, osv, cvelistv5, ubuntu), processing, utils |
-| `tests/shared/` | URL parser, conftest fixtures |
+| `tests/shared/` | URL parser, patch helpers, conftest fixtures |
 | `tests/integration/` | Shell-based end-to-end tests with real git repos |
 | `tests/conftest.py` | Shared fixtures: mock bitbake env, workspace/repo factories |
 | `tests/helpers.py` | Test utilities: workflow runner, patch assertion helpers |

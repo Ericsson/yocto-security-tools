@@ -7,14 +7,25 @@ and SRC_URI updates after devtool finish.
 """
 from __future__ import annotations
 
-import os
-import re
-import shutil
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING
 
 from shared import TEXT_ENCODING, TEXT_ERRORS
+from shared.patch import (
+    cherry_picked_sha as _cherry_picked_sha,
+)
+from shared.patch import (
+    extract_patch_subject as _extract_patch_subject,
+)
+from shared.patch import (
+    git_commit_subject as _git_commit_subject,
+)
+from shared.patch import (
+    modify_patch as _modify_patch,
+)
+from shared.patch import (
+    normalize_subject as _normalize_subject,
+)
 
 from .git_ops import get_git_user_info
 from .recipe_ops import _split_src_uri_line, sort_cve_lines_in_recipe, update_recipe_patch
@@ -43,129 +54,10 @@ def modify_patch(patch_file: Path, cve_id: str, original_url: str,
             fabricate a DCO certification nobody made; only emit one when
             explicitly requested.
     """
-    text = patch_file.read_text(encoding="utf-8")
-
-    # Idempotence: skip re-adding metadata the patch already carries.
-    # The fix patch needs both tags; a prerequisite needs only Upstream-Status.
-    has_upstream = "Upstream-Status:" in text
-    has_cve = f"CVE: {cve_id}" in text
-    metadata_present = has_upstream and (has_cve or not include_cve_tag)
-
-    # Check for our own resolved identity's line specifically, not just any
-    # "Signed-off-by:" text — the upstream commit being backported may carry
-    # its original author's own signoff in the copied commit message, which
-    # must not be mistaken for our local identity already having signed off.
-    own_signoff_line = None
-    has_own_signoff = False
+    identity = None
     if sign_off:
-        author, email = get_git_user_info()
-        own_signoff_line = f"Signed-off-by: {author} <{email}>"
-        has_own_signoff = own_signoff_line in text
-
-    if metadata_present and (not sign_off or has_own_signoff):
-        return
-
-    lines = text.splitlines(keepends=True)
-
-    if metadata_present:
-        # CVE:/Upstream-Status: are already there (e.g. a resumed or
-        # reprocessed patch) — sign_off is the only thing missing. Add just
-        # the trailer instead of re-running the block below, which would
-        # duplicate the existing headers.
-        block = f"\n{own_signoff_line}\n"
-    else:
-        cve_line = f"CVE: {cve_id}\n" if include_cve_tag else ""
-        block = (
-            "\n"
-            f"{cve_line}"
-            f"Upstream-Status: Backport [{original_url}]\n"
-        )
-        if sign_off:
-            block += f"\n{own_signoff_line}\n"
-
-    insert_index = None
-    for i, line in enumerate(lines):
-        stripped = line.rstrip('\n\r')
-        if stripped == '---':
-            insert_index = i
-            break
-
-    if insert_index is None:
-        raise ValueError("No line containing '---' found in patch")
-
-    with NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
-        tmp.writelines(lines[:insert_index])
-        tmp.write(block)
-        tmp.writelines(lines[insert_index:])
-        tmp_path = tmp.name
-
-    try:
-        shutil.move(tmp_path, str(patch_file))
-    except Exception:
-        os.unlink(tmp_path)
-        raise
-
-
-def _extract_patch_subject(patch_text: str) -> str:
-    """Extract the unwrapped ``Subject:`` line from a format-patch file.
-
-    Handles RFC-822 folded subjects (continuation lines start with
-    whitespace) and strips the leading ``[PATCH ...]`` prefix so the result
-    can be compared against a plain ``git log --format=%s`` subject.
-    """
-    lines = patch_text.splitlines()
-    parts: list[str] = []
-    capturing = False
-    for line in lines:
-        if not capturing:
-            if line.startswith("Subject:"):
-                parts.append(line[len("Subject:"):].strip())
-                capturing = True
-            continue
-        # Folded continuation lines are indented and non-empty.
-        if line[:1] in (" ", "\t") and line.strip():
-            parts.append(line.strip())
-        else:
-            break
-    subject = " ".join(parts)
-    subject = re.sub(r"^\[PATCH[^\]]*\]\s*", "", subject)
-    return subject.strip()
-
-
-def _normalize_subject(subject: str) -> str:
-    """Collapse whitespace and lowercase a subject for robust comparison."""
-    return " ".join(subject.split()).lower()
-
-
-def _git_commit_subject(workspace_path: Path, commit_hash: str) -> str | None:
-    """Return the subject line of ``commit_hash``, or None if unavailable.
-
-    ``workspace_path`` may already be gone by the time this runs: in
-    ``--bbappend`` mode, ``finish_cve_workflow`` calls ``devtool reset``
-    (which deletes the whole devtool workspace directory) before calling
-    ``update_patches_with_metadata`` -> ``_compute_cve_tag_flags`` ->
-    here. Checking existence up front avoids an uncaught
-    ``FileNotFoundError`` from ``subprocess`` trying to chdir into a
-    missing ``cwd`` and returns None instead, matching the existing
-    "can't determine subject" contract so the caller's documented
-    fallback (tag every patch with CVE) still applies.
-    """
-    if not commit_hash:
-        return None
-    if not workspace_path.exists():
-        return None
-    result = run_cmd_capture(
-        ["git", "log", "-1", "--format=%s", commit_hash], cwd=workspace_path)
-    if result.returncode != 0:
-        return None
-    subject = result.stdout.strip()
-    return subject or None
-
-
-def _cherry_picked_sha(patch_text: str) -> str | None:
-    """Extract the upstream SHA from a ``(cherry picked from commit ...)`` line."""
-    match = re.search(r"cherry picked from commit ([0-9a-f]{7,40})", patch_text)
-    return match.group(1) if match else None
+        identity = get_git_user_info()
+    _modify_patch(patch_file, cve_id, original_url, include_cve_tag, identity)
 
 
 def _compute_cve_tag_flags(state: WorkflowState, patches: list[str]) -> list[bool]:
