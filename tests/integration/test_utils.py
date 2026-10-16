@@ -942,6 +942,7 @@ MIRROR_MAP = {
     'llvm': 'llvm-project',
     'python3-aiohttp': 'aiohttp',
     'python3-cbor2': 'cbor2',
+    'python3-django': 'django',
     'python3-ecdsa': 'python-ecdsa',
     'python3-eventlet': 'eventlet',
     'python3-flask': 'flask',
