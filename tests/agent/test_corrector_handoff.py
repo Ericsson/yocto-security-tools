@@ -404,6 +404,38 @@ def test_missing_required_handoff_makes_zero_provider_calls(tmp_path):
     backend.run_session.assert_not_called()
 
 
+def test_handoff_refresh_failure_during_cleanup_is_classified_not_raised(tmp_path):
+    """A HandoffError from refresh_repository_handoff (cleanup, run after an
+    unresolved session) must come back as a classified failed SessionResult,
+    not propagate out of guarded_session (regression: jq CVE-2026-40612,
+    where a HANDOFF_RETRY_SCOPE_DRIFT here crashed the whole cve_agent
+    process with an uncaught traceback instead of a normal failed/escalated
+    result the orchestrator could retry or report)."""
+    repo, selected = _repo(tmp_path)
+    state_dir = repo.parent.parent / "cve_corrector"
+    emit_handoff(_state(repo, selected), state_dir)
+    backend = MagicMock()
+    backend.run_session.return_value = SessionResult(
+        resolved=False, duration=1.0, failure_reason="no progress")
+
+    with patch("cve_agent.session.get_backend", return_value=backend), \
+            patch("cve_agent.session._write_audit_log"), \
+            patch("cve_agent.session.refresh_repository_handoff",
+                  side_effect=HandoffError(
+                      "HANDOFF_RETRY_SCOPE_DRIFT",
+                      "retry state has unauthorized tracked paths")):
+        result = guarded_session(
+            tmp_path / "context.md", repo, selected, {"hashes": [selected]},
+            cve_id="CVE-2026-1234", require_handoff=True)
+
+    assert result.resolved is False
+    assert result.failure_reason == (
+        "Corrector handoff failed: HANDOFF_RETRY_SCOPE_DRIFT")
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.CORRECTOR_HANDOFF
+    assert result.outcome.failure_code == "HANDOFF_RETRY_SCOPE_DRIFT"
+
+
 def test_unresolved_provider_state_is_refreshed_for_next_session(tmp_path):
     repo, selected = _repo(tmp_path)
     state_dir = repo.parent.parent / "cve_corrector"
