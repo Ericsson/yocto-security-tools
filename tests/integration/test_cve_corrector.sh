@@ -102,6 +102,7 @@ test_single_cve() {
         local agent_exit=0
         local -a flags_arr=()
         build_agent_flags flags_arr "$extra_flags"
+        resolve_cve_run_args "$cve_id"
         # Run agent with timeout — kill entire process group on expiry
         AGENT_LOG="$agent_log" setsid bash -c '
             echo "y" | python3 -m cve_agent \
@@ -113,7 +114,7 @@ test_single_cve() {
                 --clean \
                 "${@:5}" \
                 >> "$AGENT_LOG" 2>&1
-        ' _ "$CVE_METADATA" "$cve_id" "${OE_DIR}/meta" "$MIRROR_DIR" "${flags_arr[@]}" &
+        ' _ "$CVE_RUN_INFO" "$CVE_RUN_ID" "${OE_DIR}/meta" "$MIRROR_DIR" "${flags_arr[@]}" &
         local agent_pid=$!
         ( sleep "$TEST_TIMEOUT"
           log "  TIMEOUT: cve_agent for $cve_id exceeded ${TEST_TIMEOUT}s ($(( TEST_TIMEOUT / 60 )) min), killing..."
