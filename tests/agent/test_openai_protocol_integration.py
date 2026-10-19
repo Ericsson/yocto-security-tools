@@ -129,12 +129,13 @@ class RecordingBuildRunner:
         self.timed_out = timed_out
         self.calls: list[dict[str, object]] = []
 
-    def run(self, recipe: str) -> BuildCommandResult:
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
         log = self.workspace.agent / BUILD_LOG_NAME
         log.write_text("deterministic build output\n", encoding="utf-8")
         self.calls.append(
             {
                 "recipe": recipe,
+                "clean": clean,
                 "content": self.workspace.target.read_text(encoding="utf-8"),
                 "head": _git(self.workspace.repo, "rev-parse", "HEAD"),
             }
@@ -343,6 +344,7 @@ def test_socket_guarded_manual_edit_build_finish_and_request_sequence(
     assert runner.calls == [
         {
             "recipe": "recipe",
+            "clean": False,
             "content": resolved,
             "head": _git(workspace.repo, "rev-parse", "HEAD"),
         }

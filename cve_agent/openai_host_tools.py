@@ -195,8 +195,16 @@ class BuildCommandResult:
 class BuildRunner(Protocol):
     """Injectable controlled-build implementation."""
 
-    def run(self, recipe: str) -> BuildCommandResult:
-        """Run the fixed build command for one trusted recipe."""
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
+        """Run the fixed build command for one trusted recipe.
+
+        When ``clean`` is true, run with devtool's own ``-c`` flag first
+        (``devtool build -c <recipe>``), which clears that recipe's stale
+        build-output state (e.g. a missing ``do_configure`` artifact left by
+        an interrupted or sstate-skipped prior build) before rebuilding. This
+        is still a single fixed, enumerable command — never a model-supplied
+        argument.
+        """
 
 
 class TrustedAgentDirectory:
@@ -352,10 +360,19 @@ class ControlledBuildRunner:
             raise ValueError("termination grace is outside its safe bound")
         self.termination_grace = termination_grace
 
-    def run(self, recipe: str) -> BuildCommandResult:
-        """Run ``devtool build <recipe>`` under the shared deadline."""
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
+        """Run ``devtool build [-c] <recipe>`` under the shared deadline.
+
+        When ``clean`` is true, devtool's own ``-c`` flag clears the
+        recipe's build-output state before building — this is still exactly
+        one fixed, host-controlled argv shape, never model-supplied
+        arguments.
+        """
         self.deadline.require("recipe build")
-        command = [DEVTOOL_EXECUTABLE, "build", recipe]
+        command = (
+            [DEVTOOL_EXECUTABLE, "build", "-c", recipe] if clean
+            else [DEVTOOL_EXECUTABLE, "build", recipe]
+        )
         environment = native_subprocess_environment(
             (self.workspace, self.artifacts.path))
         environment["PAGER"] = "cat"
@@ -483,8 +500,21 @@ class ControlledBuildRunner:
 HOST_TOOL_CONTRACTS: dict[str, ToolContract] = {
     "build_recipe": ToolContract(
         "build_recipe",
-        "Build the trusted session recipe with fixed host-controlled devtool argv.",
-        {},
+        "Build the trusted session recipe with fixed host-controlled devtool "
+        "argv. Set clean=true to clear the recipe's stale build-output "
+        "state first (devtool build -c) — only use this after a plain "
+        "build has already failed with a missing-generated-file signature "
+        "(e.g. \"No targets specified and no makefile found\"); it is "
+        "allowed at most once per session.",
+        {
+            "clean": FieldContract(
+                "boolean",
+                "If true, clear this recipe's stale build-output state "
+                "before building (devtool build -c). Use only to recover "
+                "from a missing do_configure artifact, not as a routine "
+                "retry. Allowed at most once per session.",
+            ),
+        },
         "_build_recipe",
     ),
     "finish": ToolContract(
@@ -574,6 +604,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             interactive, self.deadline, approval_provider, event_sink)
         self._build_runner = build_runner or ControlledBuildRunner(
             self.workspace, self.artifacts, self.deadline)
+        self._clean_build_calls = 0
         secrets = tuple(protected_secrets)
         if any(not isinstance(secret, str) for secret in secrets):
             raise ValueError("protected secrets must be strings")
@@ -636,8 +667,9 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             self.approvals.require(
                 "git_mutation", tool, self._git_approval_summary(tool, arguments))
         elif tool == "build_recipe":
-            self.approvals.require(
-                "build", tool, f"devtool build {self.recipe}")
+            clean = bool(arguments.get("clean"))
+            command = f"devtool build -c {self.recipe}" if clean else f"devtool build {self.recipe}"
+            self.approvals.require("build", tool, command)
         # finish approval occurs only after its trusted state checks pass.
 
     def _arguments_contain_protected_secret(
@@ -720,7 +752,13 @@ class OpenAIHostToolRuntime(GitToolRuntime):
         return tool.replace("_", " ")
 
     def _build_recipe(self, arguments: dict[str, object]) -> _ExecutionResult:
-        result = self._build_runner.run(self.recipe)
+        clean = bool(arguments.get("clean"))
+        if clean:
+            if self._clean_build_calls >= 1:
+                raise ToolPolicyError(
+                    "a clean build has already been used this session")
+            self._clean_build_calls += 1
+        result = self._build_runner.run(self.recipe, clean=clean)
         payload: dict[str, object] = {
             "exit_status": result.returncode,
             "duration": result.duration,
@@ -731,6 +769,7 @@ class OpenAIHostToolRuntime(GitToolRuntime):
             "log_path": str(result.log_path),
             "log_truncated": result.log_truncated,
             "generation": self.mutation_generation,
+            "clean": clean,
         }
         if result.timed_out:
             raise RuntimeTimeoutError("recipe build exceeded the session deadline", payload)

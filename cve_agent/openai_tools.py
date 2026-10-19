@@ -956,6 +956,10 @@ class FileToolRuntime:
     @staticmethod
     def _validate_field(name: str, value: object,
                         contract: FieldContract) -> None:
+        if contract.json_type == "boolean":
+            if not isinstance(value, bool):
+                raise ToolValidationError(f"field '{name}' must be a boolean")
+            return
         if contract.json_type == "string":
             if not isinstance(value, str):
                 raise ToolValidationError(f"field '{name}' must be a string")
