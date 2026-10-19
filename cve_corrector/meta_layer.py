@@ -8,7 +8,7 @@ staging files, restoring devtool-modified content, and exporting patches.
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .bitbake_ops import get_build_path, get_layerseries_corename
+from .bitbake_ops import get_build_path, get_layerseries_corename, supports_cve_status
 from .git_ops import get_git_user_info
 from .recipe_ops import _append_src_uri_entries, _find_recipe_file
 from .utils import logger, run_cmd, run_cmd_capture
@@ -305,6 +305,20 @@ def _map_cve_status_reason(reason: str) -> str:
     return 'not-applicable-config'
 
 
+def cve_status_line(cve_id: str, reason: str) -> str:
+    """Build the recipe line(s) that mark a CVE as not needing a patch.
+
+    Releases with ``CVE_STATUS`` get ``CVE_STATUS[<id>] = "<keyword>: <reason>"``.
+    Kirkstone has no ``CVE_STATUS``; its only equivalent is
+    ``CVE_CHECK_IGNORE`` (reported as ``Ignored``), which carries no reason,
+    so the reason is kept in a comment line directly above it.
+    """
+    if supports_cve_status():
+        return f'CVE_STATUS[{cve_id}] = "{_map_cve_status_reason(reason)}: {reason}"'
+    comment = ' '.join(reason.split())
+    return f'# {cve_id}: {comment}\nCVE_CHECK_IGNORE += "{cve_id}"'
+
+
 def write_cve_status(meta_layer: Path | None, recipe: str, cve_id: str,
                      reason: str, skip_confirm: bool = False,
                      sign_off: bool = False) -> bool:
@@ -323,7 +337,7 @@ def write_cve_status(meta_layer: Path | None, recipe: str, cve_id: str,
         logger.warning("Meta-layer path invalid: %s", meta_layer)
         return False
 
-    status_line = f'CVE_STATUS[{cve_id}] = "{_map_cve_status_reason(reason)}: {reason}"'
+    status_line = cve_status_line(cve_id, reason)
 
     recipe_file = _find_recipe_file(meta_layer, recipe)
     if not recipe_file:

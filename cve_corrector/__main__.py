@@ -119,7 +119,8 @@ def main():
     mode_group.add_argument('--dry-run', action='store_true',
                         help='Validate inputs and show what would be done without changes')
     mode_group.add_argument('--mark-not-applicable', metavar='REASON',
-                        help='Write CVE_STATUS entry instead of patching')
+                        help='Write CVE_STATUS (CVE_CHECK_IGNORE on kirkstone) '
+                             'entry instead of patching')
 
     # --- Output ---
     output_group = parser.add_argument_group('output')

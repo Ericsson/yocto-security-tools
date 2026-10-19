@@ -46,6 +46,22 @@ def _isolate_git_identity_env():
 
 
 # ---------------------------------------------------------------------------
+# Default to a CVE_STATUS-capable (post-kirkstone) release
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _default_cve_status_supported(monkeypatch):
+    """Pre-seed the CVE_STATUS feature probe as supported.
+
+    ``supports_cve_status()`` queries bitbake once and caches the result.
+    Seeding it keeps tests that mock ``run_cmd_capture`` call-by-call
+    independent of the probe; kirkstone tests override it with False.
+    """
+    import cve_corrector.bitbake_ops as bitbake_ops
+    monkeypatch.setattr(bitbake_ops, '_cve_status_supported', True)
+
+
+# ---------------------------------------------------------------------------
 # Auto-mark tests using git fixtures as integration tests
 # ---------------------------------------------------------------------------
 

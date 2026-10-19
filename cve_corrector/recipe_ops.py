@@ -10,6 +10,9 @@ from pathlib import Path
 
 from .utils import logger, run_cmd_capture
 
+# A kirkstone CVE_CHECK_IGNORE assignment (any operator or override).
+_CVE_CHECK_IGNORE_RE = re.compile(r'^\s*CVE_CHECK_IGNORE\b')
+
 
 def _find_recipe_file(meta_layer: Path | None, recipe: str) -> Path | None:
     """Find the .bbappend or .bb file for a recipe in the meta-layer.
@@ -329,7 +332,12 @@ def sort_cve_lines_in_recipe(cve_id: str, meta_layer: Path) -> None:
 
 
 def save_bbappend_extras(meta_layer: Path | None, recipe: str) -> list[str]:
-    """Save SRC_URI and CVE_STATUS lines from existing bbappend before devtool overwrites it."""
+    """Save SRC_URI and CVE status lines from existing bbappend before devtool overwrites it.
+
+    CVE status lines are ``CVE_STATUS[...]`` and, on kirkstone,
+    ``CVE_CHECK_IGNORE`` assignments together with the ``# CVE-...`` reason
+    comment directly above them.
+    """
     recipe_file = _find_recipe_file(meta_layer, recipe)
     if not recipe_file or not recipe_file.exists():
         return []
@@ -338,24 +346,30 @@ def save_bbappend_extras(meta_layer: Path | None, recipe: str) -> list[str]:
         r'^\s*SRC_URI\s*(?::\w[\w-]*)*\s*(?:\+|\.|\?)?='
     )
     extras: list[str] = []
-    in_src_uri = False
+    in_block = False
+    prev_line = ''
     for line in recipe_file.read_text(encoding='utf-8').splitlines():
         stripped = line.strip()
         if stripped.startswith('CVE_STATUS['):
             extras.append(line)
+        elif _CVE_CHECK_IGNORE_RE.match(line):
+            if prev_line.strip().startswith('# CVE-'):
+                extras.append(prev_line)
+            in_block = True
         elif src_uri_re.match(line) and '+=' in line:
-            in_src_uri = True
-        if in_src_uri:
+            in_block = True
+        if in_block:
             extras.append(line)
             if not stripped.endswith('\\'):
-                in_src_uri = False
+                in_block = False
+        prev_line = line
 
     return extras
 
 
 def restore_bbappend_extras(meta_layer: Path | None, recipe: str,
                             saved_lines: list[str]) -> None:
-    """Merge previously saved SRC_URI entries and CVE_STATUS lines back into the bbappend."""
+    """Merge previously saved SRC_URI entries and CVE status lines back into the bbappend."""
     if not saved_lines:
         return
 
@@ -368,10 +382,21 @@ def restore_bbappend_extras(meta_layer: Path | None, recipe: str,
 
     old_patches: list[str] = []
     cve_status_lines: list[str] = []
+    # Reason comment and CVE_CHECK_IGNORE statement being collected (kirkstone).
+    ignore_block: list[str] = []
 
     for line in saved_lines:
         stripped = line.strip()
-        if stripped.startswith('CVE_STATUS['):
+        if ignore_block or stripped.startswith('# CVE-') or _CVE_CHECK_IGNORE_RE.match(line):
+            ignore_block.append(line)
+            if stripped.startswith('#') or stripped.endswith('\\'):
+                continue
+            ids = re.findall(r'CVE-\d{4}-\d+', ' '.join(
+                ln for ln in ignore_block if not ln.strip().startswith('#')))
+            if any(cve not in content for cve in ids):
+                cve_status_lines.extend(ignore_block)
+            ignore_block = []
+        elif stripped.startswith('CVE_STATUS['):
             cve_match = re.search(r'CVE_STATUS\[(CVE-\S+)\]', stripped)
             if cve_match and cve_match.group(1) not in content:
                 cve_status_lines.append(line)
@@ -416,7 +441,7 @@ def restore_bbappend_extras(meta_layer: Path | None, recipe: str,
 
     recipe_file.write_text(content, encoding='utf-8')
     logger.info("Restored %s SRC_URI + "
-                "%s CVE_STATUS line(s) to %s", len(old_patches),
+                "%s CVE status line(s) to %s", len(old_patches),
                 len(cve_status_lines), recipe_file.name)
 
 

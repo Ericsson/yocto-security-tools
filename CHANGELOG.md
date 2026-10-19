@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **cve-corrector**: Kirkstone support. Without `CVE_STATUS` (detected via
+  `CVE_CHECK_STATUSMAP`), the existing-status check reads `CVE_CHECK_IGNORE`
+  and not-applicable results are written as `CVE_CHECK_IGNORE += "<id>"` with
+  a reason comment. Newer releases are unchanged.
+
 ## [1.2] - 2026-09-21
 
 ### Added
