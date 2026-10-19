@@ -658,7 +658,28 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
     if hashes:
         best_hash, conflicts = find_least_conflict_commit(
             workspace_path, hashes, mainline_parent=mainline_parent)
-        if best_hash and conflicts < float('inf'):
+        if best_hash is None:
+            # Every candidate was skipped by find_least_conflict_commit
+            # itself (e.g. each is a merge commit and no --mainline-parent
+            # was supplied, so the diff against mainline is ambiguous) —
+            # not one of them ever reached a cherry-pick attempt, so no
+            # conflict state exists and no workflow state was ever saved.
+            # Falling through to the generic ConflictError below would tell
+            # cve_agent a resolvable conflict is waiting, but there is
+            # nothing on disk for it to hand off against: the agent then
+            # burns its full session timeout only to discover the missing
+            # state via HANDOFF_MISSING, instead of failing fast with a
+            # clear reason (regression: python3-ecdsa CVE-2026-33936,
+            # python3-twisted CVE-2026-42304, both single merge-commit
+            # fixes with no mainline_parent in their metadata).
+            logger.error(
+                "Every candidate commit is a merge commit requiring an "
+                "explicit --mainline-parent, which was not supplied — "
+                "nothing could be attempted")
+            raise PatchError(
+                "All fix commits are ambiguous merge commits with no "
+                "--mainline-parent supplied; nothing to resolve")
+        if conflicts < float('inf'):
             logger.info("Applying commit %s with %s conflict(s)...",
                         best_hash[:8], conflicts)
             command = (cherry_pick_command(workspace_path, best_hash)
