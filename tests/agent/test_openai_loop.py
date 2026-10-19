@@ -15,6 +15,7 @@ from cve_agent.openai_client import (
     FunctionToolCall,
     OpenAIAuthenticationError,
     OpenAIConnectionError,
+    OpenAIEmptyResponseError,
     OpenAINotFoundError,
     OpenAIProtocolError,
     OpenAIRequestTimeoutError,
@@ -22,6 +23,8 @@ from cve_agent.openai_client import (
 )
 from cve_agent.openai_deadline import SessionDeadline
 from cve_agent.openai_loop import (
+    EMPTY_RESPONSE_CORRECTION,
+    MAX_EMPTY_RESPONSE_RETRIES,
     AgentLoopLimits,
     JSONLTranscript,
     OpenAIAgentLoop,
@@ -374,6 +377,54 @@ def test_one_text_stop_gets_one_correction_then_can_succeed(tmp_path):
     assert client.requests[1][0][-1]["role"] == "user"
     assert "Call `finish`" in client.requests[1][0][-1]["content"]
     assert sum(event["event"] == "corrective_message" for event in events) == 1
+
+
+def _empty_response_error() -> OpenAIEmptyResponseError:
+    return OpenAIEmptyResponseError(
+        "assistant message must contain content or tool calls")
+
+
+def test_empty_response_is_nudged_and_session_recovers(tmp_path):
+    """A reasoning-only reply mid-session must not end the session.
+
+    Observed with qwen3.8: after correctly analysing a conflict the model
+    returned only its reasoning field, and the whole session was discarded
+    as PROVIDER_MALFORMED_RESPONSE.
+    """
+    actions = [
+        _response(_call("read", "read_file", '{"path":"a.c"}')),
+        _empty_response_error(),
+        _response(_call(
+            "finish", "finish", '{"status":"needs_human","reason":"x"}')),
+    ]
+    result, client, runtime, _, _, events = _run(tmp_path, actions)
+    assert result.resolved
+    assert [name for name, _ in runtime.calls] == ["read_file", "finish"]
+    retry_messages = client.requests[2][0]
+    assert retry_messages[-1] == {
+        "role": "user", "content": EMPTY_RESPONSE_CORRECTION}
+    nudges = [event for event in events
+              if event["event"] == "corrective_message"
+              and event["reason"] == "empty_response"]
+    assert len(nudges) == 1
+    assert not any(event["event"] == "client_error" for event in events)
+
+
+def test_empty_responses_beyond_budget_keep_malformed_classification(tmp_path):
+    actions = [_empty_response_error()
+               for _ in range(MAX_EMPTY_RESPONSE_RETRIES + 1)]
+    result, client, _, _, _, events = _run(tmp_path, actions)
+    assert not result.resolved
+    assert len(client.requests) == MAX_EMPTY_RESPONSE_RETRIES + 1
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.PROVIDER_PROTOCOL
+    assert result.outcome.failure_code == "PROVIDER_MALFORMED_RESPONSE"
+    # The nudge is sent once, not stacked on each consecutive empty reply.
+    final_request = client.requests[-1][0]
+    assert sum(message.get("content") == EMPTY_RESPONSE_CORRECTION
+               for message in final_request) == 1
+    assert sum(event["event"] == "corrective_message"
+               for event in events) == MAX_EMPTY_RESPONSE_RETRIES
 
 
 def test_two_text_stops_end_unresolved(tmp_path):

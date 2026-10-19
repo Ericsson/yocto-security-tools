@@ -24,6 +24,7 @@ from cve_agent.openai_client import (
     OpenAIConnectionError,
     OpenAIConnectTimeoutError,
     OpenAIDeadlineExceededError,
+    OpenAIEmptyResponseError,
     OpenAILocalRequestError,
     OpenAIMalformedJSONError,
     OpenAINonRetryableHTTPError,
@@ -531,6 +532,21 @@ def test_empty_message_without_length_finish_stays_a_schema_violation():
         _client(FakeTransport(FakeResponse(payload=payload))).complete(
             [{"role": "user", "content": "hello"}], [])
     assert not isinstance(excinfo.value, OpenAIResponseTruncatedError)
+    assert excinfo.value.code is ProviderErrorCode.MALFORMED_RESPONSE
+
+
+def test_reasoning_only_stop_raises_the_recoverable_empty_response_error():
+    """A reasoning-only ``stop`` reply is typed so the loop can nudge and retry.
+
+    It must stay an ``OpenAIProtocolError`` with the generic malformed code so
+    an unrecovered occurrence is classified exactly as before.
+    """
+    payload = _text_payload(None, finish_reason="stop")
+    payload["choices"][0]["message"]["reasoning"] = "Now I understand the conflict."
+    with pytest.raises(OpenAIEmptyResponseError) as excinfo:
+        _client(FakeTransport(FakeResponse(payload=payload))).complete(
+            [{"role": "user", "content": "hello"}], [])
+    assert isinstance(excinfo.value, OpenAIProtocolError)
     assert excinfo.value.code is ProviderErrorCode.MALFORMED_RESPONSE
 
 

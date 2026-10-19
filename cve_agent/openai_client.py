@@ -160,6 +160,16 @@ class OpenAIResponseTruncatedError(OpenAIProtocolError):
     code = ProviderErrorCode.RESPONSE_TRUNCATED
 
 
+class OpenAIEmptyResponseError(OpenAIProtocolError):
+    """A well-formed reply carried neither content nor a tool call.
+
+    Reasoning models occasionally end a turn after emitting only their
+    reasoning field. The envelope is otherwise valid, so the agent loop may
+    nudge the model and re-request instead of ending the session; if it does
+    not recover, the failure keeps the generic malformed-response code.
+    """
+
+
 class OpenAIResponseSizeError(OpenAIClientError):
     """The decoded response exceeds the configured byte bound."""
 
@@ -738,7 +748,7 @@ class OpenAIChatCompletionsClient:
                 raise OpenAIResponseTruncatedError(
                     "assistant message was truncated before any content or "
                     "tool call")
-            raise OpenAIProtocolError(
+            raise OpenAIEmptyResponseError(
                 "assistant message must contain content or tool calls")
         reasoning_replay: tuple[str, str] | None = None
         reasoning_field = self.capabilities.reasoning_response_field
