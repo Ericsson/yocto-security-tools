@@ -535,6 +535,37 @@ def _gitmodules_entries(workspace_path: Path) -> list[tuple[str, str]]:
     return entries
 
 
+def _submodule_commit(workspace_path: Path, name: str) -> str | None:
+    """Return the commit the superproject pins for submodule *name*, or None."""
+    path = run_cmd_capture(
+        ['git', 'config', '-f', '.gitmodules', f'submodule.{name}.path'],
+        cwd=workspace_path).stdout.strip() or name
+    listing = run_cmd_capture(['git', 'ls-tree', 'HEAD', '--', path],
+                              cwd=workspace_path).stdout.split()
+    if len(listing) >= 3 and listing[1] == 'commit':
+        return listing[2]
+    return None
+
+
+def _mirror_serves_commit(mirror: Path, commit: str) -> bool:
+    """Return False when *mirror* verifiably lacks objects of *commit*.
+
+    The mirrors may be partial clones (``--filter=tree:0``). A partial clone
+    fetches missing objects lazily for its own use, but ``upload-pack`` does
+    not lazily fetch on behalf of a client, so cloning a submodule from it
+    fails with ``Could not read <tree>`` and leaves a broken submodule that
+    later breaks devtool's ``git add -A`` during recipe parsing (observed for
+    gnutls's devel/nettle). ``rev-list --missing=print`` lists, without
+    fetching, any object of the commit's tree the mirror does not have.
+    """
+    result = run_cmd_capture(
+        ['git', 'rev-list', '--objects', '--missing=print', '-n', '1', commit],
+        cwd=mirror)
+    if result.returncode != 0:
+        return False
+    return not any(line.startswith('?') for line in result.stdout.splitlines())
+
+
 def _init_submodules(workspace_path: Path,
                      hash_details: list[dict] | None = None,
                      mirror_dir: Path | None = None) -> None:
@@ -589,6 +620,14 @@ def _init_submodules(workspace_path: Path,
         sub_name = url.rstrip('/').rsplit('/', 1)[-1].removesuffix('.git')
         if mirror_dir:
             sub_mirror = find_mirror_repo(mirror_dir, sub_name)
+            commit = (_submodule_commit(workspace_path, name)
+                      if sub_mirror else None)
+            if sub_mirror and commit and not _mirror_serves_commit(sub_mirror, commit):
+                logger.warning(
+                    "Submodule %s: local mirror %s is missing objects of %s "
+                    "(partial clone) — using %s instead",
+                    name, sub_mirror, commit[:12], url)
+                sub_mirror = None
             if sub_mirror:
                 override = str(sub_mirror.absolute())
                 logger.info("Submodule %s: using local mirror %s", name, override)
