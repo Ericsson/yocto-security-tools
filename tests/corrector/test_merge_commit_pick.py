@@ -136,3 +136,27 @@ class TestHandleNoCleanApplyWithMerge:
             _handle_no_clean_apply(repo, [merge_sha], [], lambda *a: None,
                                    'python3-setuptools')
         assert not has_conflict_state(repo)
+
+    def test_merge_commit_with_no_mainline_parent_fails_fast(self, merge_repo, monkeypatch):
+        """A merge commit with no --mainline-parent is ambiguous, so
+        find_least_conflict_commit skips it outright and returns (None, inf)
+        -- no cherry-pick is ever attempted, so no conflict state exists and
+        no workflow state is ever saved. Falling through to the generic
+        ConflictError (as before this fix) told cve_agent a resolvable
+        conflict was waiting, but the corrector had written nothing for it
+        to hand off against: the agent then burned its full session timeout
+        only to discover the missing state via HANDOFF_MISSING (regression:
+        python3-ecdsa CVE-2026-33936, python3-twisted CVE-2026-42304). This
+        must now fail fast with PatchError instead, with no workflow state
+        write and no conflict markers in the tree."""
+        repo, merge_sha, _ = merge_repo
+        state_saved = []
+        monkeypatch.setattr('cve_corrector.workflow.save_workflow_state',
+                            lambda state: state_saved.append(state))
+
+        with pytest.raises(PatchError, match="ambiguous merge commit"):
+            _handle_no_clean_apply(repo, [merge_sha], [], lambda *a: None,
+                                   'python3-setuptools')
+
+        assert not has_conflict_state(repo)
+        assert state_saved == [], "no workflow state should be saved"
