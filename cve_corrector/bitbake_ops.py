@@ -397,8 +397,53 @@ def _has_cve_product_match(vendor: str, product: str, cve_products: str) -> bool
     return False
 
 
+_cve_status_supported: bool | None = None
+
+
+def supports_cve_status() -> bool:
+    """Check whether the build's oe-core understands ``CVE_STATUS``.
+
+    ``CVE_STATUS`` and its ``CVE_CHECK_STATUSMAP`` mapping (included
+    globally from ``cve-check-map.conf``) were added after kirkstone, which
+    only knows ``CVE_CHECK_IGNORE``. Detect the feature instead of comparing
+    release names. Kirkstone's ``bitbake-getvar`` prints ``None`` for an
+    undefined flag; newer ones exit non-zero. The result is cached for the
+    process.
+
+    Returns:
+        True if ``CVE_CHECK_STATUSMAP[fixed-version]`` is defined.
+    """
+    global _cve_status_supported
+    if _cve_status_supported is None:
+        result = run_cmd_capture([
+            'bitbake-getvar', 'CVE_CHECK_STATUSMAP', '-f', 'fixed-version', '--value'])
+        value = result.stdout.strip() if result.returncode == 0 else ''
+        _cve_status_supported = bool(value) and value != 'None'
+    return _cve_status_supported
+
+
+def _check_cve_check_ignore(recipe: str, cve_id: str) -> tuple[str, str] | None:
+    """Check whether the recipe's ``CVE_CHECK_IGNORE`` lists this CVE.
+
+    Used on releases without ``CVE_STATUS`` (kirkstone), where every entry
+    in ``CVE_CHECK_IGNORE`` is reported as ``Ignored`` by cve-check.
+
+    Returns:
+        ``("Ignored", "CVE_CHECK_IGNORE")`` if listed, else None.
+    """
+    result = run_cmd_capture(['bitbake-getvar', 'CVE_CHECK_IGNORE', '-r', recipe, '--value'])
+    if result.returncode != 0:
+        return None
+    if cve_id in result.stdout.split():
+        return 'Ignored', 'CVE_CHECK_IGNORE'
+    return None
+
+
 def check_cve_status(recipe: str, cve_id: str) -> tuple[str, str] | None:
     """Check the recipe's existing CVE_STATUS flag for this CVE.
+
+    On releases without ``CVE_STATUS`` (kirkstone) this checks
+    ``CVE_CHECK_IGNORE`` instead.
 
     Runs ``bitbake-getvar CVE_STATUS -f <cve_id> -r <recipe> --value`` and,
     if set, maps the "reason: description" value to the final CVE state
@@ -425,6 +470,9 @@ def check_cve_status(recipe: str, cve_id: str) -> tuple[str, str] | None:
         recipe, or if either it or the recipe's CVE_PRODUCT could not be
         determined.
     """
+    if not supports_cve_status():
+        return _check_cve_check_ignore(recipe, cve_id)
+
     result = run_cmd_capture([
         'bitbake-getvar', 'CVE_STATUS', '-f', cve_id, '-r', recipe,
         '--value', '--ignore-undefined'])
