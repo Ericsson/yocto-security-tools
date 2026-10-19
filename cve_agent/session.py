@@ -433,6 +433,39 @@ def guarded_session(context_file: Path, workspace_path: Path,
                     current_head=handoff.current_head,
                     digest=handoff.critical_sha256,
                 )
+        except (HandoffError, ArtifactError) as handoff_error:
+            # Refreshing the handoff after an unresolved session is itself
+            # part of file-scope enforcement (it re-captures live
+            # operation_state/conflicted_paths/fingerprints), not a crash in
+            # the AI session that already completed. Treat it the same as
+            # the initial validate_repository_handoff failure at the top of
+            # this function: a classified SessionResult the orchestrator can
+            # retry/escalate, not a raw exception that crashes the whole
+            # cve_agent process (regression: jq CVE-2026-40612, where a
+            # HANDOFF_RETRY_SCOPE_DRIFT here propagated uncaught through
+            # guarded_session's own cleanup_errors re-raise all the way to
+            # main(), losing the session's actual (unresolved) outcome and
+            # producing an "unexpected_exception" result instead of a
+            # normal failed/escalated one).
+            code = (handoff_error.code if isinstance(handoff_error, HandoffError)
+                    else "HANDOFF_TRANSCRIPT_FAILED")
+            if artifact_run is not None:
+                try:
+                    artifact_run.event("corrector_handoff_failed", failure_code=code)
+                except ArtifactError:
+                    code = "HANDOFF_TRANSCRIPT_FAILED"
+            return SessionResult(
+                resolved=False,
+                duration=result.duration,
+                failure_reason=f"Corrector handoff failed: {code}",
+                outcome=ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.CORRECTOR_HANDOFF,
+                    code,
+                ),
+            )
         except BaseException as exc:
             cleanup_errors.append(exc)
 
