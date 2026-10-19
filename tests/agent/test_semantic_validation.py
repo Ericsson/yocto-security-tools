@@ -360,6 +360,39 @@ def test_unclassified_data_fix_is_review_not_rejection(tmp_path):
     assert result.reason_code == "unclassified_change_requires_review"
 
 
+def test_fix_with_no_classified_runtime_path_at_all_is_review_not_divergent(
+        tmp_path):
+    """A fix whose every changed path is unclassified must still reach
+    review, not fall through to DIVERGENT because ``runtime_paths`` itself
+    ended up empty.
+
+    Regression for a live bulk-run false rejection (imagemagick
+    CVE-2026-25966, gzip CVE-2026-41991, thrift CVE-2026-43870): the real
+    fix touched only files whose extensions ``_classify_path`` has no rule
+    for (``.xml``/``.html`` config and policy files, autotools ``.in``
+    templates, a ``.js`` backend file) -- none became a runtime path, so
+    ``manifest.runtime_paths`` was empty and the old
+    ``if manifest.runtime_paths and not generated_runtime:`` guard was
+    skipped entirely, even for a byte-identical backport, landing on the
+    final security_structure_divergent/REJECTED catch-all.
+    """
+    fixture = _fixture(
+        tmp_path,
+        base_files={"config/policy.xml": "<policy>\n  <rule>old</rule>\n</policy>\n"},
+        reference_files={
+            "config/policy.xml": "<policy>\n  <rule>secure</rule>\n  <extra/>\n</policy>\n"},
+        generated_files={
+            "config/policy.xml": "<policy>\n  <rule>secure</rule>\n</policy>\n"},
+    )
+    _repo, manifest, _snapshot = fixture
+    result = _validate(fixture)
+
+    assert manifest.runtime_paths == ()
+    assert manifest.uncertain_paths == ("config/policy.xml",)
+    assert result.status is SecurityStatus.PLAUSIBLE_NEEDS_REVIEW
+    assert result.reason_code == "unclassified_change_requires_review"
+
+
 def test_declared_path_map_is_not_overridden_by_anchor(tmp_path):
     """Trusted metadata outranks derived Git evidence."""
     repo, reference = _renamed_repo(tmp_path)
