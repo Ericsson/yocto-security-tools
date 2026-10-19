@@ -7,11 +7,17 @@ handling from the core instructions. Two build-specific cases:
 sstate-restored/skipped task left a file it should have generated missing, the
 recipe's cached state is stale — not a defect in your patch. Signatures: `cp:
 cannot stat '.config.orig'` (or any "No such file or directory" for a
-configure-generated file); or a log showing only `do_compile` ran while
-`do_configure` was skipped. Recover before concluding it is environmental:
-```bash
-bitbake -c cleansstate <recipe>
-```
+configure-generated file); `No targets specified and no makefile found` (the
+source tree has no Makefile because `do_configure` did not run or was
+skipped); or a log showing only `do_compile` ran while `do_configure` was
+skipped. Recover with **one** clean rebuild of the recipe — equivalent to
+`devtool build -c <recipe>`, which clears the recipe's stale build-output
+state before rebuilding (use your build tool's clean/`-c` option; it is
+allowed at most once per session, so use it only after a plain build has
+already failed with one of the signatures above, not as a routine first
+retry). If the clean rebuild fails with the same or a different genuine
+error, treat it as a real build failure and continue with the normal
+fix-amend-rebuild loop below.
 
 **Different recipe.** If the failing task belongs to a recipe other than the one
 being patched, **abort immediately** — it is pre-existing/environmental.

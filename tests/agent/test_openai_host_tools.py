@@ -103,8 +103,10 @@ class FakeBuildRunner:
         self.tail = tail
         self.calls = []
 
-    def run(self, recipe: str) -> BuildCommandResult:
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
         self.calls.append(recipe)
+        self.clean_calls = getattr(self, "clean_calls", [])
+        self.clean_calls.append(clean)
         return BuildCommandResult(
             returncode=self.returncode,
             duration=1.25,
@@ -129,13 +131,14 @@ def _runtime(repo: Path, agent: Path, allowed: set[str] | None = None,
     )
 
 
-def test_complete_schemas_are_closed_and_build_has_no_model_fields():
+def test_complete_schemas_are_closed_and_build_has_only_clean_field():
     schemas = {
         item["function"]["name"]: item["function"]["parameters"]
         for item in complete_openai_tool_schemas()
     }
     assert set(schemas) == set(COMPLETE_TOOL_CONTRACTS)
-    assert schemas["build_recipe"]["properties"] == {}
+    assert set(schemas["build_recipe"]["properties"]) == {"clean"}
+    assert schemas["build_recipe"]["properties"]["clean"]["type"] == "boolean"
     assert schemas["build_recipe"]["additionalProperties"] is False
     assert schemas["finish"]["properties"]["status"]["enum"] == [
         "done", "not_applicable", "needs_human"]
@@ -207,6 +210,77 @@ def test_build_exact_argv_cwd_environment_log_and_generation(host_repository):
     assert "prefix-" in log_text
     assert "model-secret" not in log_text
     assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
+
+def test_build_clean_uses_devtool_dash_c_and_is_limited_to_one_per_session(
+        host_repository):
+    """``build_recipe(clean=true)`` runs devtool's own ``-c`` flag exactly
+    once, to recover a recipe whose build-output state has gone stale (e.g.
+    a missing ``do_configure`` artifact) — and refuses a second clean build
+    in the same session so the model cannot use it as a routine retry."""
+    repo, agent = host_repository
+    runtime = _runtime(repo, agent, build_runner=None)
+    runtime._build_runner = ControlledBuildRunner(
+        repo, runtime.artifacts, runtime.deadline)
+    real_popen = subprocess.Popen
+    captured = []
+
+    def launch_safe_helper(command, **kwargs):
+        captured.append(command)
+        return real_popen(
+            [sys.executable, "-c", "print('clean build ok')"], **kwargs)
+
+    with patch(
+        "cve_agent.openai_host_tools.subprocess.Popen",
+        side_effect=launch_safe_helper,
+    ):
+        first = runtime.dispatch("build_recipe", {"clean": True})
+        second = runtime.dispatch("build_recipe", {"clean": True})
+
+    assert first.success
+    assert captured[0] == ["devtool", "build", "-c", "recipe"]
+    assert first.payload["clean"] is True
+
+    assert not second.success
+    assert second.error_kind == "policy"
+    assert "clean build" in (second.payload.get("error") or "")
+    # The rejected second call never reached the build runner.
+    assert len(captured) == 1
+
+
+def test_build_clean_false_or_absent_still_uses_plain_devtool_build(
+        host_repository):
+    """Omitting ``clean`` (or passing ``clean=false``) keeps the original,
+    unmodified ``devtool build <recipe>`` argv and does not consume the
+    one-per-session clean-build allowance."""
+    repo, agent = host_repository
+    runtime = _runtime(repo, agent, build_runner=None)
+    runtime._build_runner = ControlledBuildRunner(
+        repo, runtime.artifacts, runtime.deadline)
+    real_popen = subprocess.Popen
+    captured = []
+
+    def launch_safe_helper(command, **kwargs):
+        captured.append(command)
+        return real_popen(
+            [sys.executable, "-c", "print('plain build ok')"], **kwargs)
+
+    with patch(
+        "cve_agent.openai_host_tools.subprocess.Popen",
+        side_effect=launch_safe_helper,
+    ):
+        plain = runtime.dispatch("build_recipe", {})
+        explicit_false = runtime.dispatch("build_recipe", {"clean": False})
+        clean_after = runtime.dispatch("build_recipe", {"clean": True})
+
+    assert plain.success and plain.payload["clean"] is False
+    assert explicit_false.success and explicit_false.payload["clean"] is False
+    assert clean_after.success and clean_after.payload["clean"] is True
+    assert captured == [
+        ["devtool", "build", "recipe"],
+        ["devtool", "build", "recipe"],
+        ["devtool", "build", "-c", "recipe"],
+    ]
 
 
 def test_build_log_hardlink_is_refused_without_truncating_target(
@@ -660,11 +734,11 @@ def test_finish_tolerates_baseline_and_successful_build_outputs(host_repository)
     (repo / "PKG-INFO").write_text("baseline generated\n", encoding="utf-8")
 
     class GeneratingBuildRunner(FakeBuildRunner):
-        def run(self, recipe: str) -> BuildCommandResult:
+        def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
             for index in range(300):
                 (repo / f"go-cache-{index:03}.tmp").write_text(
                     "build output\n", encoding="utf-8")
-            return super().run(recipe)
+            return super().run(recipe, clean=clean)
 
     runtime = _runtime(repo, agent, build_runner=GeneratingBuildRunner(agent))
     assert runtime.dispatch("build_recipe", {}).success

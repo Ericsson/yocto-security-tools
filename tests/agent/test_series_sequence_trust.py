@@ -217,7 +217,7 @@ class _FakeBuildRunner:
     def __init__(self, agent: Path) -> None:
         self.agent = agent
 
-    def run(self, recipe: str):
+    def run(self, recipe: str, clean: bool = False):
         from cve_agent.openai_host_tools import BUILD_LOG_NAME, BuildCommandResult
 
         return BuildCommandResult(

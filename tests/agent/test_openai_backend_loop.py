@@ -67,7 +67,7 @@ class FakeBuildRunner:
         self.agent = agent
         self.calls = []
 
-    def run(self, recipe: str) -> BuildCommandResult:
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
         self.calls.append(recipe)
         return BuildCommandResult(
             returncode=0,

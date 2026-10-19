@@ -352,7 +352,7 @@ class CapabilityBuildRunner:
         self.calls = 0
         self.last_passed = False
 
-    def run(self, recipe: str) -> BuildCommandResult:
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
         started = time.monotonic()
         self.calls += 1
         result = _run_script(

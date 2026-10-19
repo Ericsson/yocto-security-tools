@@ -36,7 +36,8 @@ def test_build_phase_instructions_build():
     """Build phase embeds ONLY the build fragment (§3)."""
     result = _build_phase_instructions(EXIT_BUILD_ERROR)
     assert "Fix Build Errors" in result
-    assert "cleansstate" in result
+    assert "clean rebuild" in result
+    assert "No targets specified and no makefile found" in result
     assert "Resolve Conflicts" not in result
     assert "Fix Test Failures" not in result
 
