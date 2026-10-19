@@ -5,13 +5,27 @@
 Handles SRC_URI editing, patch references, bbappend management,
 and CVE_STATUS line operations in Yocto recipe files.
 """
+import fnmatch
 import re
+import shutil
 from pathlib import Path
 
 from .utils import logger, run_cmd_capture
 
 # A kirkstone CVE_CHECK_IGNORE assignment (any operator or override).
 _CVE_CHECK_IGNORE_RE = re.compile(r'^\s*CVE_CHECK_IGNORE\b')
+
+
+def _matches_recipe(path: Path, recipe: str) -> bool:
+    """Check a recipe/bbappend filename belongs exactly to ``recipe``.
+
+    Matches ``recipe``, ``recipe_<version>`` or ``recipe%`` stems, so
+    'busybox-utils' is not taken for 'busybox'.
+    """
+    stem = path.stem  # e.g. 'busybox_1.36.1' or 'busybox_%'
+    if stem == recipe:
+        return True
+    return stem.startswith(recipe + '_') or stem.startswith(recipe + '%')
 
 
 def _find_recipe_file(meta_layer: Path | None, recipe: str) -> Path | None:
@@ -24,17 +38,9 @@ def _find_recipe_file(meta_layer: Path | None, recipe: str) -> Path | None:
     if not meta_layer:
         return None
 
-    def _is_exact_match(path: Path) -> bool:
-        """Check filename matches recipe exactly (not a prefix of another recipe)."""
-        stem = path.stem  # e.g. 'busybox_1.36.1' or 'busybox_%'
-        # Must be recipe_version, recipe_%, or just recipe
-        if stem == recipe:
-            return True
-        return stem.startswith(recipe + '_') or stem.startswith(recipe + '%')
-
     for pattern in (f'**/{recipe}*.bbappend', f'**/{recipe}*.bb',
                     f'**/{recipe}*.inc'):
-        matches = [m for m in sorted(meta_layer.glob(pattern)) if _is_exact_match(m)]
+        matches = [m for m in sorted(meta_layer.glob(pattern)) if _matches_recipe(m, recipe)]
         if matches:
             return matches[0]
     return None
@@ -477,3 +483,193 @@ def remove_bbappend_leaks(meta_layer: Path | None, recipe: str,
         new_lines.append(line)
 
     recipe_file.write_text('\n'.join(new_lines) + '\n', encoding='utf-8')
+
+
+# ---------------------------------------------------------------------------
+# bbappend placement for layers devtool cannot lay out correctly
+# ---------------------------------------------------------------------------
+#
+# ``devtool finish`` / ``devtool update-recipe -a`` place a bbappend at
+# ``<layer>/<path of recipe in its own layer>/<recipe>_%.bbappend``. That is
+# wrong for layers such as meta-lts-collab, which keep bbappends under
+# per-upstream-layer subdirectories pulled in via BBFILES_DYNAMIC
+# (``meta-core/recipes-support/curl/curl_7.82.0.bbappend``). The helpers
+# below find where the bbappend belongs and move devtool's output there.
+
+def recipe_bbappends(meta_layer: Path | None, recipe: str) -> set[Path]:
+    """Return every bbappend for ``recipe`` in the meta-layer."""
+    if not meta_layer:
+        return set()
+    return {p for p in meta_layer.rglob(f'{recipe}*.bbappend') if _matches_recipe(p, recipe)}
+
+
+def _conf_words(text: str, var: str) -> list[str]:
+    """Collect the words of every ``VAR = / += / ?= / .= "..."`` in conf text."""
+    words: list[str] = []
+    pattern = rf'^\s*{re.escape(var)}\s*(?:\+|\.|\?)?=\s*"([^"]*)"'
+    for match in re.finditer(pattern, text, re.MULTILINE):
+        words += [w for w in match.group(1).split() if w != '\\']
+    return words
+
+
+def _layer_root(path: Path) -> Path | None:
+    """Return the closest parent directory holding ``conf/layer.conf``."""
+    for parent in path.parents:
+        if (parent / 'conf' / 'layer.conf').is_file():
+            return parent
+    return None
+
+
+def _dynamic_bbappend_dir(meta_layer: Path, recipe: str) -> Path | None:
+    """Work out the bbappend directory from the layer's BBFILES_DYNAMIC.
+
+    Matches the recipe's own layer collection (e.g. ``core``) against
+    ``BBFILES_DYNAMIC`` entries like
+    ``core:${LAYERDIR}/meta-core/*/*/*.bbappend`` and returns
+    ``<layer>/meta-core/<recipe's path in its own layer>``.
+
+    Returns:
+        The directory, or None when the layer has no matching
+        BBFILES_DYNAMIC entry or the recipe's location is unknown.
+    """
+    layer_conf = meta_layer / 'conf' / 'layer.conf'
+    if not layer_conf.is_file():
+        return None
+    dynamic = _conf_words(layer_conf.read_text(encoding='utf-8'), 'BBFILES_DYNAMIC')
+    if not dynamic:
+        return None
+
+    result = run_cmd_capture(['bitbake-getvar', 'FILE', '-r', recipe, '--value'])
+    lines = result.stdout.strip().splitlines() if result.returncode == 0 else []
+    if not lines:
+        return None
+    recipe_file = Path(lines[-1].strip())
+    origin = _layer_root(recipe_file)
+    if not origin:
+        return None
+    collections = _conf_words(
+        (origin / 'conf' / 'layer.conf').read_text(encoding='utf-8'), 'BBFILE_COLLECTIONS')
+    rel_dir = recipe_file.parent.relative_to(origin)
+
+    for entry in dynamic:
+        collection, sep, pattern = entry.partition(':')
+        if not sep or collection not in collections or not pattern.endswith('.bbappend'):
+            continue
+        pattern = pattern.replace('${LAYERDIR}', str(meta_layer))
+        try:
+            parts = Path(pattern).relative_to(meta_layer).parts
+        except ValueError:
+            continue
+        prefix: list[str] = []
+        for part in parts:
+            if any(c in part for c in '*?['):
+                break
+            prefix.append(part)
+        candidate = meta_layer.joinpath(*prefix) / rel_dir
+        if fnmatch.fnmatchcase(str(candidate / f'{recipe}_%.bbappend'), pattern):
+            return candidate
+    return None
+
+
+def resolve_bbappend_dir(meta_layer: Path | None, recipe: str,
+                         override: Path | None = None) -> Path | None:
+    """Return the directory the recipe's bbappend must live in.
+
+    In order: ``override`` (``--bbappend-dir``), the directory of an
+    existing bbappend for the recipe, then the layer's BBFILES_DYNAMIC
+    layout. Call before devtool writes anything to the layer.
+
+    Returns:
+        The directory, or None to keep devtool's own placement.
+    """
+    if not meta_layer:
+        return None
+    if override:
+        return override
+    existing = sorted(recipe_bbappends(meta_layer, recipe))
+    if existing:
+        return existing[0].parent
+    return _dynamic_bbappend_dir(meta_layer, recipe)
+
+
+def _files_subdir(bbappend: Path, recipe: str) -> str | None:
+    """Return the ``${THISDIR}/<subdir>`` from a bbappend's FILESEXTRAPATHS."""
+    match = re.search(r'FILESEXTRAPATHS\S*\s*:?=\s*"\$\{THISDIR\}/([^:"]+)',
+                      bbappend.read_text(encoding='utf-8'))
+    if not match:
+        return None
+    return match.group(1).replace('${PN}', recipe).replace('${BPN}', recipe)
+
+
+def _merge_bbappend(meta_layer: Path, stray: Path, target: Path, recipe: str) -> None:
+    """Move a devtool-written bbappend's patches and SRC_URI into ``target``."""
+    stray_files = stray.parent / (_files_subdir(stray, recipe) or recipe)
+
+    entries: list[str] = []
+    new_lines: list[str] = []
+    in_src_uri = False
+    for line in stray.read_text(encoding='utf-8').splitlines():
+        stripped = line.strip()
+        in_src_uri = in_src_uri or bool(re.match(r'^\s*SRC_URI\b', line))
+        if in_src_uri:
+            entries += re.findall(r'file://([^\s"\\]+)', line)
+            in_src_uri = stripped.endswith('\\')
+        elif stripped and not stripped.startswith('FILESEXTRAPATHS'):
+            new_lines.append(line)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    content = target.read_text(encoding='utf-8') if target.exists() else ''
+    subdir = _files_subdir(target, recipe) if content else None
+    if subdir is None:
+        subdir = 'files'
+        content = f'FILESEXTRAPATHS:prepend := "${{THISDIR}}/{subdir}:"\n\n' + content
+    # Entries go into the target's existing SRC_URI, or a new block if it has none.
+    to_append = entries
+    if entries and not re.search(r'^\s*SRC_URI\b', content, re.MULTILINE):
+        new_lines.insert(0, 'SRC_URI += "\\\n'
+                         + ''.join(f'    file://{e} \\\n' for e in entries) + '"')
+        to_append = []
+    if new_lines:
+        if content and not content.endswith('\n'):
+            content += '\n'
+        content += '\n'.join(new_lines) + '\n'
+    target.write_text(content, encoding='utf-8')
+    _append_src_uri_entries(target, to_append)
+
+    target_files = target.parent / subdir
+    for entry in entries:
+        name = entry.split(';')[0]
+        src = stray_files / name
+        if src.exists():
+            dest = target_files / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+
+    stray.unlink()
+    if stray_files.is_dir() and not any(p.is_file() for p in stray_files.rglob('*')):
+        shutil.rmtree(stray_files)
+    # Prune directories left empty, up to (not including) the layer root.
+    for parent in stray.parents:
+        if parent == meta_layer or not parent.is_dir() or any(parent.iterdir()):
+            break
+        parent.rmdir()
+    logger.info("Moved %s into %s", stray.name, target)
+
+
+def relocate_new_bbappends(meta_layer: Path | None, recipe: str,
+                           target_dir: Path | None, pre_existing: set[Path]) -> None:
+    """Fold bbappends devtool just created elsewhere into ``target_dir``.
+
+    Only bbappends absent from ``pre_existing`` and outside ``target_dir``
+    are touched, so layers where devtool's placement is already right are
+    left unchanged.
+    """
+    if not meta_layer or not target_dir:
+        return
+    for stray in sorted(recipe_bbappends(meta_layer, recipe) - pre_existing):
+        if stray.parent == target_dir:
+            continue
+        targets = sorted(p for p in target_dir.glob(f'{recipe}*.bbappend')
+                         if _matches_recipe(p, recipe))
+        target = targets[0] if targets else target_dir / stray.name
+        _merge_bbappend(meta_layer, stray, target, recipe)

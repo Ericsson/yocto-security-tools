@@ -131,6 +131,7 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
     skip_confirm: bool = False
     subproject: str | None = None
     bbappend: bool = False
+    bbappend_dir: str | None = None
     version: str | None = None
     sign_off: bool = False
     mainline_parent: int | None = None
@@ -156,6 +157,7 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             'skip_confirm': self.skip_confirm,
             'subproject': self.subproject,
             'bbappend': self.bbappend,
+            'bbappend_dir': self.bbappend_dir,
             'version': self.version,
             'sign_off': self.sign_off,
             'mainline_parent': self.mainline_parent,
@@ -183,6 +185,7 @@ class WorkflowState:  # pylint: disable=too-many-instance-attributes
             skip_confirm=data.get('skip_confirm', False),
             subproject=data.get('subproject'),
             bbappend=data.get('bbappend', False),
+            bbappend_dir=data.get('bbappend_dir'),
             version=data.get('version'),
             sign_off=data.get('sign_off', False),
             mainline_parent=data.get('mainline_parent'),

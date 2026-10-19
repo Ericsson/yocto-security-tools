@@ -7,10 +7,8 @@ even when a matching wildcard (``recipe_%.bbappend``) already existed,
 hijacking/narrowing a bbappend that was meant to apply to every recipe
 version.
 """
-from cve_corrector.workflow import (
-    _existing_wildcard_bbappends,
-    _rename_new_wildcard_bbappends,
-)
+from cve_corrector.recipe_ops import recipe_bbappends
+from cve_corrector.workflow import _rename_new_wildcard_bbappends
 
 
 def test_pre_existing_wildcard_bbappend_is_not_renamed(tmp_path):
@@ -26,7 +24,7 @@ def test_pre_existing_wildcard_bbappend_is_not_renamed(tmp_path):
         'SRC_URI += "file://CVE-2025-0001.patch"\n'
     )
 
-    pre_existing = _existing_wildcard_bbappends(tmp_path, "foo")
+    pre_existing = recipe_bbappends(tmp_path, "foo")
     assert wildcard in pre_existing
 
     # Simulate devtool merging new content into the same wildcard file
@@ -50,7 +48,7 @@ def test_newly_created_wildcard_bbappend_is_renamed(tmp_path):
     recipe_dir = tmp_path / "recipes-test" / "foo"
     recipe_dir.mkdir(parents=True)
 
-    pre_existing = _existing_wildcard_bbappends(tmp_path, "foo")
+    pre_existing = recipe_bbappends(tmp_path, "foo")
     assert pre_existing == set()
 
     # Simulate devtool creating a brand new wildcard bbappend.
@@ -79,5 +77,5 @@ def test_no_rename_without_version(tmp_path):
 
 def test_no_rename_without_meta_layer():
     """No error and no-op when meta_layer is None."""
-    assert _existing_wildcard_bbappends(None, "foo") == set()
+    assert recipe_bbappends(None, "foo") == set()
     _rename_new_wildcard_bbappends(None, "foo", "1.2.3", set())

@@ -128,6 +128,10 @@ def main():
                         help='Destination meta-layer for devtool finish')
     output_group.add_argument('--bbappend', action='store_true',
                         help='Create a bbappend instead of modifying the original recipe')
+    output_group.add_argument('--bbappend-dir', type=Path, metavar='DIR',
+                        help='Directory inside the meta-layer for the recipe bbappend '
+                             '(default: an existing bbappend\'s directory, then the '
+                             'layer\'s BBFILES_DYNAMIC layout, then devtool\'s choice)')
 
     # --- Build control ---
     build_group = parser.add_argument_group('build control')
@@ -284,6 +288,14 @@ def main():
                   file=sys.stderr)
             sys.exit(EXIT_METADATA_ERROR)
 
+    bbappend_dir: Path | None = None
+    if args.bbappend_dir:
+        bbappend_dir = args.bbappend_dir.resolve()
+        if not meta_layer or not bbappend_dir.is_relative_to(meta_layer.resolve()):
+            print(f"--bbappend-dir must be inside the meta-layer: {bbappend_dir}",
+                  file=sys.stderr)
+            sys.exit(EXIT_METADATA_ERROR)
+
     if args.mark_not_applicable:
         from .meta_layer import write_cve_status
         ok = write_cve_status(meta_layer, recipe_name, args.cve_id,
@@ -351,6 +363,7 @@ def main():
                 skip_build=args.skip_build, clean=args.clean,
                 skip_ptest=args.skip_ptest, edit_mode=args.edit,
                 manual_mode=args.manual, bbappend=args.bbappend,
+                bbappend_dir=bbappend_dir,
                 skip_cve_applicability=args.skip_cve_applicability,
                 skip_confirm=args.yes,
                 require_all_commits=require_all_commits,
