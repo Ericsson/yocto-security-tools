@@ -197,14 +197,31 @@ setup_cve_branch() {
 
 # Run cve_corrector and compare patches. Args: cve_id log_file extra_flags
 # Sets CVE_CORRECTOR_RESULT to exit_code:diff_changes
+# Resolve the --cve-info/--cve-id pair for a roster key. A
+# <cve-id>+<recipe> key (a second recipe patched for the same CVE) is not a
+# valid CVE ID for cve_agent and is not the key cve_corrector would look up,
+# so its entry is re-keyed under the real CVE ID in a per-key metadata file.
+# Sets CVE_RUN_ID and CVE_RUN_INFO.
+resolve_cve_run_args() {
+    local key="$1"
+    CVE_RUN_ID="${key%%+*}"
+    CVE_RUN_INFO="$CVE_METADATA"
+    if [[ "$CVE_RUN_ID" != "$key" ]]; then
+        CVE_RUN_INFO="${LOG_DIR}/${key}_cve-info.json"
+        python3 "${_COMMON_DIR}/test_utils.py" entry_metadata \
+            "$CVE_METADATA" "$key" "$CVE_RUN_INFO"
+    fi
+}
+
 run_cve_corrector() {
     local cve_id="$1" log_file="$2" extra_flags="$3"
     local exit_code=0
+    resolve_cve_run_args "$cve_id"
     cd "$_COMMON_DIR"
     # shellcheck disable=SC2086
     python3 -m cve_corrector \
-        --cve-info "$CVE_METADATA" \
-        --cve-id "$cve_id" \
+        --cve-info "$CVE_RUN_INFO" \
+        --cve-id "$CVE_RUN_ID" \
         $extra_flags \
         --mirror-dir "$MIRROR_DIR" \
         --meta-layer "${OE_DIR}/meta" \
@@ -228,7 +245,8 @@ run_cve_corrector() {
 }
 
 remove_cve_patch() {
-    python3 "${_COMMON_DIR}/test_utils.py" remove_cve "$OE_DIR" "$1" "$LOG_DIR" "${2:-}" "${META_OE_LAYERS:-}"
+    python3 "${_COMMON_DIR}/test_utils.py" remove_cve "$OE_DIR" "$1" "$LOG_DIR" "${2:-}" \
+        "${META_OE_LAYERS:-}" "${CVE_METADATA:-}"
 }
 
 compare_patches() {
@@ -252,11 +270,23 @@ compare_patches_detailed() {
         old_patches+=("$f")
     done < <(find "$log_dir" -maxdepth 1 -name "*${cve_id}_*.patch" ! -name "*_diff.patch" ! -name "*_agent_*" ! -name "generated_*" -print0 2>/dev/null)
 
-    # Generated patches in the OE tree
+    # Generated patches in the OE tree. A <cve-id>+<recipe> key searches by
+    # its real CVE ID; the other recipe's patch for that CVE was left in place
+    # by remove_cve_patch, so skip any patch identical to its copy in the
+    # removal commit -- an untouched original is never a generated result.
     local -a new_patches=()
-    local cve_lower="${cve_id,,}"
+    local cve_lower="${cve_id%%+*}"
+    cve_lower="${cve_lower,,}"
     cve_lower="${cve_lower#cve-}"
+    local removal_commit
+    removal_commit=$(git -C "$OE_DIR" log -1 --format=%H -F \
+        --grep="test: remove ${cve_id} for testing" 2>/dev/null || true)
     while IFS= read -r -d '' f; do
+        if [[ -n "$removal_commit" ]] && \
+                git -C "$OE_DIR" cat-file -e "${removal_commit}:${f#"$OE_DIR"/}" 2>/dev/null && \
+                git -C "$OE_DIR" diff --quiet "$removal_commit" -- "$f" 2>/dev/null; then
+            continue
+        fi
         new_patches+=("$f")
     done < <(find "${OE_DIR}/${meta_layer}" -iname "*${cve_lower}*.patch" -type f -print0 2>/dev/null)
 

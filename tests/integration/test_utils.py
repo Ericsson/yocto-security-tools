@@ -273,7 +273,29 @@ def _validate_src_uri(path):
               f"(started line {block_start})")
 
 
-def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
+def split_roster_key(key):
+    """Split a roster key into ``(cve_id, recipe)``.
+
+    discover_cves_from_layers keys the second and later recipes patched for
+    the same CVE as ``<cve-id>+<recipe>``; plain keys have no recipe.
+    """
+    cve_id, _, recipe = key.partition('+')
+    return cve_id, (recipe or None)
+
+
+def _recipe_pn(path):
+    """Return the PN part of a ``.bb``/``.bbappend``/``.inc`` file name."""
+    stem = os.path.basename(path).rsplit('.', 1)[0]
+    return stem.split('_', 1)[0]
+
+
+def _patch_tail(path):
+    """Return the last three components of *path* as a matching key."""
+    return tuple(os.path.abspath(path).split(os.sep)[-3:])
+
+
+def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None,
+                     recipe=None, only_patches=None):
     """Remove a CVE patch and its recipe references.
 
     Searches ``oe_dir`` (openembedded-core, patches live under ``meta/``)
@@ -284,7 +306,22 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
     unconditionally reported NOTFOUND even though the patch exists and the
     metadata is correct -- this was silently mis-skipping every
     meta-openembedded-sourced CVE in the discovered roster.
+
+    ``cve_id`` may be a ``<cve-id>+<recipe>`` roster key: the real CVE ID is
+    used for the search and the full key for the saved reference copies, so
+    the harness finds them under the key it iterates on. ``recipe`` limits
+    recipe edits to that PN (and ``.inc`` files beside its ``.bb``), and
+    ``only_patches`` limits removal to those exact patch paths, so the other
+    recipe patched for the same CVE is left alone.
     """
+    key = cve_id
+    cve_id, key_recipe = split_roster_key(key)
+    recipe = recipe or key_recipe
+    # Matched on the trailing <recipe-dir>/<patch-dir>/<file> components, not
+    # the absolute path, so a roster discovered in one checkout still scopes
+    # removal in another (e.g. a clone at the same revision).
+    only = ({_patch_tail(path) for path in only_patches}
+            if only_patches else None)
     cve_lower = cve_id.lower().replace('cve-', '')
     file_prefix = f"{prefix}_" if prefix else ""
 
@@ -306,15 +343,39 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
             finally:
                 os.chdir(cwd)
 
+    recipe_dirs = None
+    if recipe:
+        recipe_dirs = {
+            os.path.dirname(os.path.abspath(os.path.join(root_dir, rel)))
+            for root_dir, rel in _glob('*.bb') if _recipe_pn(rel) == recipe}
+
+    def _recipe_files(suffix):
+        """Yield recipe files for *suffix*, limited to ``recipe`` if given."""
+        for root_dir, rel in _glob(suffix):
+            if recipe_dirs is not None:
+                abs_dir = os.path.dirname(os.path.abspath(os.path.join(root_dir, rel)))
+                if suffix == '*.inc':
+                    if abs_dir not in recipe_dirs:
+                        continue
+                elif _recipe_pn(rel) != recipe:
+                    continue
+            yield root_dir, rel
+
     modified_recipes = set()
+
+    def _wanted(root_dir, rel):
+        return only is None or _patch_tail(os.path.join(root_dir, rel)) in only
 
     patch_files = []
     for root_dir, f in _glob('*.patch'):
-        if re.search(rf'[Cc][Vv][Ee]-?{re.escape(cve_lower)}', f, re.IGNORECASE):
+        if (re.search(rf'[Cc][Vv][Ee]-?{re.escape(cve_lower)}', f, re.IGNORECASE)
+                and _wanted(root_dir, f)):
             patch_files.append((root_dir, f))
 
     if not patch_files:
         for root_dir, f in _glob('*.patch'):
+            if not _wanted(root_dir, f):
+                continue
             try:
                 with open(os.path.join(root_dir, f)) as pf:
                     content = pf.read(4096)
@@ -332,11 +393,11 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
                 continue
             patch_filename = os.path.basename(patch_file)
             shutil.copy(patch_path, os.path.join(
-                log_dir, f"{file_prefix}{cve_id}_{patch_filename}"))
+                log_dir, f"{file_prefix}{key}_{patch_filename}"))
             print(f"PATCH:{patch_path}")
             os.remove(patch_path)
 
-            for recipe_root, path in _glob('*.bb'):
+            for recipe_root, path in _recipe_files('*.bb'):
                 removed_patches = remove_patches_from_position(
                     os.path.join(recipe_root, path), patch_filename)
                 if removed_patches:
@@ -350,7 +411,7 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
                             os.remove(extra_path)
                             print(f"REMOVED_SUBSEQUENT:{extra_path}")
                         all_removed_files.add(extra)
-            for recipe_root, path in _glob('*.inc'):
+            for recipe_root, path in _recipe_files('*.inc'):
                 removed_patches = remove_patches_from_position(
                     os.path.join(recipe_root, path), patch_filename)
                 if removed_patches:
@@ -364,7 +425,7 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
                             os.remove(extra_path)
                             print(f"REMOVED_SUBSEQUENT:{extra_path}")
                         all_removed_files.add(extra)
-            for recipe_root, path in _glob('*.bbappend'):
+            for recipe_root, path in _recipe_files('*.bbappend'):
                 removed_patches = remove_patches_from_position(
                     os.path.join(recipe_root, path), patch_filename)
                 if removed_patches:
@@ -381,7 +442,7 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
 
         if all_removed_files:
             for suffix in ('*.bb', '*.inc', '*.bbappend'):
-                for recipe_root, path in _glob(suffix):
+                for recipe_root, path in _recipe_files(suffix):
                     abs_path = os.path.abspath(os.path.join(recipe_root, path))
                     try:
                         with open(abs_path) as f:
@@ -403,7 +464,7 @@ def remove_cve_patch(oe_dir, cve_id, log_dir, prefix=None, extra_roots=None):
 
     modified_any = False
     for suffix in ('*.bb', '*.inc', '*.bbappend'):
-        for recipe_root, path in _glob(suffix):
+        for recipe_root, path in _recipe_files(suffix):
             abs_path = os.path.abspath(os.path.join(recipe_root, path))
             if remove_cve_from_file(abs_path, cve_id):
                 print(f"RECIPE:{abs_path}")
@@ -960,6 +1021,42 @@ MIRROR_MAP = {
 SKIP_RECIPES = {'linux-dummy', 'network_security_services', 'rust-llvm'}
 
 
+def roster_entry_scope(metadata_path, key):
+    """Return ``(recipe, patch_paths)`` scoping removal for a roster key.
+
+    Only ``<cve-id>+<recipe>`` keys are scoped: a plain key keeps the
+    historical behaviour of removing every patch for the CVE. The patch paths
+    come from the entry's ``discovered_from`` list when present.
+    """
+    import json
+    _cve_id, recipe = split_roster_key(key)
+    if not recipe:
+        return None, None
+    patches = None
+    if metadata_path:
+        try:
+            with open(metadata_path) as fh:
+                entry = json.load(fh).get(key) or {}
+        except (OSError, ValueError):
+            entry = {}
+        patches = entry.get('discovered_from') or None
+    return recipe, patches
+
+
+def write_entry_metadata(metadata_path, key, output_path):
+    """Write ``{cve_id: entry}`` for a ``<cve-id>+<recipe>`` roster key.
+
+    cve_corrector looks the entry up by ``--cve-id`` and cve_agent only
+    accepts a real CVE ID, so a per-key file re-keys the entry under its CVE.
+    """
+    import json
+    cve_id, _recipe = split_roster_key(key)
+    with open(metadata_path) as fh:
+        entry = json.load(fh)[key]
+    with open(output_path, 'w') as fh:
+        json.dump({cve_id: entry}, fh, indent=2)
+
+
 def list_cves(metadata_path, min_year):
     """List CVEs with hashes from metadata, filtered by year."""
     import json
@@ -1015,8 +1112,13 @@ if __name__ == '__main__':
     if cmd == 'remove_cve':
         prefix = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None
         extra_roots = sys.argv[6].split() if len(sys.argv) > 6 and sys.argv[6] else None
+        metadata = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else None
+        recipe, only_patches = roster_entry_scope(metadata, sys.argv[3])
         remove_cve_patch(sys.argv[2], sys.argv[3], sys.argv[4], prefix=prefix,
-                          extra_roots=extra_roots)
+                          extra_roots=extra_roots, recipe=recipe,
+                          only_patches=only_patches)
+    elif cmd == 'entry_metadata':
+        write_entry_metadata(sys.argv[2], sys.argv[3], sys.argv[4])
     elif cmd == 'compare':
         compare_patches(sys.argv[2], sys.argv[3])
     elif cmd == 'compare_detailed':
