@@ -21,6 +21,7 @@ from .openai_client import (
     OpenAIClientEvent,
     OpenAIConnectionError,
     OpenAIDeadlineExceededError,
+    OpenAIEmptyResponseError,
     OpenAILocalRequestError,
     OpenAIMalformedJSONError,
     OpenAINonRetryableHTTPError,
@@ -53,6 +54,17 @@ MAX_CONSECUTIVE_NONPROGRESS_LIMIT = 10
 # saturation; any other non-progress (a stale repeat, a failed tool call)
 # still counts against max_consecutive_nonprogress immediately, unchanged.
 DEFAULT_MAX_SATURATION_GRACE_TURNS = 3
+# A reasoning model sometimes ends a turn with only its reasoning field: no
+# content and no tool call (observed with qwen3.8 mid-conflict, after it had
+# already analysed the conflict correctly). The envelope is otherwise valid,
+# so the loop nudges and re-requests a bounded number of times per session
+# instead of discarding the whole session as a malformed provider response.
+MAX_EMPTY_RESPONSE_RETRIES = 2
+EMPTY_RESPONSE_CORRECTION = (
+    "Your previous reply contained no content and no tool call. Continue "
+    "from your analysis: call the next concrete typed tool, or call `finish` "
+    "with the appropriate status."
+)
 # Read-only evidence is re-sent verbatim on every later turn, so a long
 # inspection phase multiplies prefill cost and provider latency without adding
 # information. Only the most recent read-only results stay expanded.
@@ -514,6 +526,7 @@ class OpenAIAgentLoop:
         self._consecutive_nonprogress = 0
         self._saturation_grace_used = 0
         self._corrective_message_sent = False
+        self._empty_responses = 0
         self._state_message_index: int | None = None
         self._mutation_calls = self._shared.mutation_calls
         self._build_calls = self._shared.build_calls
@@ -654,6 +667,10 @@ class OpenAIAgentLoop:
             provider_started = self.deadline.clock()
             try:
                 response = self.client.complete(self.messages, self.tool_schemas)
+            except OpenAIEmptyResponseError:
+                if not self._handle_empty_response():
+                    raise
+                continue
             finally:
                 self.transcript.write(
                     "provider_wait_completed",
@@ -1004,6 +1021,27 @@ class OpenAIAgentLoop:
         self.messages.append({"role": "user", "content": correction})
         self.transcript.write("corrective_message", reason="text_only_stop")
         return None
+
+    def _handle_empty_response(self) -> bool:
+        """Nudge after a reply with neither content nor tool calls.
+
+        Returns False once the per-session budget is spent, so the caller
+        re-raises and the session keeps its malformed-response outcome. The
+        correction is not duplicated when the previous request already ended
+        with it, keeping the replayed conversation free of repeated nudges.
+        """
+        if self._empty_responses >= MAX_EMPTY_RESPONSE_RETRIES:
+            return False
+        self._empty_responses += 1
+        last = self.messages[-1]
+        if not (last.get("role") == "user"
+                and last.get("content") == EMPTY_RESPONSE_CORRECTION):
+            self.messages.append(
+                {"role": "user", "content": EMPTY_RESPONSE_CORRECTION})
+        self.transcript.write(
+            "corrective_message", reason="empty_response",
+            count=self._empty_responses, limit=MAX_EMPTY_RESPONSE_RETRIES)
+        return True
 
     def _reject_unsafe_terminal_batch(self, response: AssistantResponse) -> None:
         for call in response.tool_calls:
