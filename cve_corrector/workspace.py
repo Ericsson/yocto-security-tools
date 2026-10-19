@@ -24,8 +24,15 @@ from .ptest import enable_ptest
 from .state import DevtoolError, GitError, MetadataError, PrepBaseMismatchError
 from .utils import logger, run_cmd, run_cmd_capture
 
-# Branch names to check when determining the devtool workspace base ref
-_DEVTOOL_BASE_BRANCHES = ('main', 'master', 'devtool-base')
+# Refs to check, in order, when determining the devtool workspace base ref.
+# ``devtool-base`` comes first because it is what devtool itself diffs against
+# (``git rev-list devtool-base..HEAD``): setup_git_repo tags it at the unpacked
+# source for every recipe. For a tarball recipe it is the same commit as the
+# ``git init`` branch, but for a git SRC_URI recipe bitbake's unpack clone
+# leaves a local ``master``/``main`` that is *upstream's* default branch. On a
+# recipe that tracks a stable branch, ``master..devtool`` then lists every
+# stable-only upstream commit as a "recipe patch" (229 for libssh 0.10.6).
+_DEVTOOL_BASE_BRANCHES = ('devtool-base', 'main', 'master')
 
 # Machine-readable prefix for branch-preparation failures, scraped by cve_agent
 # the same way TRANSFER_/HANDOFF_ codes are.
