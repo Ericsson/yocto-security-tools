@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer expects them: an existing bbappend for the recipe, the layer's
   `BBFILES_DYNAMIC` layout (e.g. meta-lts-collab `meta-core/`), or
   `--bbappend-dir`.
+- **cve-metadata-extractor**: `--check-lts-collab` also searches
+  meta-lts-collab during `--check-oe`.
 
 ## [1.2] - 2026-09-21
 

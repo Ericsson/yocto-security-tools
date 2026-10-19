@@ -7,6 +7,7 @@
   "nvd_url": "https://github.com/fkie-cad/nvd-json-data-feeds.git",
   "nvd_branch": "main",
   "oe_branches": ["scarthgap"],
+  "lts_collab_url": "https://github.com/garmin/meta-lts-collab",
   "osv_api": "https://api.osv.dev",
   "ubuntu_api": "https://ubuntu.com",
   "uct_url": "https://git.launchpad.net/ubuntu-cve-tracker",
