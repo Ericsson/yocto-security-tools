@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CVE_CHECK_STATUSMAP`), the existing-status check reads `CVE_CHECK_IGNORE`
   and not-applicable results are written as `CVE_CHECK_IGNORE += "<id>"` with
   a reason comment. Newer releases are unchanged.
+- **cve-corrector**: bbappends written by `devtool` are moved to where the
+  layer expects them: an existing bbappend for the recipe, the layer's
+  `BBFILES_DYNAMIC` layout (e.g. meta-lts-collab `meta-core/`), or
+  `--bbappend-dir`.
 
 ## [1.2] - 2026-09-21
 

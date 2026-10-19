@@ -33,7 +33,10 @@ from .meta_layer import create_layer_commit, write_cve_status
 from .patch_ops import update_patches_with_metadata
 from .ptest import check_ptest_in_recipe, compare_ptest_results, run_ptest
 from .recipe_ops import (
+    recipe_bbappends,
+    relocate_new_bbappends,
     remove_bbappend_leaks,
+    resolve_bbappend_dir,
     restore_bbappend_extras,
     save_bbappend_extras,
     snapshot_src_uri,
@@ -138,18 +141,6 @@ def filter_by_skip_sources(cve_info: dict, skip_sources: list[str]) -> dict:
     new_info['hashes'] = [h for h in (cve_info.get('hashes', []) or [])
                           if h not in dropped_hashes]
     return new_info
-
-
-def _existing_wildcard_bbappends(meta_layer: Path | None, recipe: str) -> set[Path]:
-    """Return the ``{recipe}_%.bbappend`` files already present in the layer.
-
-    Snapshot this before invoking ``devtool update-recipe -w`` so newly
-    created wildcard bbappends can be distinguished from ones that already
-    existed (e.g. from a previous CVE fix on this recipe).
-    """
-    if not meta_layer:
-        return set()
-    return set(meta_layer.rglob(f'{recipe}_%.bbappend'))
 
 
 def _rename_new_wildcard_bbappends(meta_layer: Path | None, recipe: str,
@@ -414,21 +405,23 @@ def finish_cve_workflow(state: WorkflowState) -> None:
         _ensure_devtool_branch(state.workspace_path)
         saved_extras = save_bbappend_extras(state.meta_layer, state.recipe)
         pre_finish_entries = snapshot_src_uri(state.meta_layer, state.recipe)
+        # Where the bbappend must end up (existing bbappend, BBFILES_DYNAMIC
+        # layout such as meta-lts-collab, or --bbappend-dir), decided before
+        # devtool writes its own copy at the path it computes.
+        bbappend_dir = resolve_bbappend_dir(
+            state.meta_layer, state.recipe,
+            Path(state.bbappend_dir) if state.bbappend_dir else None)
+        pre_finish_bbappends = recipe_bbappends(state.meta_layer, state.recipe)
         if state.bbappend:
             logger.info("Creating bbappend for %s in %s", state.recipe, state.meta_layer)
-            # Snapshot pre-existing wildcard bbappends so we never rename one
-            # that already existed (e.g. from a previous CVE fix) — devtool
-            # merges new content into it in place when -w/--wildcard-version
-            # finds a matching file already on disk, and renaming it here
-            # would hijack a file meant to apply to every recipe version.
-            pre_existing_wildcards = _existing_wildcard_bbappends(
-                state.meta_layer, state.recipe)
             if run_cmd(['devtool', 'update-recipe', '-a', str(state.meta_layer),
                         '-w', state.recipe]) != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
+            # Only rename wildcard bbappends devtool just created; a pre-existing
+            # one (e.g. an earlier CVE fix) is meant for every recipe version.
             _rename_new_wildcard_bbappends(
-                state.meta_layer, state.recipe, state.version, pre_existing_wildcards)
+                state.meta_layer, state.recipe, state.version, pre_finish_bbappends)
             if run_cmd(['devtool', 'reset', state.recipe]) != 0:
                 logger.warning("devtool reset failed, continuing anyway")
         else:
@@ -449,6 +442,8 @@ def finish_cve_workflow(state: WorkflowState) -> None:
             if ret != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
+        relocate_new_bbappends(state.meta_layer, state.recipe, bbappend_dir,
+                               pre_finish_bbappends)
         restore_bbappend_extras(state.meta_layer, state.recipe, saved_extras)
         remove_bbappend_leaks(state.meta_layer, state.recipe, pre_finish_entries)
 
@@ -597,6 +592,7 @@ class WorkflowConfig:
     edit_mode: bool
     manual_mode: bool = False
     bbappend: bool = False
+    bbappend_dir: Path | None = None
     skip_cve_applicability: bool = False
     skip_confirm: bool = False
     require_all_commits: bool = False
@@ -904,6 +900,7 @@ def initialize_cve_workflow(
             skip_build=config.skip_build, skip_ptest=config.skip_ptest,
             ptest_before=ptest_before, series_state=series_state,
             subproject=subproject, bbappend=config.bbappend,
+            bbappend_dir=str(config.bbappend_dir) if config.bbappend_dir else None,
             version=version, sign_off=config.sign_off,
             mainline_parent=config.mainline_parent,
             known_generated_paths=list(prepatch_generated_paths))
