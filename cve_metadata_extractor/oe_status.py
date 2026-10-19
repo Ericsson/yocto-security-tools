@@ -33,6 +33,8 @@ _OE_REPO_DEFAULTS = {
     'oe_core_contrib_url': "https://git.openembedded.org/openembedded-core-contrib",
     'meta_openembedded_url': "https://git.openembedded.org/meta-openembedded",
     'meta_openembedded_contrib_url': "https://git.openembedded.org/meta-openembedded-contrib",
+    # Community layer of security backports for EoL releases (e.g. kirkstone).
+    'lts_collab_url': "https://github.com/garmin/meta-lts-collab",
 }
 
 
@@ -186,8 +188,11 @@ def _save_oe_cache():
             json.dump(_OE_STATUS_CACHE, f, indent=1)
 
 
-def do_check_status(token, repo_dir, cve, branch):
+def do_check_status(token, repo_dir, cve, branch, lts_collab=False):
     '''Check if a CVE is in a known branch or in the mailing list.
+
+    When ``lts_collab`` is set, the same branch of meta-lts-collab is also
+    searched (after the OE repositories), for releases past end of life.
 
     Results are cached for 12 hours per CVE+branch combination.
     '''
@@ -199,6 +204,8 @@ def do_check_status(token, repo_dir, cve, branch):
 
     cache_scope = 'with-token' if token else 'without-token'
     cache_key = f"{cve}:{branch}:{cache_scope}"
+    if lts_collab:
+        cache_key += ":lts-collab"
     cached = _OE_STATUS_CACHE.get(cache_key)
     if cached is not None:
         age = _time.time() - cached.get('_ts', 0)
@@ -206,7 +213,7 @@ def do_check_status(token, repo_dir, cve, branch):
             return cached['status']
 
     # Not cached or expired — do the actual check
-    status = _do_check_status_uncached(token, repo_dir, cve, branch)
+    status = _do_check_status_uncached(token, repo_dir, cve, branch, lts_collab)
 
     # Cache the result
     _OE_STATUS_CACHE[cache_key] = {'status': status, '_ts': _time.time()}
@@ -214,7 +221,7 @@ def do_check_status(token, repo_dir, cve, branch):
     return status
 
 
-def _do_check_status_uncached(token, repo_dir, cve, branch):
+def _do_check_status_uncached(token, repo_dir, cve, branch, lts_collab=False):
     '''Actual upstream status check (uncached).'''
     branches = [
         (_get_repo_url('oe_core_url'), branch, None),
@@ -224,6 +231,8 @@ def _do_check_status_uncached(token, repo_dir, cve, branch):
         (_get_repo_url('meta_openembedded_url'), f"{branch}-next", "in_next"),
         (_get_repo_url('meta_openembedded_contrib_url'), f"stable/{branch}-next", "in_next"),
     ]
+    if lts_collab:
+        branches.append((_get_repo_url('lts_collab_url'), branch, "meta-lts-collab"))
 
     for repo_url, br, status_hint in branches:
         logging.debug("Checking %s: %s", repo_url, br)
@@ -249,6 +258,8 @@ def main():
     parser.add_argument("--cve", type=str, help="CVE to check", required=True)
     parser.add_argument("--branch", type=str, help="Branch to filter",
                         default="scarthgap")
+    parser.add_argument("--lts-collab", action="store_true",
+                        help="Also search meta-lts-collab")
     parser.add_argument("--token", type=str,
                         help="Token to access openembedded.org API",
                         default=None)
@@ -271,7 +282,8 @@ def main():
 
     if not os.path.isdir(args.repo_dir):
         os.makedirs(args.repo_dir)
-    status = do_check_status(token, args.repo_dir, args.cve, args.branch)
+    status = do_check_status(token, args.repo_dir, args.cve, args.branch,
+                             lts_collab=args.lts_collab)
     print(status)
     return 0
 

@@ -90,7 +90,7 @@ def process_cve(cve, idx, total, args, active_sources, stats, oe_token):
             try:
                 status = do_check_status(
                     oe_token, getattr(args, 'repo_dir', ''), cve_id,
-                    branch)
+                    branch, lts_collab=getattr(args, 'check_lts_collab', False))
                 result['upstream_status'][branch] = status
                 print(f"  {branch}: {status}")
             except Exception as e:  # pylint: disable=broad-except

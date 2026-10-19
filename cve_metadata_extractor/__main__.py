@@ -97,6 +97,9 @@ def parse_arguments(cfg):
     oe_group.add_argument('--oe-branch', action='append',
                        default=list(cfg['oe_branches']),
                        help='OE branch to check (default: %(default)s)')
+    oe_group.add_argument('--check-lts-collab', action='store_true',
+                       help='With --check-oe, also search the same branch of '
+                            'meta-lts-collab (e.g. --oe-branch kirkstone)')
     oe_group.add_argument('--oe-token', help='OpenEmbedded API token (or set OPENEMBEDDED_TOKEN)')
     oe_group.add_argument('--repo-dir', default=cfg['repo_dir'],
                        help='Git repositories directory (default: %(default)s)')
