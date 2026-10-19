@@ -529,17 +529,27 @@ def validate_semantic_result(
                 reason_code="preexisting_fix_proven",
                 reason="trusted baseline anchors prove the runtime fix was already present",
                 **common)
-        if generated_unclassified:
+        if not generated_unclassified:
             return SemanticValidation(
-                status=SecurityStatus.PLAUSIBLE_NEEDS_REVIEW,
-                reason_code="unclassified_change_requires_review",
-                reason=("the result changes reference paths whose security role "
-                        "could not be classified"),
+                status=SecurityStatus.REJECTED,
+                reason_code="runtime_change_missing",
+                reason="reference changes runtime code but the result changes no mapped runtime path",
                 **common)
+    # Reached whenever the reference change touched at least one path this
+    # classifier could not place in any known category (e.g. a non-source
+    # extension such as .in, .js, or a config/policy file no explicit
+    # metadata or extension rule recognizes) and the generated result
+    # changed that same path. This is deliberately not gated behind
+    # ``manifest.runtime_paths`` being non-empty: a reference fix whose
+    # every changed path is unclassified (so ``runtime_paths`` itself ends
+    # up empty) must still reach human review instead of falling through
+    # unconditionally to the final DIVERGENT/REJECTED catch-all below.
+    if generated_unclassified:
         return SemanticValidation(
-            status=SecurityStatus.REJECTED,
-            reason_code="runtime_change_missing",
-            reason="reference changes runtime code but the result changes no mapped runtime path",
+            status=SecurityStatus.PLAUSIBLE_NEEDS_REVIEW,
+            reason_code="unclassified_change_requires_review",
+            reason=("the result changes reference paths whose security role "
+                    "could not be classified"),
             **common)
     if missing_tests:
         return SemanticValidation(
