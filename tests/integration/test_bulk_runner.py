@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 _BULK_RUNNER = Path(__file__).resolve().parent / "test_cve_corrector.sh"
+_CAMPAIGN_WRAPPER = Path(__file__).resolve().parent / "run_qwen_campaign.sh"
 
 
 def _runner_environment(tmp_path: Path) -> dict[str, str]:
@@ -197,3 +198,48 @@ def test_bulk_runner_replaces_agent_reference_copy_with_actual_candidate(tmp_pat
     assert not reference.exists()
     candidate = log_dir / "full_agent_CVE-2024-39689_candidate.patch"
     assert candidate.read_text(encoding="utf-8") == "model candidate\n"
+
+
+def _run_campaign_wrapper(tmp_path: Path, overrides: dict[str, str], *args: str) -> dict:
+    """Run the wrapper beside a stub runner that reports what it received."""
+    stub_dir = tmp_path / "campaign"
+    stub_dir.mkdir()
+    wrapper = stub_dir / _CAMPAIGN_WRAPPER.name
+    wrapper.write_bytes(_CAMPAIGN_WRAPPER.read_bytes())
+    wrapper.chmod(0o755)
+    stub = stub_dir / _BULK_RUNNER.name
+    stub.write_text(
+        "#!/bin/bash\n"
+        'printf \'{"backend":"%s","flags":"%s","timeout":"%s","args":"%s"}\' '
+        '"$AGENT_BACKEND" "$AGENT_EXTRA_FLAGS" "$TEST_TIMEOUT" "$*"\n',
+        encoding="utf-8")
+    stub.chmod(0o755)
+    environment = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), **overrides}
+    result = subprocess.run(
+        [str(wrapper), *args], env=environment, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    return json.loads(result.stdout)
+
+
+def test_campaign_wrapper_supplies_the_qwen_settings_and_forwards_arguments(tmp_path):
+    seen = _run_campaign_wrapper(tmp_path, {}, "--full-only", "--resume", "dir")
+    assert seen == {
+        "backend": "openai-qwen3.8-plain-32k-medium",
+        "flags": "--session-timeout 1800",
+        "timeout": "7200",
+        "args": "--full-only --resume dir",
+    }
+
+
+def test_campaign_wrapper_values_can_be_overridden_or_opted_out(tmp_path):
+    seen = _run_campaign_wrapper(
+        tmp_path,
+        {"AGENT_BACKEND": "kiro", "AGENT_EXTRA_FLAGS": "", "TEST_TIMEOUT": "3600"},
+    )
+    assert (seen["backend"], seen["flags"], seen["timeout"]) == ("kiro", "", "3600")
+
+
+def test_campaign_wrapper_run_timeout_exceeds_its_session_timeout(tmp_path):
+    seen = _run_campaign_wrapper(tmp_path, {})
+    flags = seen["flags"].split()
+    assert int(seen["timeout"]) > int(flags[flags.index("--session-timeout") + 1])
