@@ -18,7 +18,7 @@ fi
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="${SCRIPT_DIR}/test-results/bulk_${TIMESTAMP}"
 RESUME_DIR=""
-TEST_TIMEOUT=3600  # 60 minutes per CVE
+TEST_TIMEOUT="${TEST_TIMEOUT:-3600}"  # seconds per CVE agent run (default: 60 minutes)
 MIN_YEAR="${MIN_YEAR:-2024}"  # Skip CVEs older than this year
 SKIP_MIRRORS=false
 FULL_ONLY=false
@@ -30,6 +30,11 @@ RESULTS_HEADER="cve_id,recipe,status,exit_code,diff_changes,diff_patches,diff_fi
 EVALUATION_RUN_MODE="resume-compatible-legacy"
 AGENT_BACKEND="${AGENT_BACKEND:-kiro}"
 AGENT_MODEL="${AGENT_MODEL:-}"
+# Extra cve_agent flags for every agent run (e.g. "--session-timeout 1800"),
+# split on whitespace. The agent's own per-attempt default (600 s) is too short
+# for a slow reasoning model; raise TEST_TIMEOUT alongside it, since this
+# harness kills the whole agent run after TEST_TIMEOUT seconds.
+AGENT_EXTRA_FLAGS="${AGENT_EXTRA_FLAGS:-}"
 
 # shellcheck source=test_common.sh
 source "${SCRIPT_DIR}/test_common.sh"
@@ -39,6 +44,11 @@ build_agent_flags() {
     local -n output="$output_name"
     output=(--backend "$AGENT_BACKEND")
     [[ -n "$AGENT_MODEL" ]] && output+=(--model "$AGENT_MODEL")
+    if [[ -n "$AGENT_EXTRA_FLAGS" ]]; then
+        local -a agent_extra_array=()
+        read -ra agent_extra_array <<< "$AGENT_EXTRA_FLAGS"
+        output+=("${agent_extra_array[@]}")
+    fi
     if [[ -n "$extra_flags" ]]; then
         local -a extra_flags_array=()
         read -ra extra_flags_array <<< "$extra_flags"

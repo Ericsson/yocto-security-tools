@@ -36,12 +36,15 @@ def _agent_flags(
     backend: str | None = None,
     model: str | None = None,
     extra_flags: str = "",
+    agent_extra_flags: str | None = None,
 ) -> list[str]:
     environment = _runner_environment(tmp_path)
     if backend is not None:
         environment["AGENT_BACKEND"] = backend
     if model is not None:
         environment["AGENT_MODEL"] = model
+    if agent_extra_flags is not None:
+        environment["AGENT_EXTRA_FLAGS"] = agent_extra_flags
     script = (
         f'. "{_BULK_RUNNER}"; '
         'flags=(); build_agent_flags flags "$1"; '
@@ -80,6 +83,40 @@ def test_bulk_runner_forwards_model_and_corrector_flags(tmp_path):
         "--skip-build",
         "--skip-ptest",
     ]
+
+
+def test_bulk_runner_forwards_agent_extra_flags_before_corrector_flags(tmp_path):
+    """AGENT_EXTRA_FLAGS reaches cve_agent, e.g. a longer per-attempt timeout."""
+    assert _agent_flags(
+        tmp_path,
+        backend="openai-local",
+        extra_flags="--skip-build",
+        agent_extra_flags="--session-timeout 1800 --max-retries 4",
+    ) == [
+        "--backend",
+        "openai-local",
+        "--session-timeout",
+        "1800",
+        "--max-retries",
+        "4",
+        "--skip-build",
+    ]
+
+
+def test_bulk_runner_ignores_blank_agent_extra_flags(tmp_path):
+    assert _agent_flags(tmp_path, agent_extra_flags="  ") == ["--backend", "kiro"]
+
+
+@pytest.mark.parametrize(("override", "expected"), [(None, "3600"), ("7200", "7200")])
+def test_bulk_runner_test_timeout_is_overridable(tmp_path, override, expected):
+    environment = _runner_environment(tmp_path)
+    if override is not None:
+        environment["TEST_TIMEOUT"] = override
+    result = subprocess.run(
+        ["bash", "-c", f'. "{_BULK_RUNNER}"; printf "%s" "$TEST_TIMEOUT"'],
+        env=environment, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert result.stdout.decode() == expected
 
 
 def test_bulk_runner_classifies_durable_security_review_without_agent_success(
