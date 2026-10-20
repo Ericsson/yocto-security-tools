@@ -25,6 +25,8 @@ from cve_agent.openai_deadline import SessionDeadline
 from cve_agent.openai_loop import (
     EMPTY_RESPONSE_CORRECTION,
     MAX_EMPTY_RESPONSE_RETRIES,
+    MAX_TRUNCATED_RESPONSE_RETRIES,
+    TRUNCATED_RESPONSE_CORRECTIONS,
     AgentLoopLimits,
     JSONLTranscript,
     OpenAIAgentLoop,
@@ -425,6 +427,75 @@ def test_empty_responses_beyond_budget_keep_malformed_classification(tmp_path):
                for message in final_request) == 1
     assert sum(event["event"] == "corrective_message"
                for event in events) == MAX_EMPTY_RESPONSE_RETRIES
+
+
+def _truncated_response_error() -> OpenAIResponseTruncatedError:
+    return OpenAIResponseTruncatedError(
+        "assistant message was truncated before any content or tool call")
+
+
+def _truncation_nudges(events):
+    return [event for event in events
+            if event["event"] == "corrective_message"
+            and event["reason"] == "truncated_response"]
+
+
+def test_truncated_response_is_nudged_and_session_recovers(tmp_path):
+    """A reply that spent its output budget reasoning must not end the session.
+
+    Observed with qwen3.8: the model exhausted max_output_tokens before any
+    tool call and the whole session, including earlier progress, was
+    discarded as PROVIDER_RESPONSE_TRUNCATED.
+    """
+    actions = [
+        _response(_call("read", "read_file", '{"path":"a.c"}')),
+        _truncated_response_error(),
+        _response(_call(
+            "finish", "finish", '{"status":"needs_human","reason":"x"}')),
+    ]
+    result, client, runtime, _, _, events = _run(tmp_path, actions)
+    assert result.resolved
+    assert [name for name, _ in runtime.calls] == ["read_file", "finish"]
+    # The retry differs from the failed request only by the nudge.
+    assert client.requests[2][0][-1] == {
+        "role": "user", "content": TRUNCATED_RESPONSE_CORRECTIONS[0]}
+    nudges = _truncation_nudges(events)
+    assert [event["count"] for event in nudges] == [1]
+    assert not any(event["event"] == "client_error" for event in events)
+
+
+def test_repeated_truncation_escalates_the_nudge_wording(tmp_path):
+    """At temperature 0 an identical retry would truncate identically."""
+    actions = [
+        _truncated_response_error(),
+        _truncated_response_error(),
+        _response(_call(
+            "finish", "finish", '{"status":"needs_human","reason":"x"}')),
+    ]
+    result, client, _, _, _, events = _run(tmp_path, actions)
+    assert result.resolved
+    final_request = client.requests[-1][0]
+    assert final_request[-2:] == [
+        {"role": "user", "content": TRUNCATED_RESPONSE_CORRECTIONS[0]},
+        {"role": "user", "content": TRUNCATED_RESPONSE_CORRECTIONS[1]},
+    ]
+    assert TRUNCATED_RESPONSE_CORRECTIONS[0] != TRUNCATED_RESPONSE_CORRECTIONS[1]
+    assert len(_truncation_nudges(events)) == 2
+
+
+def test_truncated_responses_beyond_budget_keep_truncated_classification(
+        tmp_path):
+    actions = [_truncated_response_error()
+               for _ in range(MAX_TRUNCATED_RESPONSE_RETRIES + 1)]
+    result, client, _, _, _, events = _run(tmp_path, actions)
+    assert not result.resolved
+    assert len(client.requests) == MAX_TRUNCATED_RESPONSE_RETRIES + 1
+    assert result.outcome is not None
+    assert result.outcome.failure_class is FailureClass.PROVIDER_PROTOCOL
+    assert result.outcome.failure_code == "PROVIDER_RESPONSE_TRUNCATED"
+    assert "output budget" in result.failure_reason
+    assert len(_truncation_nudges(events)) == MAX_TRUNCATED_RESPONSE_RETRIES
+    assert any(event["event"] == "client_error" for event in events)
 
 
 def test_two_text_stops_end_unresolved(tmp_path):
@@ -831,7 +902,10 @@ def test_all_host_terminal_statuses_map_to_resolved(tmp_path, status_value):
 )
 def test_expected_client_errors_map_to_safe_unresolved_result(
         tmp_path, error, guidance):
-    result, _, _, _, _, events = _run(tmp_path, [error], secret="super-secret")
+    # Truncation is retried, so repeat the error past that budget; every other
+    # error ends the session on the first request and leaves the rest unused.
+    actions = [error] * (MAX_TRUNCATED_RESPONSE_RETRIES + 1)
+    result, _, _, _, _, events = _run(tmp_path, actions, secret="super-secret")
     assert not result.resolved
     assert guidance in result.failure_reason
     assert str(error) not in result.failure_reason

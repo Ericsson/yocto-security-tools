@@ -65,6 +65,20 @@ EMPTY_RESPONSE_CORRECTION = (
     "from your analysis: call the next concrete typed tool, or call `finish` "
     "with the appropriate status."
 )
+# A reply that spends its whole output budget on reasoning is truncated before
+# any tool call. Each retry costs a full budget of generation, so the allowance
+# is small, and the wording differs per retry: with a deterministic profile an
+# identical request would reproduce the identical truncation.
+MAX_TRUNCATED_RESPONSE_RETRIES = 2
+TRUNCATED_RESPONSE_CORRECTIONS = (
+    "Your previous reply used its entire output budget on reasoning and ended "
+    "before any tool call. Reason more briefly: call the next concrete typed "
+    "tool now, or call `finish` with the appropriate status.",
+    "A reply has now run out of output budget while reasoning for the "
+    "second time in this session. Do not deliberate further. Make exactly "
+    "one concrete typed tool call now: a read-only inspection of the next "
+    "file you need, or `finish` with the appropriate status.",
+)
 # Read-only evidence is re-sent verbatim on every later turn, so a long
 # inspection phase multiplies prefill cost and provider latency without adding
 # information. Only the most recent read-only results stay expanded.
@@ -527,6 +541,7 @@ class OpenAIAgentLoop:
         self._saturation_grace_used = 0
         self._corrective_message_sent = False
         self._empty_responses = 0
+        self._truncated_responses = 0
         self._state_message_index: int | None = None
         self._mutation_calls = self._shared.mutation_calls
         self._build_calls = self._shared.build_calls
@@ -669,6 +684,10 @@ class OpenAIAgentLoop:
                 response = self.client.complete(self.messages, self.tool_schemas)
             except OpenAIEmptyResponseError:
                 if not self._handle_empty_response():
+                    raise
+                continue
+            except OpenAIResponseTruncatedError:
+                if not self._handle_truncated_response():
                     raise
                 continue
             finally:
@@ -1041,6 +1060,26 @@ class OpenAIAgentLoop:
         self.transcript.write(
             "corrective_message", reason="empty_response",
             count=self._empty_responses, limit=MAX_EMPTY_RESPONSE_RETRIES)
+        return True
+
+    def _handle_truncated_response(self) -> bool:
+        """Nudge after a reply truncated before any content or tool call.
+
+        The failed reply is never appended to the conversation, so the retry
+        differs from the failed request only by the corrective message. The
+        wording escalates with each retry. Returns False once the per-session
+        budget is spent, so the caller re-raises and the session keeps its
+        ``PROVIDER_RESPONSE_TRUNCATED`` outcome.
+        """
+        if self._truncated_responses >= MAX_TRUNCATED_RESPONSE_RETRIES:
+            return False
+        correction = TRUNCATED_RESPONSE_CORRECTIONS[self._truncated_responses]
+        self._truncated_responses += 1
+        self.messages.append({"role": "user", "content": correction})
+        self.transcript.write(
+            "corrective_message", reason="truncated_response",
+            count=self._truncated_responses,
+            limit=MAX_TRUNCATED_RESPONSE_RETRIES)
         return True
 
     def _reject_unsafe_terminal_batch(self, response: AssistantResponse) -> None:
