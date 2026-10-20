@@ -392,6 +392,13 @@ model that spent its whole output budget thinking. Raise
 `--openai-max-output-tokens` or lower `--openai-reasoning-effort` rather than
 looking for an endpoint incompatibility.
 
+Before ending the session, the loop appends a corrective user message and
+re-requests, up to twice per session, with stronger wording on the second try
+(the failed reply is not replayed, so the nudge is the only change to the
+request). The failure code above is reported only once that allowance is spent.
+Each retry can spend a full output budget, so it is bounded by the session
+deadline like any other turn.
+
 In trust mode, the codes above that are a property of the request or of the
 endpoint's dialect — everything except the timeouts, `PROVIDER_RATE_LIMIT`,
 `PROVIDER_SERVER_ERROR`, `PROVIDER_CONNECTION_LOST`, and
