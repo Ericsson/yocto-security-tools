@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Devtool workspace setup and CVE branch preparation."""
 import json
+import os
 import re
 from pathlib import Path, PurePosixPath
 
@@ -566,6 +567,57 @@ def _mirror_serves_commit(mirror: Path, commit: str) -> bool:
     return not any(line.startswith('?') for line in result.stdout.splitlines())
 
 
+def _remove_dangling_gitfiles(workspace_path: Path) -> list[str]:
+    """Delete ``.git`` gitfiles whose ``gitdir:`` target does not exist.
+
+    Release tarballs of recipes that vendor a submodule (python3-aiohttp's
+    ``vendor/llhttp``, syslog-ng's ``opentelemetry-proto``) ship the
+    submodule's ``.git`` *file* — ``gitdir: ../../.git/modules/<name>`` — but
+    not the ``.git/modules`` directory it points at. Git then aborts
+    ``checkout <tag>`` with ``fatal: not a git repository``, and devtool's
+    ``git add -A`` fails the same way while parsing the recipe, which the run
+    reports as a pre-existing build failure. Git never tracks a nested
+    ``.git`` entry, so removing the dangling file loses nothing; the
+    submodule update that follows recreates a valid one.
+
+    Valid gitfiles and nested ``.git`` directories (real repositories) are
+    left untouched.
+
+    Args:
+        workspace_path: Devtool workspace repository.
+
+    Returns:
+        Workspace-relative paths of the removed gitfiles.
+    """
+    removed: list[str] = []
+    for root, dirs, files in os.walk(workspace_path):
+        if root == str(workspace_path) and '.git' in dirs:
+            dirs.remove('.git')
+        if '.git' not in files:
+            continue
+        gitfile = Path(root) / '.git'
+        try:
+            content = gitfile.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        first = content.splitlines()[0] if content.strip() else ''
+        if not first.startswith('gitdir:'):
+            continue
+        target = Path(root) / first.partition(':')[2].strip()
+        if target.exists():
+            continue
+        try:
+            gitfile.unlink()
+        except OSError as error:
+            logger.warning("Could not remove dangling gitfile %s: %s", gitfile, error)
+            continue
+        rel = str(gitfile.relative_to(workspace_path))
+        logger.warning("Removed dangling gitfile %s (-> %s)", rel,
+                       first.partition(':')[2].strip())
+        removed.append(rel)
+    return removed
+
+
 def _init_submodules(workspace_path: Path,
                      hash_details: list[dict] | None = None,
                      mirror_dir: Path | None = None) -> None:
@@ -919,6 +971,7 @@ def prepare_cve_branch(workspace_path: Path, version: str | None,
             also changes.
     """
     checkout_ok = True
+    _remove_dangling_gitfiles(workspace_path)
     if version:
         logger.info("Checking out version %s", version)
         result = run_cmd_capture(['git', 'branch', '--list', cve_id], cwd=workspace_path)
