@@ -50,6 +50,11 @@ CVE_METADATA="$PWD/test-cve-metadata-agent.json" \
 AGENT_BACKEND=openai-qwen3.8-l40s \
 ./test_cve_corrector.sh --full-only
 
+# Bulk campaign for the slow local reasoning model: the same runner with the
+# medium-effort profile, --session-timeout 1800 and TEST_TIMEOUT=7200 preset
+# (see the header of run_qwen_campaign.sh; every value can be overridden)
+./run_qwen_campaign.sh --full-only --resume "$PWD/test-results/resume-seed"
+
 # Bulk run plus a second ground-truth round against metadata enriched from
 # OE-Core's own Upstream-Status patches (see "Bulk runner modes" below)
 ./test_cve_corrector.sh --enriched-round
