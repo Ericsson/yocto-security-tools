@@ -14,7 +14,7 @@ import fcntl
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -185,7 +185,7 @@ def create_pattern(conflict_type: str, recipe: str, file_pattern: str,
         file_pattern=file_pattern,
         resolution_summary=resolution_summary,
         cve_id=cve_id,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         upstream_sha=upstream_sha,
         affected_files=affected_files or [],
         per_file_changes=per_file_changes or {},

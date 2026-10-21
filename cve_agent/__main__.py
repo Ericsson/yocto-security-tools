@@ -12,7 +12,7 @@ import os
 import signal
 import sys
 from collections.abc import MutableMapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -115,7 +115,7 @@ def _log_result(config: AgentConfig, result: CveResult,
 
     assert result.outcome is not None
     lines = [
-        f"[{datetime.now(timezone.utc).isoformat()}] "
+        f"[{datetime.now(UTC).isoformat()}] "
         f"{result.cve_id} | {result.outcome.summary_state} | "
         f"{result.duration:.1f}s | retries={result.retries}"
         f"{_credits(result)} | "
@@ -221,7 +221,7 @@ def _save_results(results: list[CveResult]) -> None:
     """Save detailed results to a timestamped file."""
     results_dir = data_dir() / 'results'
     results_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now(UTC).strftime('%Y%m%d_%H%M%S')
     filepath = results_dir / f"backport_agent_results_{timestamp}.txt"
     json_filepath = results_dir / f"backport_agent_results_{timestamp}.json"
     with open(filepath, 'w', encoding='utf-8') as file:

@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -101,7 +101,7 @@ def find_fetch_head(repo_path):
 def get_mtime(head_file):
     """Return modification time of path as aware UTC datetime."""
     ts = Path(head_file).stat().st_mtime
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def do_get_repo(repo_dir, repo_url):
@@ -152,7 +152,7 @@ def repo_needs_update(repo_dir):
     fetch_head = find_fetch_head(repo_dir)
     if not fetch_head:
         return True
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     threshold = timedelta(minutes=60)
     if not os.path.exists(fetch_head):
         return True

@@ -24,7 +24,7 @@ Each tool works standalone. Chain them with `--cve-info cve-metadata.json`.
 
 ## Requirements
 
-- Python 3.10+ and Git
+- Python 3.11+ and Git
 - A sourced Yocto build environment (`BBPATH` set) for `cve-corrector` and
   `cve-agent`
 - An AI backend for `cve-agent` — see [Modules](#modules) below

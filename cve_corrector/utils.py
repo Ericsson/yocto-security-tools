@@ -3,7 +3,7 @@
 """Common utilities for CVE corrector."""
 import logging
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shared import build_git_env
@@ -29,7 +29,7 @@ def setup_logging(cve_id: str, build_path: Path, verbose: bool) -> Path:
 
     log_dir = build_path / 'workspace' / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now(UTC).strftime('%Y%m%d_%H%M%S')
     _log_file = log_dir / f'cve_corrector_{cve_id}_{timestamp}.log'
 
     logger.setLevel(logging.DEBUG)
