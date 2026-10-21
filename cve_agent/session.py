@@ -6,6 +6,7 @@ Spawns AI sessions with context files, wraps them with file-scope
 enforcement (pre-commit hook + post-session revert) and the backport-note
 length budget (commit-msg hook).
 """
+import contextlib
 import difflib
 import re
 import sys
@@ -48,6 +49,7 @@ from .git import (
 from .handoff import (
     activate_validated_handoff,
     deactivate_validated_handoff,
+    handoff_failure_record,
     read_transfer_artifact,
     refresh_repository_handoff,
     validate_repository_handoff,
@@ -127,6 +129,22 @@ def _ensure_cve_branch(workspace_path: Path, cve_id: str) -> None:
     copy_missing_files_from_devtool(workspace_path)
 
 
+def _record_handoff_failure(
+    artifact_run: RunArtifacts | None, workspace_path: Path, phase: str,
+    error: BaseException,
+) -> None:
+    """Keep the manifest and the failing check's facts as ``handoff-failure.json``.
+
+    Diagnostics only: a failure to write it must never change the outcome.
+    """
+    if artifact_run is None or not isinstance(error, HandoffError):
+        return
+    with contextlib.suppress(ArtifactError, OSError):
+        artifact_run.atomic_json(
+            "handoff-failure.json",
+            handoff_failure_record(workspace_path, phase, error))
+
+
 def guarded_session(context_file: Path, workspace_path: Path,
                     upstream_sha: str, cve_info: dict,
                     model: str = "claude-sonnet-5",
@@ -171,6 +189,8 @@ def guarded_session(context_file: Path, workspace_path: Path,
     except (HandoffError, ArtifactError) as handoff_error:
         code = (handoff_error.code if isinstance(handoff_error, HandoffError)
                 else "HANDOFF_TRANSCRIPT_FAILED")
+        _record_handoff_failure(
+            artifact_run, workspace_path, "validate", handoff_error)
         if artifact_run is not None:
             try:
                 artifact_run.event("corrector_handoff_failed", failure_code=code)
@@ -427,6 +447,8 @@ def guarded_session(context_file: Path, workspace_path: Path,
                 previously_committed=previously_committed,
             )
             if artifact_run is not None:
+                artifact_run.atomic_json(
+                    "corrector-handoff-refreshed.json", handoff.to_dict())
                 artifact_run.event(
                     "corrector_handoff_refreshed",
                     operation_state=handoff.operation_state,
@@ -449,6 +471,8 @@ def guarded_session(context_file: Path, workspace_path: Path,
             # normal failed/escalated one).
             code = (handoff_error.code if isinstance(handoff_error, HandoffError)
                     else "HANDOFF_TRANSCRIPT_FAILED")
+            _record_handoff_failure(
+                artifact_run, workspace_path, "refresh", handoff_error)
             if artifact_run is not None:
                 try:
                     artifact_run.event("corrector_handoff_failed", failure_code=code)

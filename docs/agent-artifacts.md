@@ -13,6 +13,15 @@ Each attempt contains:
 - `preflight.json`, `provider-summary.json`, and `build-summary.json`;
 - `agent-transcript.jsonl`, opened before preflight and flushed at privileged
   boundaries;
+- `corrector-handoff.json` once the corrector handoff validates, and
+  `corrector-handoff-refreshed.json` after an unresolved session reissues it
+  (both are overwritten by the next attempt in the same run);
+- `handoff-failure.json` when validating or refreshing the handoff fails: the
+  phase, the failure code, the manifest as it stood, and the facts the failing
+  check computed (for `HANDOFF_REFERENCE_DRIFT`, the paths the reference and the
+  manifest disagree on; for `HANDOFF_RETRY_SCOPE_DRIFT`, the unauthorized
+  paths). Path lists are bounded to a count plus a sorted sample. The
+  workspace is deleted when the CVE ends, so this is the only copy;
 - `result.json` using the versioned outcome schema;
 - `telemetry.json`, with separate bounded counters and durations;
 - `artifact-manifest.sha256`, covering every finalized retained file.
