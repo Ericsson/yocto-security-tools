@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
@@ -189,7 +189,7 @@ class RunArtifacts:
         self.model = model
         self.transcript_path = path / "agent-transcript.jsonl"
         self._transcript = transcript
-        self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
+        self._wall_clock = wall_clock or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
         self._started = monotonic()
         self._sequence = 0
@@ -223,7 +223,7 @@ class RunArtifacts:
         except OSError as error:
             raise ArtifactError("unable to create durable result root") from error
         run_id = (
-            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
             + f"-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         )
         path = case_root / run_id

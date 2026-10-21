@@ -11,7 +11,7 @@ import difflib
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
@@ -745,7 +745,7 @@ def _write_audit_log(workspace_path: Path, recipe: str, cve_id: str,
     """
     agent_dir = get_agent_dir(workspace_path)
     log_path = agent_dir / f'{recipe}-{cve_id}-ai-changes.log'
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
 
     lines = [
         'AI Changes Audit Log',
@@ -821,7 +821,7 @@ def _write_audit_log(workspace_path: Path, recipe: str, cve_id: str,
 def _log_session_start(agent_dir: Path, context_file: Path) -> None:
     """Log session start to the sessions log file."""
     log_file = agent_dir / 'sessions.log'
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
     with open(log_file, 'a', encoding='utf-8') as log:
         log.write(f"[{timestamp}] SESSION START context={context_file}\n")
 
@@ -836,7 +836,7 @@ def _log_session_end(agent_dir: Path, result: SessionResult) -> None:
     readers.
     """
     log_file = agent_dir / 'sessions.log'
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
     status = "RESOLVED" if result.resolved else "UNRESOLVED"
     line = (f"[{timestamp}] SESSION END {status} "
             f"duration={result.duration:.1f}s")
