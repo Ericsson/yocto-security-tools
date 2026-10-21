@@ -88,10 +88,7 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # E501: line length is handled by formatting, not a hard rule.
-# UP042: str+Enum -> enum.StrEnum is an unsafe fix (ruff won't auto-apply it)
-# with behavioral differences (repr/str/format); left as a deliberate,
-# separate refactor rather than mass-converting enums for this version bump.
-ignore = ["E501", "UP042"]
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["SIM117", "E741", "SIM105", "E402"]
