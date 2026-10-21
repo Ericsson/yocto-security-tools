@@ -22,7 +22,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
@@ -71,7 +71,7 @@ class EvaluationError(RuntimeError):
     """An evaluation campaign or comparison violated a trusted invariant."""
 
 
-class RunMode(str, Enum):
+class RunMode(StrEnum):
     BASELINE_HEALTH_ONLY = "baseline-health-only"
     SINGLE_BACKEND_FULL = "single-backend-full"
     CROSSOVER = "crossover"
@@ -80,7 +80,7 @@ class RunMode(str, Enum):
     RESUME_COMPATIBLE_LEGACY = "resume-compatible-legacy"
 
 
-class BaselineStatus(str, Enum):
+class BaselineStatus(StrEnum):
     HEALTHY = "BASELINE_HEALTHY"
     BUILD_BROKEN = "BASELINE_BUILD_BROKEN"
     PTEST_BROKEN = "BASELINE_PTEST_BROKEN"
@@ -92,7 +92,7 @@ class BaselineStatus(str, Enum):
         return self is BaselineStatus.HEALTHY
 
 
-class PrimaryMetric(str, Enum):
+class PrimaryMetric(StrEnum):
     SECURITY_ACCEPTED = "security-accepted"
     WORKFLOW_COMPLETED = "workflow-completed"
     BUILD_PASSED = "build-passed"

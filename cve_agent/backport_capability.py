@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .result import SecurityStatus
 
@@ -23,7 +23,7 @@ SECURITY_ACCEPTED = frozenset({
 })
 
 
-class CapabilityExpectation(str, Enum):
+class CapabilityExpectation(StrEnum):
     """Trusted expected outcome for one capability case."""
 
     BACKPORT = "backport"

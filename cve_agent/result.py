@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 RESULT_SCHEMA_VERSION = 2
 
@@ -18,21 +18,21 @@ class ResultSchemaError(ValueError):
     """A serialized result cannot be interpreted safely."""
 
 
-class WorkflowStatus(str, Enum):
+class WorkflowStatus(StrEnum):
     COMPLETED = "completed"
     SKIPPED = "skipped"
     ESCALATED = "escalated"
     FAILED = "failed"
 
 
-class BuildStatus(str, Enum):
+class BuildStatus(StrEnum):
     PASSED = "passed"
     FAILED = "failed"
     NOT_RUN = "not_run"
     STALE = "stale"
 
 
-class SecurityStatus(str, Enum):
+class SecurityStatus(StrEnum):
     VERIFIED = "verified"
     EQUIVALENT = "equivalent"
     PLAUSIBLE_NEEDS_REVIEW = "plausible_needs_review"
@@ -41,7 +41,7 @@ class SecurityStatus(str, Enum):
     NOT_EVALUATED = "not_evaluated"
 
 
-class FailureClass(str, Enum):
+class FailureClass(StrEnum):
     HOST_INITIALIZATION = "host_initialization"
     CORRECTOR_HANDOFF = "corrector_handoff"
     PATCH_TRANSFER = "patch_transfer"
@@ -148,10 +148,19 @@ class ResultOutcome:
                 raise ResultSchemaError("failure_code must be a string or null")
             if legacy_status is not None and not isinstance(legacy_status, str):
                 raise ResultSchemaError("legacy_status must be a string or null")
+            workflow_value = value.get("workflow_status")
+            build_value = value.get("build_status")
+            security_value = value.get("security_status")
+            if not isinstance(workflow_value, str):
+                raise ResultSchemaError("workflow_status must be a string")
+            if not isinstance(build_value, str):
+                raise ResultSchemaError("build_status must be a string")
+            if not isinstance(security_value, str):
+                raise ResultSchemaError("security_status must be a string")
             return cls(
-                workflow_status=WorkflowStatus(value["workflow_status"]),
-                build_status=BuildStatus(value["build_status"]),
-                security_status=SecurityStatus(value["security_status"]),
+                workflow_status=WorkflowStatus(workflow_value),
+                build_status=BuildStatus(build_value),
+                security_status=SecurityStatus(security_value),
                 failure_class=failure,
                 failure_code=failure_code,
                 legacy_status=legacy_status,

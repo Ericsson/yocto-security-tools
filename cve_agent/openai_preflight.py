@@ -8,7 +8,7 @@ import os
 import stat
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from .openai_deadline import RuntimeTimeoutError, SessionDeadline
@@ -24,7 +24,7 @@ MAX_PREFLIGHT_PATHS = 100_000
 MAX_DIAGNOSTIC_PATHS = 32
 
 
-class PreflightPhase(str, Enum):
+class PreflightPhase(StrEnum):
     REPOSITORY = "repository"
     ALLOWED_SCOPE = "allowed_scope"
     OPERATION_STATE = "operation_state"
@@ -33,7 +33,7 @@ class PreflightPhase(str, Enum):
     COMPLETE = "complete"
 
 
-class PreflightErrorCode(str, Enum):
+class PreflightErrorCode(StrEnum):
     REPOSITORY_UNAVAILABLE = "INIT_REPOSITORY_UNAVAILABLE"
     GIT_STATUS_FAILED = "INIT_GIT_STATUS_FAILED"
     UNSUPPORTED_GIT_OPERATION_STATE = "INIT_UNSUPPORTED_GIT_OPERATION_STATE"
