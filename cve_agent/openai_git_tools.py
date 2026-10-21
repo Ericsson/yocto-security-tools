@@ -2371,9 +2371,16 @@ class GitToolRuntime(FileToolRuntime):
             path_count = 2 if status[:1] in {"R", "C"} else 1
             if index + path_count > len(tokens):
                 raise ToolPolicyError("commit changed-path metadata is incomplete")
-            for _ in range(path_count):
-                path = tokens[index]
-                index += 1
+            paths = tokens[index:index + path_count]
+            index += path_count
+            # A rename removes its source, so both paths changed. A copy
+            # leaves its source untouched: only the destination is a change.
+            # Counting the source would reject a commit whose real diff is
+            # inside the allowed files whenever it adds a near-copy of an
+            # existing file (``--find-copies-harder`` finds those readily).
+            if status[:1] == "C":
+                paths = paths[-1:]
+            for path in paths:
                 changed.append(ChangedPath(path, status, old_mode, new_mode))
             if len(changed) > self.git_limits.max_paths:
                 raise ToolPolicyError("commit exceeds the changed-path limit")
