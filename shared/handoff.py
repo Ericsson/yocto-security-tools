@@ -26,8 +26,15 @@ _CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 class HandoffError(RuntimeError):
     """The trusted handoff cannot be produced or validated."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self, code: str, message: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         self.code = code
+        # Bounded, secret-free facts that explain the failure (for example the
+        # paths two sets disagree on). Recorded as an audit artifact; never
+        # part of the message, which stays short and stable.
+        self.details: dict[str, object] = dict(details or {})
         super().__init__(f"{code}: {message}")
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextvars
 import json
 import subprocess
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,9 +24,46 @@ from shared.handoff import (
 
 from .openai_tools import FileToolPathPolicy, ToolPolicyError, ToolValidationError
 
+# A failure record lists the paths two sets disagree on. Bound the list so a
+# pathological manifest cannot exceed the artifact writer's node budget.
+MAX_FAILURE_PATHS = 50
+
 _VALIDATED_HANDOFF: contextvars.ContextVar[RepositoryHandoff | None] = (
     contextvars.ContextVar("cve_agent_validated_handoff", default=None)
 )
+
+
+def _sample(paths: Iterable[str]) -> dict[str, object]:
+    """Describe a path set as its size plus a bounded sorted sample."""
+    ordered = sorted(set(paths))
+    return {"count": len(ordered), "paths": ordered[:MAX_FAILURE_PATHS]}
+
+
+def handoff_failure_record(
+    workspace: Path, phase: str, error: HandoffError,
+) -> dict[str, object]:
+    """Build the audit record for a handoff that failed validation or refresh.
+
+    The workspace is deleted when a CVE ends, and the manifest that triggered
+    the failure may be one the agent itself refreshed after an earlier
+    attempt, so it exists nowhere else. Capture it, with the facts the
+    failing check computed, while it is still readable. Reading the manifest
+    is best effort: a failure that is *about* an unreadable manifest must
+    still produce a record.
+    """
+    record: dict[str, object] = {
+        "phase": phase,
+        "code": error.code,
+        "message": str(error),
+        "details": dict(error.details),
+    }
+    try:
+        record["manifest"] = read_handoff(
+            repository_handoff_path(workspace)).to_dict()
+    except (HandoffError, OSError, ValueError) as manifest_error:
+        record["manifest"] = None
+        record["manifest_error"] = type(manifest_error).__name__
+    return record
 
 
 def activate_validated_handoff(
@@ -109,7 +147,14 @@ def validate_repository_handoff(
     expected_paths, expected_parent = reference_change_paths(
         workspace, manifest.selected_commit, manifest.mainline_parent)
     if expected_parent != manifest.selected_parent:
-        raise HandoffError("HANDOFF_REFERENCE_DRIFT", "reference parent changed")
+        raise HandoffError(
+            "HANDOFF_REFERENCE_DRIFT", "reference parent changed",
+            {
+                "selected_commit": manifest.selected_commit,
+                "expected_parent": expected_parent,
+                "selected_parent": manifest.selected_parent,
+            })
+    reference_paths = tuple(expected_paths)
     expected_paths = tuple(sorted(
         set(expected_paths) | set(manifest.conflicted_paths)))
     if expected_paths != manifest.allowed_paths:
@@ -121,7 +166,21 @@ def validate_repository_handoff(
                 or not isinstance(transfer_paths, list)
                 or not all(isinstance(path, str) for path in transfer_paths)
                 or tuple(transfer_paths) != manifest.allowed_paths):
-            raise HandoffError("HANDOFF_REFERENCE_DRIFT", "reference operation changed")
+            raise HandoffError(
+                "HANDOFF_REFERENCE_DRIFT", "reference operation changed",
+                {
+                    "selected_commit": manifest.selected_commit,
+                    "current_head": manifest.current_head,
+                    "reference_paths": _sample(reference_paths),
+                    "conflicted_paths": _sample(manifest.conflicted_paths),
+                    "allowed_paths": _sample(manifest.allowed_paths),
+                    "expected_not_allowed": _sample(
+                        set(expected_paths) - set(manifest.allowed_paths)),
+                    "allowed_not_expected": _sample(
+                        set(manifest.allowed_paths) - set(expected_paths)),
+                    "transfer_verification": (
+                        transfer.get("verification") if transfer else None),
+                })
     validate_handoff_state(manifest, workspace)
     return manifest
 
@@ -169,7 +228,8 @@ def refresh_repository_handoff(
     tracked_outside = sorted(set(captured.tracked_paths) - authorized)
     if tracked_outside:
         raise HandoffError(
-            "HANDOFF_RETRY_SCOPE_DRIFT", "retry state has unauthorized tracked paths")
+            "HANDOFF_RETRY_SCOPE_DRIFT", "retry state has unauthorized tracked paths",
+            {"unauthorized_tracked_paths": _sample(tracked_outside)})
     result = subprocess.run(
         ["git", "--no-pager", "diff", "--name-only", "--no-renames", "-z",
          session_root_head or manifest.current_head, captured.head, "--"],
@@ -186,7 +246,8 @@ def refresh_repository_handoff(
     durable_paths = {path for path in result.stdout.split("\0") if path}
     if durable_paths - authorized:
         raise HandoffError(
-            "HANDOFF_RETRY_SCOPE_DRIFT", "retry commits have unauthorized paths")
+            "HANDOFF_RETRY_SCOPE_DRIFT", "retry commits have unauthorized paths",
+            {"unauthorized_commit_paths": _sample(durable_paths - authorized)})
     refreshed = replace(
         manifest,
         current_head=captured.head,
