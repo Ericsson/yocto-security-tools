@@ -12,7 +12,7 @@ import stat
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 
 from shared import build_git_env
@@ -29,7 +29,7 @@ MAX_TRANSFER_DIAGNOSTIC_PATHS = 32
 _OBJECT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
-class TransferCode(str, Enum):
+class TransferCode(StrEnum):
     NO_TARGET_PATH = "TRANSFER_NO_TARGET_PATH"
     AMBIGUOUS_MAPPING = "TRANSFER_AMBIGUOUS_MAPPING"
     CONTEXT_MISMATCH = "TRANSFER_CONTEXT_MISMATCH"

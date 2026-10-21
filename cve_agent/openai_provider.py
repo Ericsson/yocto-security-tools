@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from enum import Enum
+from enum import StrEnum
 
 PROVIDER_CAPABILITY_SCHEMA_VERSION = 1
 MAX_PROVIDER_PATH_BYTES = 128
@@ -17,7 +17,7 @@ MAX_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 _PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$", re.ASCII)
 
 
-class ProviderErrorCode(str, Enum):
+class ProviderErrorCode(StrEnum):
     AUTH = "PROVIDER_AUTH"
     MODEL_NOT_FOUND = "PROVIDER_MODEL_NOT_FOUND"
     REQUEST_REJECTED = "PROVIDER_REQUEST_REJECTED"
