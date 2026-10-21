@@ -6,9 +6,12 @@ Provides two levels of abstraction:
 - run_capture(): low-level, returns CompletedProcess (for corrector)
 - run_git_stdout(): high-level git-only, returns stdout str (for agent)
 """
+import io
 import logging
+import os
 import subprocess
-from pathlib import Path
+import tarfile
+from pathlib import Path, PurePosixPath
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
 
@@ -225,6 +228,171 @@ def _get_submodule_paths(workspace_path: Path) -> set[str]:
     return paths
 
 
+def _is_own_repository(directory: Path) -> bool:
+    """Whether *directory* is itself the top level of a git repository.
+
+    A submodule that was initialised has its own ``.git``. One whose update
+    failed is an empty directory inside the superproject, where git resolves
+    to the superproject's top level instead.
+    """
+    if not directory.is_dir():
+        return False
+    result = run_capture(['git', 'rev-parse', '--show-toplevel'], cwd=directory)
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    return Path(result.stdout.strip()).resolve() == directory.resolve()
+
+
+def _exclude_pattern(relative_path: str) -> str:
+    """Anchored gitignore pattern matching exactly *relative_path*."""
+    escaped = ''.join('\\' + c if c in '*?[]\\' else c for c in relative_path)
+    if escaped[:1] in ('#', '!'):
+        escaped = '\\' + escaped
+    return '/' + escaped
+
+
+def _exclude_from_status(repository: Path, relative_paths: list[str]) -> None:
+    """Add *relative_paths* to the repository's local ``info/exclude``.
+
+    Copied files are untracked content of the submodule; without this the
+    superproject reports the submodule as modified. The exclude file is local
+    to the clone, so no tracked content changes.
+    """
+    result = run_capture(['git', 'rev-parse', '--git-path', 'info/exclude'],
+                         cwd=repository)
+    if result.returncode != 0 or not result.stdout.strip():
+        logger.warning("Cannot locate info/exclude of %s", repository)
+        return
+    exclude = Path(result.stdout.strip())
+    if not exclude.is_absolute():
+        exclude = repository / exclude
+    existing = (exclude.read_text(encoding='utf-8', errors='replace').splitlines()
+                if exclude.exists() else [])
+    wanted = [_exclude_pattern(p) for p in relative_paths]
+    new = [pattern for pattern in dict.fromkeys(wanted) if pattern not in existing]
+    if not new:
+        return
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open('a', encoding='utf-8') as handle:
+        if existing and not exclude.read_text(encoding='utf-8',
+                                              errors='replace').endswith('\n'):
+            handle.write('\n')
+        handle.write('\n'.join(new) + '\n')
+
+
+def _stays_within(directory: Path, root: Path) -> bool:
+    """Whether *directory* (which may not exist yet) resolves inside *root*.
+
+    The nearest existing ancestor is resolved, so a symlinked parent that
+    points elsewhere is detected before any directory is created through it.
+    """
+    probe = directory
+    while not os.path.lexists(probe):
+        if probe.parent == probe:
+            return False
+        probe = probe.parent
+    resolved = probe.resolve()
+    return resolved == root or root in resolved.parents
+
+
+def _extract_regular_files(workspace_path: Path, tree: str, paths: list[str],
+                           confine_to: Path) -> list[str]:
+    """Write *paths* of *tree* into the working tree; return those written.
+
+    Only regular files are written and none is overwritten. A path whose
+    parents resolve outside *confine_to* (through a symlink) is skipped, as
+    are symlinks themselves, so a hostile archive cannot write elsewhere.
+    """
+    written: list[str] = []
+    wanted = set(paths)
+    root = confine_to.resolve()
+    for chunk in _chunked(paths, _CHECKOUT_BATCH_SIZE):
+        archive = subprocess.run(
+            # Literal pathspecs: names like ``gen[1].h`` must not also select
+            # their glob matches; the ``wanted`` check below is the safety net.
+            ['git', '--literal-pathspecs', 'archive', '--format=tar', tree, '--', *chunk],
+            cwd=workspace_path, capture_output=True, check=False,
+            env=build_git_env())
+        if archive.returncode != 0:
+            logger.warning("git archive failed: %s",
+                           archive.stderr.decode(TEXT_ENCODING, TEXT_ERRORS).strip())
+            continue
+        try:
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+                for member in tar:
+                    name = member.name
+                    if (not member.isreg() or name not in wanted
+                            or PurePosixPath(name).is_absolute()
+                            or '..' in PurePosixPath(name).parts):
+                        continue
+                    destination = workspace_path / name
+                    if os.path.lexists(destination):
+                        continue
+                    if not _stays_within(destination.parent, root):
+                        logger.warning("Skipping %s: resolves outside %s", name, root)
+                        continue
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    source = tar.extractfile(member)
+                    if source is None:
+                        continue
+                    try:
+                        with destination.open('xb') as handle:
+                            handle.write(source.read())
+                    except OSError as error:
+                        logger.warning("Cannot write %s: %s", name, error)
+                        continue
+                    destination.chmod(0o755 if member.mode & 0o111 else 0o644)
+                    written.append(name)
+        except tarfile.TarError as error:
+            logger.warning("Cannot read archive of %s: %s", tree, error)
+    return written
+
+
+def copy_missing_submodule_files_from_devtool(workspace_path: Path) -> None:
+    """Copy tarball-only files into checked-out submodules.
+
+    Release tarballs of recipes that vendor a submodule (python3-aiohttp's
+    ``vendor/llhttp``) ship generated output inside it, e.g.
+    ``vendor/llhttp/build/llhttp.h``, which the submodule's own history never
+    contains. Once the submodule is populated from its pinned commit those
+    files are gone and the build fails on the missing header.
+
+    :func:`copy_missing_files_from_devtool` skips submodule paths because the
+    superproject must not track regular files under a gitlink. These files
+    are therefore written *inside* the submodule checkout, never overwrite
+    anything, and are added to the submodule's local ``info/exclude`` so that
+    git status stays clean. A submodule that is not an initialised repository
+    is left alone: files written under an empty gitlink directory would
+    become untracked content of the superproject.
+
+    Nested submodules are not handled.
+    """
+    for submodule in sorted(_get_submodule_paths(workspace_path)):
+        directory = workspace_path / submodule
+        if not _is_own_repository(directory):
+            continue
+        prefix = submodule.rstrip('/') + '/'
+        listed = run_capture(
+            ['git', 'ls-tree', '-r', '-z', '--name-only', 'devtool', '--', prefix],
+            cwd=workspace_path)
+        tracked = run_capture(
+            ['git', 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], cwd=directory)
+        if listed.returncode != 0 or tracked.returncode != 0:
+            continue
+        tracked_set = set(tracked.stdout.split('\0'))
+        missing = [path for path in listed.stdout.split('\0')
+                   if path.startswith(prefix) and path[len(prefix):] not in tracked_set
+                   and not os.path.lexists(workspace_path / path)]
+        if not missing:
+            continue
+        written = _extract_regular_files(workspace_path, 'devtool', missing, directory)
+        if not written:
+            continue
+        logger.info("Copied %s tarball-only file(s) into submodule %s",
+                    len(written), submodule)
+        _exclude_from_status(directory, [path[len(prefix):] for path in written])
+
+
 def copy_missing_files_from_devtool(workspace_path: Path) -> None:
     """Copy files present in devtool but missing from the CVE branch.
 
@@ -238,13 +406,16 @@ def copy_missing_files_from_devtool(workspace_path: Path) -> None:
     build succeeds on the CVE branch too. It is a no-op when nothing is
     missing (e.g. when already on the devtool branch).
 
-    Files under registered submodule paths are skipped — those are tracked
-    by git submodule and must not be overwritten with regular file copies.
+    Files under registered submodule paths are skipped here — those are tracked
+    by git submodule and must not be overwritten with regular file copies. The
+    tarball-only files inside initialised submodules are handled separately by
+    :func:`copy_missing_submodule_files_from_devtool`, which this calls first.
 
     Files under paths that HEAD tracks as symlinks are also skipped — release
     tarballs dereference symlinks into real directories, and copying those
     files would clobber the symlink and break subsequent cherry-picks.
     """
+    copy_missing_submodule_files_from_devtool(workspace_path)
     devtool_files = run_capture(
         ['git', 'ls-tree', '-r', '--name-only', 'devtool'], cwd=workspace_path)
     if devtool_files.returncode != 0:
