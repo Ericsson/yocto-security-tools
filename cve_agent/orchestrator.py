@@ -17,6 +17,7 @@ from . import (
     EXIT_BUILD_PREEXISTING,
     EXIT_IGNORED_BY_STATUS,
     EXIT_NOT_APPLICABLE,
+    EXIT_PATCH_ERROR,
     EXIT_PREP_BASE_MISMATCH,
     EXIT_PTEST_ERROR,
     EXIT_PTEST_PREEXISTING,
@@ -64,6 +65,7 @@ _MAX_CHAIN_EXTENSIONS = 3
 _HANDOFF_CODE_RE = re.compile(r"\b(HANDOFF_[A-Z0-9_]{1,96})\b")
 _TRANSFER_CODE_RE = re.compile(r"\b(TRANSFER_[A-Z0-9_]{1,96})\b")
 _PREP_CODE_RE = re.compile(r"\b(PREP_[A-Z0-9_]{1,96})\b")
+_MERGE_CODE_RE = re.compile(r"\b(MERGE_MAINLINE_REQUIRED)\b")
 
 # Safety cap on how many times a single CVE run may be bounced back to the AI
 # purely to shorten over-budget ``Conflicts Resolved:`` notes. Past this, the
@@ -1243,7 +1245,25 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase | None,
         transfer_match = _TRANSFER_CODE_RE.search(corrector_output[:64 * 1024])
         prep_match = (_PREP_CODE_RE.search(corrector_output[:64 * 1024])
                       if exit_code == EXIT_PREP_BASE_MISMATCH else None)
-        if prep_match:
+        merge_match = (_MERGE_CODE_RE.search(corrector_output[:64 * 1024])
+                       if exit_code == EXIT_PATCH_ERROR else None)
+        if merge_match:
+            # The fix is a merge commit and nobody said which parent is the
+            # mainline. The corrector never guesses, and no AI session can
+            # supply the answer, so fail before spending one.
+            result = _make_result(
+                config.cve_id, ResultStatus.FAILED, 0, start_time,
+                "The fix is a merge commit: pass --mainline-parent N or set "
+                "mainline_parent in the CVE metadata",
+                ResultOutcome(
+                    WorkflowStatus.FAILED,
+                    BuildStatus.NOT_RUN,
+                    SecurityStatus.NOT_EVALUATED,
+                    FailureClass.HOST_INITIALIZATION,
+                    merge_match.group(1),
+                ),
+            )
+        elif prep_match:
             # The CVE branch could not reproduce the devtool branch's content
             # for a file the fix touches, so no AI session could produce a
             # transferable patch. Fail before spending one.
