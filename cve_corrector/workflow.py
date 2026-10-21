@@ -26,6 +26,8 @@ from .git_ops import (
     git_clean_workspace,
     has_conflict_state,
     is_bad_object,
+    is_merge_commit,
+    merge_mainline_guidance,
     remove_git_only_build_triggers,
     try_cherry_pick,
 )
@@ -695,9 +697,17 @@ def _handle_no_clean_apply(workspace_path, hashes, series, make_state, recipe,
                 "Every candidate commit is a merge commit requiring an "
                 "explicit --mainline-parent, which was not supplied — "
                 "nothing could be attempted")
+            # Say how to choose, with a stable code cve_agent can classify.
+            # Bounded: a metadata entry can list many candidate hashes.
+            merges = ([commit for commit in hashes
+                       if is_merge_commit(workspace_path, commit)][:3]
+                      if mainline_parent is None else [])
+            guidance = "\n".join(
+                merge_mainline_guidance(workspace_path, commit) for commit in merges)
             raise PatchError(
                 "All fix commits are ambiguous merge commits with no "
-                "--mainline-parent supplied; nothing to resolve")
+                "--mainline-parent supplied; nothing to resolve"
+                + (f"\n{guidance}" if guidance else ""))
         if conflicts < float('inf'):
             logger.info("Applying commit %s with %s conflict(s)...",
                         best_hash[:8], conflicts)

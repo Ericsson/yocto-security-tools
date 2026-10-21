@@ -248,6 +248,52 @@ def is_ancestor_of_head(workspace_path: Path, commit_hash: str) -> bool:
     return result.returncode == 0
 
 
+MERGE_MAINLINE_REQUIRED_CODE = 'MERGE_MAINLINE_REQUIRED'
+
+
+def merge_mainline_guidance(workspace_path: Path, commit_hash: str) -> str:
+    """Explain how to choose the mainline parent of a merge fix commit.
+
+    The corrector never guesses the parent: for a merge it is the mainline the
+    fix was merged *into*, and the wrong choice applies the wrong diff. This
+    lists what a person (or the metadata author) needs to choose: each direct
+    parent and how many files the merge changes relative to it, so the
+    parent whose diff is the fix stands out.
+
+    Only hashes and counts are printed, never commit subjects. They come from
+    an untrusted upstream repository, and cve_agent searches this output for
+    the code token below, so free text could forge a classification.
+
+    Args:
+        workspace_path: Path to the git repository.
+        commit_hash: The merge commit.
+
+    Returns:
+        A multi-line message beginning with ``MERGE_MAINLINE_REQUIRED:``.
+    """
+    short = commit_hash[:12]
+    lines = [
+        f"{MERGE_MAINLINE_REQUIRED_CODE}: {short} is a merge commit; choose "
+        "its mainline with --mainline-parent N (or a positive "
+        "\"mainline_parent\" in the CVE metadata)."]
+    parents = run_cmd_capture(
+        ['git', 'rev-list', '--parents', '-n', '1', commit_hash],
+        cwd=workspace_path)
+    parent_hashes = parents.stdout.split()[1:] if parents.returncode == 0 else []
+    if parent_hashes:
+        lines.append("Files the merge changes relative to each direct parent "
+                     "(the mainline is the parent the fix was merged into):")
+    for index, parent in enumerate(parent_hashes, 1):
+        diff = run_cmd_capture(
+            ['git', 'diff', '--name-only', parent, commit_hash],
+            cwd=workspace_path)
+        count = (str(len(diff.stdout.splitlines()))
+                 if diff.returncode == 0 else 'unknown')
+        lines.append(f"  --mainline-parent {index}: parent {parent[:12]}, "
+                     f"{count} file(s)")
+    return "\n".join(lines)
+
+
 def is_merge_commit(workspace_path: Path, commit_hash: str) -> bool:
     """Check whether a commit has more than one parent.
 
@@ -334,10 +380,16 @@ def try_cherry_pick(workspace_path: Path, commit_hash: str,
         return False
     parent_count = max(0, len(parents.stdout.split()) - 1)
     if parent_count > 1:
-        if mainline_parent is None or not 1 <= mainline_parent <= parent_count:
+        if mainline_parent is None:
             logger.error(
-                "Merge commit %s requires an explicit direct mainline parent",
-                commit_hash[:12])
+                "Merge commit %s requires an explicit direct mainline parent\n%s",
+                commit_hash[:12],
+                merge_mainline_guidance(workspace_path, commit_hash))
+            return False
+        if not 1 <= mainline_parent <= parent_count:
+            logger.error(
+                "--mainline-parent %d is not a direct parent of %s, which has "
+                "%d parents", mainline_parent, commit_hash[:12], parent_count)
             return False
     elif mainline_parent is not None:
         logger.error("--mainline-parent is only valid for a merge commit")
