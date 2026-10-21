@@ -8,8 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3] - 2026-10-21
+
 ### Added
 
+- **cve-oe-backport**: New standalone module — copies a CVE patch from an
+  existing OpenEmbedded repository clone into your layer and writes a
+  version-specific `.bbappend`, using `oe-status-cache.json` and
+  `cve-metadata.json` as inputs. Does not build or validate the result. See
+  `docs/cve-oe-backport.md`.
 - **cve-corrector**: Kirkstone support. Without `CVE_STATUS` (detected via
   `CVE_CHECK_STATUSMAP`), the existing-status check reads `CVE_CHECK_IGNORE`
   and not-applicable results are written as `CVE_CHECK_IGNORE += "<id>"` with
@@ -18,8 +25,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer expects them: an existing bbappend for the recipe, the layer's
   `BBFILES_DYNAMIC` layout (e.g. meta-lts-collab `meta-core/`), or
   `--bbappend-dir`.
+- **cve-corrector**: Missing tarball-only files are copied into initialised
+  submodules before cherry-pick, not just into the superproject — a release
+  tarball's vendored submodule (e.g. python3-aiohttp's vendored llhttp) can
+  ship generated output the submodule's own history ignores; writes are
+  confined inside the submodule, never overwrite, and are recorded in the
+  submodule's local `info/exclude` so cherry-picks stay unblocked.
+- **cve-corrector**: `--fix-url` series resolution is re-checked against the
+  workspace after the canonical fetch completes, so an unattributed
+  (`url: None`) rebase-artifact hash no longer blocks a fix whose real
+  series already resolves fully once fetched from the canonical remote.
 - **cve-metadata-extractor**: `--check-lts-collab` also searches
   meta-lts-collab during `--check-oe`.
+- **cve-metadata-extractor**: References are tagged `is_poc: True` when a
+  source (NVD, CVEList V5) marks them Exploit/PoC, additive to the existing
+  reference shape.
+- **cve-metadata-extractor**: `--check-oe` can run without
+  `OPENEMBEDDED_TOKEN` — mailing-list lookups are skipped when the token is
+  absent, and tokenless/authenticated results are cached separately.
+- **cve-metadata-extractor**: Rerunning with an updated Yocto summary against
+  the same output file now removes CVEs no longer selected by the summary,
+  while preserving explicitly requested `--cve-id` selections.
+- **cve-agent**: The native OpenAI backend nudges and retries a reasoning
+  model's turn when it spends its whole output budget thinking and ends
+  without content or a tool call — either a reasoning-only empty reply
+  (`finish_reason` not `length`) or a true output-budget truncation
+  (`finish_reason: length`), each retried up to twice per session with
+  escalating correction wording so a temperature-0 request doesn't just
+  repeat the same truncation.
+- **cve-agent**: `build_recipe`'s optional `clean` flag appends devtool's own
+  `-c` to the build command so the model can recover from a stale
+  `do_configure` artifact left by an sstate-skipped build, capped at one
+  clean rebuild per session.
+- **cve-agent**: `AGENT_INSTRUCTIONS.md` documents two previously-unhandled
+  conflict shapes in a dependent commit series: a version-bump/release
+  commit between two real fixes, and a `sequence_paths`-trusted commit that
+  turns out to conflict — both now direct the model to escalate the whole
+  sequence instead of retrying a rejected call until timeout.
+- **cve-agent**: A failing handoff validation or refresh now writes
+  `handoff-failure.json` (phase, error code, manifest, and the facts the
+  failing check computed) and `corrector-handoff-refreshed.json` after each
+  refresh, giving a diagnosable record for failures that previously could
+  only be guessed at from a deleted workspace.
+- **docs**: `docs/cve-oe-backport.md`, `docs/result-status-slides.md`, and
+  mentions of VEX / `sbom-cve-check` input formats.
+
+### Changed
+
+- **cve-agent**: A commit's changed-path scope check keeps only the
+  destination of a detected copy (`diff-tree -M -C --find-copies-harder`);
+  previously the untouched source of a near-copy (e.g. a new file copied
+  from an existing one) counted as "changed" and the scope guard rejected
+  an otherwise fully in-scope commit. Renames still report both paths.
+- **cve-agent**: `refresh_repository_handoff` resets submodule worktrees
+  back to the superproject-recorded commit before capturing state, matching
+  the corrector's own handoff — a build that rewrites tracked files inside a
+  submodule no longer fails the retry handoff as an unauthorized change.
+  Untracked files (including tarball-only files copied into submodules) are
+  left alone.
+- **cve-agent**: Provider failures that are a property of the request or
+  endpoint dialect (auth, model-not-found, tool/reasoning-protocol
+  unsupported, truncated, malformed, response-too-large) escalate
+  immediately in trust mode instead of spending `--max-retries` resending an
+  identical temperature-0 request. Interactive runs still ask a human first;
+  timeouts, rate limits, 5xx, and connection loss are unaffected.
+- **cve-agent**: The resolution summary names the semantic-validation reason
+  (status, reason code, and message) when the security gate rejects a
+  passed build, instead of a generic "Resolved via `<backend>`" that hid why
+  `SECURITY_REJECTED` happened.
+- **cve-agent**: `STABLE_AGENT_INSTRUCTIONS`, written into the machine-global
+  `~/.kiro/agents/*.json`, now resolves via a `CVE_TOOLS_DATA_DIR`-independent
+  path so a run that overrides that variable (e.g. a per-CVE benchmark temp
+  directory) no longer repoints every other `kiro-cli` invocation on the host
+  at a throwaway path that is later deleted.
+- **shared**: The handoff's index fingerprint hash streams `git ls-files`
+  output directly into SHA-256 instead of buffering it through the generic
+  size-capped text helper, fixing a crash on repositories whose tracked file
+  listing exceeds the 8MB cap (e.g. qemu).
+- **shared**: `url_parser` recognizes GitLab merge-request diff-view URLs
+  scoped to one commit (`.../diffs?commit_id=<hash>`); the bare, unscoped
+  diff view is still not treated as a single-commit reference.
+- Routine dependency bumps: `step-security/harden-runner`,
+  `github/codeql-action/*`, and other GitHub Actions in the `actions-deps`
+  group.
+
+### Fixed
+
+- **cve-corrector**: Release tarballs whose vendored submodule ships a
+  dangling `.git` gitfile (pointing at a `.git/modules/<name>` directory the
+  tarball doesn't include) no longer abort the version checkout with "not a
+  git repository" and silently stay on the devtool HEAD; the dangling
+  gitfile is removed before checkout and the following submodule update
+  recreates a valid one.
+- **cve-corrector**: Submodule URLs are no longer swapped for a local
+  `--mirror-dir` mirror that is a `--filter=tree:0` partial clone missing
+  trees of the pinned commit, which previously broke `devtool`'s
+  `git add -A` with "Could not read `<tree>`" and was misreported as a
+  pre-existing build failure.
+- **cve-corrector**: `prepare_cve_branch` prefers `devtool-base` over
+  `main`/`master` when listing a recipe's own patches, fixing a git-SRC_URI
+  recipe tracking a stable branch where the bitbake unpack's local `master`
+  (upstream's default branch) made every stable-only upstream commit look
+  like a recipe patch and conflict when replayed onto the release tag
+  (libssh, exiv2, frr, luajit).
+- **cve-corrector**: A fix chain made entirely of ambiguous merge commits
+  (no `--mainline-parent`) now fails immediately with a clear `PatchError`
+  instead of falling through to a generic conflict with no saved state,
+  which previously made `cve-agent` burn a full session against a workspace
+  with nothing to hand off (python3-ecdsa CVE-2026-33936, python3-twisted
+  CVE-2026-42304).
+- **cve-corrector**: `python3-django` is aliased to its `django` mirror in
+  both mirror-lookup maps, fixing a permanently `FATAL` mirror check for any
+  roster including it.
+- **cve-corrector**: `find_mirror_repo` and `update_patches_with_metadata` no
+  longer raise `TypeError` on an `oe_patch_header` entry whose `url` key is
+  explicitly `None` (CVE-2025-13151, CVE-2024-52531).
+- **cve-corrector**: Declared fix commits unresolved after `--tags` now fall
+  back to a direct `git fetch <remote> <sha>` for commits that only exist on
+  deleted/short-lived branches (libsoup, flatpak, editorconfig-core-c, frr);
+  a stale `--mirror-dir` mirror now falls back to fetching from that
+  mirror's own `origin` instead of refetching from itself, a structural
+  no-op (avahi CVE-2024-52615); a stale/divergent local mirror no longer
+  blocks an independently fully-resolved series (libdbi-perl
+  CVE-2026-14380); registered submodules are reset before handoff capture so
+  a stale gitlink isn't misclassified as out-of-scope (jq, coreutils); a
+  tracked file regenerated by an autotools-brokensep pre-patch build is
+  restored before cherry-pick so git doesn't refuse to start it (cups); and
+  a pure file creation with no existing content on either side is written
+  verbatim instead of failing the whole transfer on binary-content rejection
+  (jasper).
+- **cve-agent**: `semantic_validation` derives a missing reference-path
+  mapping from Git evidence (byte-identical pre-fix blob, or Git's own
+  rename/similarity detection) instead of rejecting a correct backport
+  outright whenever the reference commit names a path the recipe's source
+  tree doesn't have (python3-wheel, dropbear, libsoup, python3-certifi); a
+  result whose only changed paths are unclassifiable is now sent for review
+  instead of auto-rejected (imagemagick CVE-2026-25966, gzip CVE-2026-41991,
+  thrift CVE-2026-43870); and renamed reference paths are anchored to the
+  pre-fix baseline tag rather than the current (already-merged) index, which
+  previously lost the pre-image evidence a clean rename-mapped pick needs
+  (CVE-2026-24049 / python3-wheel).
+- **cve-agent**: `refresh_repository_handoff`'s cleanup failures
+  (`HandoffError`/`ArtifactError`) are classified into a normal failed
+  `SessionResult` instead of crashing the whole process with a raw traceback
+  (jq CVE-2026-40612).
+- **cve-metadata-extractor**: Restored `debian`/`cvelistv5`/`nvd`/internal
+  sources actually running — a prior fix to skip disabled sources'
+  `setup()` filtered by `is_enabled()` before `setup()` ran, but these
+  sources only know they're enabled after `setup()` populates state, so
+  they were always excluded regardless of configuration; the "skip
+  disabled" intent now lives inside each source's own `setup()`, and `nvd`
+  no longer defaults to a clone path, keeping it opt-in.
+- **tests/benchmark**: Judge diff is passed via a temp file instead of an
+  argument string, avoiding `ARG_MAX` on large diffs; the judge's full
+  reason is persisted as an artifact alongside the score.
 
 ## [1.2] - 2026-09-21
 
@@ -599,6 +758,7 @@ Initial release of standalone CVE management tools for Yocto/OpenEmbedded.
 - Automated publishing to PyPI via Trusted Publishing (OIDC)
 - Pre-commit hooks (ruff, mypy)
 
+[1.3]: https://github.com/Ericsson/yocto-security-tools/compare/v1.2...v1.3
 [1.2]: https://github.com/Ericsson/yocto-security-tools/compare/v1.1...v1.2
 [1.1.0]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.5...v1.1
 [1.0.5]: https://github.com/Ericsson/yocto-security-tools/compare/v1.0.4...v1.0.5
