@@ -393,6 +393,41 @@ def copy_missing_submodule_files_from_devtool(workspace_path: Path) -> None:
         _exclude_from_status(directory, [path[len(prefix):] for path in written])
 
 
+def reset_submodule_worktrees(workspace_path: Path) -> None:
+    """Restore tracked content of initialised submodules to the recorded commit.
+
+    A build can rewrite tracked files inside a submodule (a bootstrap step
+    patching gnulib, say), which git then lists as a modified tracked path of
+    the superproject. No fix authorises such a path, so a handoff capture
+    would reject it as out of scope. This forces each submodule back to the
+    commit the superproject records, discarding changes to *tracked* files
+    only: untracked files are kept, which matters because
+    :func:`copy_missing_submodule_files_from_devtool` places tarball-only
+    build inputs there.
+
+    Unlike ``cve_corrector``'s ``reset_submodules`` this never fetches,
+    updates or cleans: it is offline, and a submodule that is not an
+    initialised repository, or whose recorded commit is unavailable, is left
+    as it is. Nested submodules are not handled.
+    """
+    for submodule in sorted(_get_submodule_paths(workspace_path)):
+        directory = workspace_path / submodule
+        if not _is_own_repository(directory):
+            continue
+        recorded = run_capture(
+            ['git', 'rev-parse', '--verify', '--quiet', f'HEAD:{submodule}'],
+            cwd=workspace_path)
+        commit = recorded.stdout.strip()
+        if recorded.returncode != 0 or not commit:
+            continue
+        result = run_capture(
+            ['git', 'checkout', '--quiet', '--force', '--detach', commit],
+            cwd=directory)
+        if result.returncode != 0:
+            logger.warning("Could not reset submodule %s to %s: %s", submodule,
+                           commit[:12], result.stderr.strip())
+
+
 def copy_missing_files_from_devtool(workspace_path: Path) -> None:
     """Copy files present in devtool but missing from the CVE branch.
 

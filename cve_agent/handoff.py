@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from shared import TEXT_ENCODING, TEXT_ERRORS, build_git_env
+from shared.git_runner import reset_submodule_worktrees
 from shared.handoff import (
     HandoffError,
     RepositoryHandoff,
@@ -147,6 +148,11 @@ def refresh_repository_handoff(
             commits" the moment cleanup re-derives the same paths, even
             though nothing about this attempt actually touched them.
     """
+    # A build can leave a submodule with modified tracked files, which git
+    # reports as a modified tracked path that no fix authorises. The
+    # corrector's own handoff resets submodule worktrees first for the same
+    # reason; do it here before the state is captured and judged.
+    reset_submodule_worktrees(workspace)
     captured = capture_handoff_state(workspace)
     # sequence_paths covers the remaining commits of a conflicted fix series
     # that a host-driven `git cherry-pick --continue` applies without a
