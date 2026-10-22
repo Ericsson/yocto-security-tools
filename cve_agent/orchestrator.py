@@ -794,6 +794,30 @@ def _run_single_resolution_attempt(
     )
 
 
+def _typed_corrector_failure(output: str) -> tuple[str, ResultOutcome] | None:
+    """Classify a corrector run by the typed failure code it printed.
+
+    ``TRANSFER_*`` takes precedence over ``HANDOFF_*``. Returns the result
+    summary and outcome, or ``None`` when the output carries neither code. The
+    first run and both ``--continue`` runs share this, so a code printed after
+    the AI resolved a conflict is not lost.
+    """
+    window = output[:64 * 1024]
+    transfer_match = _TRANSFER_CODE_RE.search(window)
+    if transfer_match:
+        code = transfer_match.group(1)
+        return f"Patch transfer failed: {code}", ResultOutcome(
+            WorkflowStatus.FAILED, BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED, FailureClass.PATCH_TRANSFER, code)
+    handoff_match = _HANDOFF_CODE_RE.search(window)
+    if handoff_match:
+        code = handoff_match.group(1)
+        return f"Corrector handoff failed: {code}", ResultOutcome(
+            WorkflowStatus.FAILED, BuildStatus.NOT_RUN,
+            SecurityStatus.NOT_EVALUATED, FailureClass.CORRECTOR_HANDOFF, code)
+    return None
+
+
 def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase | None,
                          workspace_path: Path, upstream_sha: str,
                          attempt: int, start_time: float,
@@ -806,7 +830,7 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase | No
     generated = _capture_semantic_candidate(
         workspace_path, semantic_reference)
 
-    continue_exit, _ = run_corrector(config, continue_mode=True)
+    continue_exit, continue_output = run_corrector(config, continue_mode=True)
 
     if continue_exit in (EXIT_SUCCESS, EXIT_ALREADY_APPLIED):
         artifacts = current_run_artifacts()
@@ -851,9 +875,13 @@ def _finalize_resolution(config: AgentConfig, knowledge_base: KnowledgeBase | No
         _record_semantic_validation(
             semantic_reference, generated, BuildStatus.FAILED,
             tests_executed=False)
+        typed = _typed_corrector_failure(continue_output)
+        summary_text, outcome = (
+            typed if typed
+            else (f"Unrecoverable error (exit {continue_exit})", None))
         return _AttemptOutcome(result=_make_result(
             config.cve_id, ResultStatus.FAILED,
-            attempt, start_time, f"Unrecoverable error (exit {continue_exit})"
+            attempt, start_time, summary_text, outcome
         ))
 
     print(f"--continue exited with recoverable code {continue_exit}, retrying...")
@@ -970,7 +998,7 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
     details = gather_pattern_details(workspace_path, upstream_sha)
     generated = _capture_semantic_candidate(
         workspace_path, semantic_reference)
-    continue_exit, _ = run_corrector(config, continue_mode=True)
+    continue_exit, continue_output = run_corrector(config, continue_mode=True)
     if continue_exit in (EXIT_SUCCESS, EXIT_ALREADY_APPLIED):
         artifacts = current_run_artifacts()
         if artifacts is not None:
@@ -1003,9 +1031,12 @@ def _handle_clean_apply(config: AgentConfig, workspace_path: Path,
         _record_semantic_validation(
             semantic_reference, generated, BuildStatus.FAILED,
             tests_executed=False)
+        typed = _typed_corrector_failure(continue_output)
+        summary_text, outcome = (
+            typed if typed else (f"Failed after analysis (exit {continue_exit})", None))
         return _make_result(
             config.cve_id, ResultStatus.FAILED, 0, start_time,
-            f"Failed after analysis (exit {continue_exit})"
+            summary_text, outcome
         )
 
     return _resolution_loop(
@@ -1241,8 +1272,7 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase | None,
     print(f"cve-corrector exited with code {exit_code}")
 
     if exit_code in UNRECOVERABLE_EXITS:
-        handoff_match = _HANDOFF_CODE_RE.search(corrector_output[:64 * 1024])
-        transfer_match = _TRANSFER_CODE_RE.search(corrector_output[:64 * 1024])
+        typed_failure = _typed_corrector_failure(corrector_output)
         prep_match = (_PREP_CODE_RE.search(corrector_output[:64 * 1024])
                       if exit_code == EXIT_PREP_BASE_MISMATCH else None)
         merge_match = (_MERGE_CODE_RE.search(corrector_output[:64 * 1024])
@@ -1279,31 +1309,11 @@ def _run_cve_pipeline(config: AgentConfig, knowledge_base: KnowledgeBase | None,
                     prep_match.group(1),
                 ),
             )
-        elif transfer_match:
-            code = transfer_match.group(1)
+        elif typed_failure:
+            summary_text, outcome = typed_failure
             result = _make_result(
                 config.cve_id, ResultStatus.FAILED, 0, start_time,
-                f"Patch transfer failed: {code}",
-                ResultOutcome(
-                    WorkflowStatus.FAILED,
-                    BuildStatus.NOT_RUN,
-                    SecurityStatus.NOT_EVALUATED,
-                    FailureClass.PATCH_TRANSFER,
-                    code,
-                ),
-            )
-        elif handoff_match:
-            code = handoff_match.group(1)
-            result = _make_result(
-                config.cve_id, ResultStatus.FAILED, 0, start_time,
-                f"Corrector handoff failed: {code}",
-                ResultOutcome(
-                    WorkflowStatus.FAILED,
-                    BuildStatus.NOT_RUN,
-                    SecurityStatus.NOT_EVALUATED,
-                    FailureClass.CORRECTOR_HANDOFF,
-                    code,
-                ),
+                summary_text, outcome,
             )
         elif exit_code == EXIT_ALREADY_APPLIED or '--allow-empty' in corrector_output:
             result = _handle_not_applicable(
