@@ -37,7 +37,13 @@ Structured fields are redacted before JSON serialization. Exact configured
 secrets, bearer values, obvious API-key forms, and URL userinfo are removed.
 Large values become bounded excerpts plus byte counts and SHA-256 digests.
 Provider bodies, child environments, authorization headers, and unrestricted
-source/build output are not retained. Hidden provider reasoning is not stored;
+source/build output are not retained. A failed provider response keeps a bounded
+excerpt and digest, plus the facts that say why it failed: the server's
+`finish_reason` (kept only as a short printable string), the prompt, completion
+and total token counts (kept only as nonnegative integers), and the response size
+in bytes. They appear in `provider-primary.json` and in the `http_failure`
+transcript event, and tell a reply that ran out of output budget
+(`finish_reason: length`) from one that stopped on its own with no tool call. Hidden provider reasoning is not stored;
 only assistant content returned through the supported chat contract is
 eligible for the same bounded transcript treatment.
 

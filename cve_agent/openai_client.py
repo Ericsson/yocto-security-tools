@@ -912,6 +912,7 @@ class OpenAIChatCompletionsClient:
         secret: str | None,
     ) -> ProviderFailureEvidence:
         request_id = self._safe_request_id(headers)
+        finish_reason, usage = self._response_facts(body)
         return ProviderFailureEvidence(
             code=code,
             status_code=status,
@@ -920,7 +921,51 @@ class OpenAIChatCompletionsClient:
             response_sha256=hashlib.sha256(body).hexdigest(),
             response_excerpt=self._safe_snippet(body, secret),
             request_features=self._last_request_features,
+            finish_reason=finish_reason,
+            prompt_tokens=usage[0],
+            completion_tokens=usage[1],
+            total_tokens=usage[2],
+            response_bytes=len(body),
         )
+
+    @staticmethod
+    def _response_facts(
+        body: bytes,
+    ) -> tuple[str | None, tuple[int | None, int | None, int | None]]:
+        """Read the finish reason and token counts from a failed response.
+
+        Best effort and never raising: the body may be any bytes, including
+        deeply nested JSON, and a failure record must not itself fail. Every
+        value is server-controlled, so only a short printable string and
+        nonnegative integers are kept.
+        """
+        none: tuple[int | None, int | None, int | None] = (None, None, None)
+        try:
+            decoded = json.loads(body)
+        except (ValueError, RecursionError):
+            return None, none
+        if not isinstance(decoded, dict):
+            return None, none
+        finish_reason: str | None = None
+        choices = decoded.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            value = choices[0].get("finish_reason")
+            if (isinstance(value, str) and len(value) <= 64
+                    and value.isprintable()):
+                finish_reason = value
+        usage = decoded.get("usage")
+        if not isinstance(usage, dict):
+            return finish_reason, none
+
+        def count(name: str) -> int | None:
+            item = usage.get(name)
+            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+                return None
+            return item
+
+        return finish_reason, (
+            count("prompt_tokens"), count("completion_tokens"),
+            count("total_tokens"))
 
     def _safe_request_id(self, headers: Mapping[str, str]) -> str | None:
         if not self.capabilities.supports_request_ids:

@@ -130,6 +130,13 @@ class ProviderFailureEvidence:
     response_sha256: str | None = None
     response_excerpt: str | None = None
     request_features: tuple[str, ...] = ()
+    # Facts read from the response body itself. The excerpt is cut short, so
+    # these are what say whether a reply ran out of output budget.
+    finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    response_bytes: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -140,4 +147,9 @@ class ProviderFailureEvidence:
             "response_sha256": self.response_sha256,
             "response_excerpt": self.response_excerpt,
             "request_features": list(self.request_features),
+            "finish_reason": self.finish_reason,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "response_bytes": self.response_bytes,
         }
