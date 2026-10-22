@@ -465,9 +465,17 @@ def _verify_and_commit(
         return
     for path in paths:
         _safe_path(path)
-    result = run_cmd_capture(["git", "add", "-A", "--", *paths], cwd=workspace)
+    # ``-f``: the paths are the fix's own, already validated against its file
+    # list. Upstream may force-add a fixture that the tree's .gitignore
+    # matches (vim adds ``*.swp`` samples), and a plain ``git add`` refuses
+    # an explicit ignored path. Forcing is limited to these pathspecs, so an
+    # unrelated ignored file is never staged.
+    result = run_cmd_capture(["git", "add", "-A", "-f", "--", *paths], cwd=workspace)
     if result.returncode != 0:
-        raise TransferError(TransferCode.APPLY_FAILED, "fixed staging failed")
+        reason = " ".join((result.stderr or "").split())[:300]
+        raise TransferError(
+            TransferCode.APPLY_FAILED,
+            f"fixed staging failed: {reason}" if reason else "fixed staging failed")
     actual = set(_changed_paths(_git(
         workspace, "diff", "--cached", "--name-status", "-z")))
     if actual != set(paths):
