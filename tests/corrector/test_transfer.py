@@ -431,3 +431,84 @@ def test_successful_layout_transfer_becomes_handoff_scope(tmp_path):
     assert manifest.allowed_paths == ("downstream/api.c",)
     assert validate_repository_handoff(
         repo, "CVE-2026-1703", required=True) == manifest
+
+
+def _commit_forced(repo: Path, message: str) -> str:
+    """Commit like upstream does: ignored test fixtures are force-added."""
+    _git(repo, "add", "-A")
+    _git(repo, "add", "-f", "--", "data")
+    _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_fix_adding_a_gitignored_file_is_staged_and_committed(tmp_path):
+    """An upstream fix may add a test fixture that the tree's .gitignore
+    matches, because the upstream author force-added it (vim's fix for
+    CVE-2026-28421 adds ``*.swp`` samples). ``git add`` refuses an explicit
+    ignored path, which failed the whole transfer as ``fixed staging failed``
+    although every path was validated against the fix's own file list."""
+    repo = _new_repo(tmp_path)
+    (repo / "src").mkdir(parents=True)
+    (repo / ".gitignore").write_text("*.swp\n")
+    (repo / "src/api.c").write_bytes(b"old\n")
+    parent = _commit(repo, "base")
+    (repo / "src/api.c").write_bytes(b"fixed\n")
+    (repo / "data").mkdir()
+    (repo / "data/crash1.swp").write_bytes(b"\x00\x01\xffSWAP")
+    commit = _commit_forced(repo, "security fix with an ignored fixture")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+
+    manifest = _transfer(repo, commit)
+
+    assert set(manifest.final_changed_paths) == {"src/api.c", "data/crash1.swp"}
+    assert (repo / "data/crash1.swp").read_bytes() == b"\x00\x01\xffSWAP"
+    committed = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+    assert set(committed.splitlines()) == {"src/api.c", "data/crash1.swp"}
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_force_staging_does_not_widen_the_staged_path_set(tmp_path):
+    """Forcing is limited to the fix's own paths: an ignored file the fix does
+    not touch must stay unstaged and out of the commit."""
+    repo = _new_repo(tmp_path)
+    (repo / "src").mkdir(parents=True)
+    (repo / ".gitignore").write_text("*.swp\n")
+    (repo / "src/api.c").write_bytes(b"old\n")
+    parent = _commit(repo, "base")
+    (repo / "src/api.c").write_bytes(b"fixed\n")
+    commit = _commit(repo, "security fix")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+    (repo / "src/unrelated.swp").write_bytes(b"local")
+
+    manifest = _transfer(repo, commit)
+
+    assert manifest.final_changed_paths == ("src/api.c",)
+    committed = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+    assert committed.splitlines() == ["src/api.c"]
+
+
+def test_staging_failure_reports_git_stderr(tmp_path, monkeypatch):
+    """The error must say why git refused, not only that staging failed."""
+    import cve_corrector.transfer as transfer_module
+
+    repo = _new_repo(tmp_path)
+    parent, commit = _source_change(repo, "src/api.c", b"old\n", b"fixed\n")
+    _git(repo, "checkout", "-q", "-b", "target", parent)
+    real = transfer_module.run_cmd_capture
+
+    def fake(cmd, cwd=None):
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout="", stderr="fatal: unable to write\nnew index file\n")
+        return real(cmd, cwd=cwd)
+
+    monkeypatch.setattr(transfer_module, "run_cmd_capture", fake)
+
+    with pytest.raises(TransferError) as caught:
+        _transfer(repo, commit)
+
+    assert caught.value.code is TransferCode.APPLY_FAILED
+    text = str(caught.value)
+    assert text.startswith("TRANSFER_APPLY_FAILED: fixed staging failed")
+    assert "unable to write new index file" in text
+    assert "\n" not in text
