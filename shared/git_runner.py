@@ -393,7 +393,12 @@ def copy_missing_submodule_files_from_devtool(workspace_path: Path) -> None:
         _exclude_from_status(directory, [path[len(prefix):] for path in written])
 
 
-def reset_submodule_worktrees(workspace_path: Path) -> None:
+# A submodule can itself have submodules (gnutls' devel/libtasn1 carries
+# gnulib); git is not expected to nest anywhere near this deep.
+_MAX_SUBMODULE_DEPTH = 8
+
+
+def reset_submodule_worktrees(workspace_path: Path, _depth: int = 0) -> None:
     """Restore tracked content of initialised submodules to the recorded commit.
 
     A build can rewrite tracked files inside a submodule (a bootstrap step
@@ -408,8 +413,11 @@ def reset_submodule_worktrees(workspace_path: Path) -> None:
     Unlike ``cve_corrector``'s ``reset_submodules`` this never fetches,
     updates or cleans: it is offline, and a submodule that is not an
     initialised repository, or whose recorded commit is unavailable, is left
-    as it is. Nested submodules are not handled.
+    as it is. Submodules of submodules are reset too, because git reports the
+    outer one as modified while any inner one is.
     """
+    if _depth >= _MAX_SUBMODULE_DEPTH:
+        return
     for submodule in sorted(_get_submodule_paths(workspace_path)):
         directory = workspace_path / submodule
         if not _is_own_repository(directory):
@@ -426,6 +434,8 @@ def reset_submodule_worktrees(workspace_path: Path) -> None:
         if result.returncode != 0:
             logger.warning("Could not reset submodule %s to %s: %s", submodule,
                            commit[:12], result.stderr.strip())
+            continue
+        reset_submodule_worktrees(directory, _depth + 1)
 
 
 def copy_missing_files_from_devtool(workspace_path: Path) -> None:
