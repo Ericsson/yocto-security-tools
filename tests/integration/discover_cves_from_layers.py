@@ -19,12 +19,17 @@ recipes are kept as separate entries (``<cve-id>`` for the first recipe seen,
 ``<cve-id>+<recipe>`` for each additional one) rather than merged, since they
 are unrelated fixes that happen to share a CVE ID.
 
+A multi-commit chain keeps the order of the recipe's ``SRC_URI``. With
+``--mirror-dir`` an ancestor commit is also moved ahead of its descendants.
+
 Usage:
-    python3 discover_cves_from_layers.py <output.json> <layer_dir> [<layer_dir> ...]
+    python3 discover_cves_from_layers.py [--mirror-dir DIR] <output.json> \
+        <layer_dir> [<layer_dir> ...]
 """
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -108,6 +113,87 @@ def _deduce_recipe(path: Path, layer_root: Path) -> str | None:
     return None
 
 
+# What may follow a ``file://<name>`` entry in a SRC_URI: whitespace, the line
+# continuation backslash, a closing quote, a parameter ``;`` or the end of text.
+# Without it ``CVE-X.patch`` would also match inside ``CVE-X.patch.orig``.
+_SRC_URI_ENTRY_END = r'(?=[\s\\"\';]|$)'
+
+
+def _src_uri_order(patches: list[Path]) -> list[Path]:
+    """Order a CVE's patch files as the recipe's ``SRC_URI`` applies them.
+
+    ``rglob`` yields file-name order, which is wrong for a chain: ``-`` sorts
+    before ``.``, so ``CVE-X-regression_p1.patch`` came before ``CVE-X.patch``
+    and the corrector cherry-picked a fix for code the CVE fix had not
+    introduced yet (cups CVE-2026-34980). The recipe's ``SRC_URI`` is the one
+    order known to build, so use it when a single recipe file names every
+    patch. Otherwise keep the given order, which is deterministic.
+    """
+    if len(patches) < 2:
+        return patches
+    first = patches[0]
+    for directory in list(first.parents)[:4]:
+        recipe_files = sorted(
+            f for suffix in _RECIPE_GLOB_SUFFIXES
+            for f in directory.glob(f'*{suffix}'))
+        for recipe_file in recipe_files:
+            try:
+                text = recipe_file.read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                continue
+            positions = {}
+            for patch in patches:
+                match = re.search(
+                    r'file://' + re.escape(patch.name) + _SRC_URI_ENTRY_END, text)
+                if match is None:
+                    break
+                positions[patch] = match.start()
+            else:
+                return sorted(patches, key=positions.__getitem__)
+    return patches
+
+
+def _mirror_repo(mirror_dir: Path | None, recipe: str) -> Path | None:
+    """The local mirror holding ``recipe``'s upstream history, if there is one."""
+    if mirror_dir is None:
+        return None
+    for candidate in (mirror_dir / recipe, mirror_dir / f'{recipe}.git'):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _is_ancestor(repo: Path, older: str, newer: str) -> bool:
+    return subprocess.run(
+        ['git', '-C', str(repo), 'merge-base', '--is-ancestor', older, newer],
+        capture_output=True, check=False).returncode == 0
+
+
+def _history_order(commits: list[str], repo: Path) -> list[str]:
+    """Reorder ``commits`` so an ancestor always precedes its descendants.
+
+    A recipe may list a later upstream commit before the one it builds on (tar
+    CVE-2026-5704), and cherry-picking in that order applies a change before
+    the code it modifies exists. The correction is stable: commits with no
+    ancestry relation keep their given order. A commit the mirror does not
+    have is unrelated to every other, because ``merge-base`` fails for it.
+    """
+    below = {c: {o for o in commits if o != c and _is_ancestor(repo, o, c)}
+             for c in commits}
+    pending = list(commits)
+    ordered: list[str] = []
+    while pending:
+        for candidate in pending:
+            if not (below[candidate] & set(pending)):
+                ordered.append(candidate)
+                pending.remove(candidate)
+                break
+        else:  # an ancestry cycle cannot occur; keep the remainder as listed
+            ordered.extend(pending)
+            break
+    return ordered
+
+
 def _extract_hashes(path: Path) -> list[dict]:
     """Upstream-Status hashes first, From-header hashes as last resort."""
     try:
@@ -131,8 +217,12 @@ def _extract_hashes(path: Path) -> list[dict]:
     return results
 
 
-def discover(layer_dirs: list[Path]) -> dict:
+def discover(layer_dirs: list[Path], mirror_dir: Path | None = None) -> dict:
     """Scan ``layer_dirs`` and build a cve-metadata dict.
+
+    A multi-commit chain is ordered as the recipe's ``SRC_URI`` applies it.
+    With ``mirror_dir`` (a directory of upstream clones named after the
+    recipe) an ancestor is additionally moved before its descendants.
 
     Returns:
         Dict keyed by CVE ID (or ``<cve-id>+<recipe>`` for a second distinct
@@ -155,7 +245,8 @@ def discover(layer_dirs: list[Path]) -> dict:
 
     result: dict[str, dict] = {}
     for cve_id, by_recipe in sorted(by_cve.items()):
-        for index, (recipe, patches) in enumerate(sorted(by_recipe.items())):
+        for index, (recipe, listed) in enumerate(sorted(by_recipe.items())):
+            patches = _src_uri_order(listed)
             key = cve_id if index == 0 else f"{cve_id}+{recipe}"
             all_hashes: list[dict] = []
             for patch in patches:
@@ -183,6 +274,12 @@ def discover(layer_dirs: list[Path]) -> dict:
             # Upstream-Status hash first (most reliable, in patch order),
             # then any From-header hash not already covered by one of them.
             is_chain = len(url_based) > 1
+            if is_chain:
+                repo = _mirror_repo(mirror_dir, recipe)
+                if repo is not None:
+                    by_hash = {h['hash']: h for h in url_based}
+                    url_based = [by_hash[c] for c in _history_order(
+                        [h['hash'] for h in url_based], repo)]
             if is_chain:
                 chain_hashes = {h['hash'] for h in url_based}
                 header_based = [h for h in header_based
@@ -237,13 +334,17 @@ def main() -> None:
     parser.add_argument('output', type=Path, help='Output cve-metadata JSON path')
     parser.add_argument('layer_dirs', type=Path, nargs='+',
                         help='One or more OE meta layer roots to scan')
+    parser.add_argument('--mirror-dir', type=Path, default=None,
+                        help='Directory of upstream git clones named after the '
+                             'recipe; orders each chain so an ancestor precedes '
+                             'its descendants')
     args = parser.parse_args()
 
     for layer_dir in args.layer_dirs:
         if not layer_dir.is_dir():
             parser.error(f"not a directory: {layer_dir}")
 
-    data = discover(args.layer_dirs)
+    data = discover(args.layer_dirs, mirror_dir=args.mirror_dir)
 
     with_hashes = sum(1 for e in data.values() if e['hashes'])
     with_series = sum(1 for e in data.values() if e['series'])
