@@ -1003,3 +1003,105 @@ def test_import_has_no_network_activity():
         capture_output=True, text=True, check=False,
         env={**os.environ, "PYTHONPATH": str(project_root)})
     assert result.returncode == 0, result.stderr
+
+
+# --- finish reason and token counts in a failure's evidence -------------------
+
+def _failure(payload=None, *, body=None, status_code=200):
+    """Run one request that fails and return (error, failure events)."""
+    events: list[OpenAIClientEvent] = []
+    response = (FakeResponse(status_code, payload, body=body)
+                if body is not None or payload is not None
+                else FakeResponse(status_code))
+    with pytest.raises(OpenAIClientError) as excinfo:
+        _client(FakeTransport(response), events=events).complete(
+            [{"role": "user", "content": "hello"}], [])
+    return excinfo.value, [event for event in events if event.kind == "failure"]
+
+
+def test_truncation_evidence_keeps_finish_reason_and_token_counts():
+    """Whether a reasoning-only reply ran out of budget is the question every
+    such failure raises; the 512-character excerpt cannot answer it."""
+    payload = _text_payload(
+        None, finish_reason="length",
+        usage={"prompt_tokens": 41000, "completion_tokens": 8192,
+               "total_tokens": 49192})
+    payload["choices"][0]["message"]["reasoning"] = "Now I understand"
+
+    error, failures = _failure(payload)
+
+    evidence = error.evidence
+    assert evidence is not None
+    assert evidence.finish_reason == "length"
+    assert evidence.prompt_tokens == 41000
+    assert evidence.completion_tokens == 8192
+    assert evidence.total_tokens == 49192
+    assert evidence.response_bytes == len(json.dumps(payload).encode("utf-8"))
+    assert failures[0].failure is evidence
+    assert evidence.to_dict()["finish_reason"] == "length"
+    assert evidence.to_dict()["completion_tokens"] == 8192
+
+
+def test_empty_reply_evidence_distinguishes_stop_from_length():
+    payload = _text_payload(None, finish_reason="stop",
+                            usage={"completion_tokens": 120})
+    payload["choices"][0]["message"]["reasoning"] = "thinking"
+
+    error, _ = _failure(payload)
+
+    assert isinstance(error, OpenAIEmptyResponseError)
+    assert error.evidence.finish_reason == "stop"
+    assert error.evidence.completion_tokens == 120
+    assert error.evidence.prompt_tokens is None
+
+
+def test_evidence_facts_are_none_when_the_server_reports_none():
+    error, _ = _failure(_text_payload(None, finish_reason=None))
+
+    assert error.evidence.finish_reason is None
+    assert error.evidence.completion_tokens is None
+    assert error.evidence.response_bytes is not None
+
+
+@pytest.mark.parametrize("finish_reason", [
+    "x" * 65, "line\nbreak", 7, ["length"], True,
+])
+def test_hostile_finish_reason_is_not_retained(finish_reason):
+    """The value is server-controlled: only a short printable string is kept."""
+    payload = _text_payload(None)
+    payload["choices"][0]["finish_reason"] = finish_reason
+
+    error, _ = _failure(body=json.dumps(payload).encode("utf-8"))
+
+    assert error.evidence.finish_reason is None
+
+
+@pytest.mark.parametrize("usage", [
+    {"completion_tokens": True}, {"completion_tokens": -1},
+    {"completion_tokens": "9"}, {"completion_tokens": 1.5}, [], "many",
+])
+def test_invalid_token_counts_are_not_retained(usage):
+    payload = _text_payload(None, finish_reason="stop")
+    payload["usage"] = usage
+
+    error, _ = _failure(body=json.dumps(payload).encode("utf-8"))
+
+    assert error.evidence.completion_tokens is None
+
+
+def test_http_failure_with_a_non_json_body_keeps_no_facts_and_does_not_raise():
+    error, _ = _failure(body=b"<html>bad gateway</html>", status_code=400)
+
+    assert error.evidence is not None
+    assert error.evidence.finish_reason is None
+    assert error.evidence.completion_tokens is None
+    assert error.evidence.response_bytes == len(b"<html>bad gateway</html>")
+
+
+def test_deeply_nested_body_does_not_break_evidence():
+    body = b"[" * 100000 + b"]" * 100000
+
+    error, _ = _failure(body=body, status_code=400)
+
+    assert error.evidence is not None
+    assert error.evidence.finish_reason is None

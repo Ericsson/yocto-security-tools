@@ -94,4 +94,27 @@ def test_failure_evidence_serializes_only_allowlisted_bounded_facts():
         "response_sha256": "a" * 64,
         "response_excerpt": "rate limited",
         "request_features": ["tools", "max_tokens"],
+        "finish_reason": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "response_bytes": None,
     }
+
+
+def test_failure_evidence_serializes_finish_reason_and_token_counts():
+    evidence = ProviderFailureEvidence(
+        ProviderErrorCode.RESPONSE_TRUNCATED,
+        status_code=200,
+        finish_reason="length",
+        prompt_tokens=100,
+        completion_tokens=8192,
+        total_tokens=8292,
+        response_bytes=4096,
+    )
+
+    data = evidence.to_dict()
+
+    assert data["finish_reason"] == "length"
+    assert (data["prompt_tokens"], data["completion_tokens"],
+            data["total_tokens"], data["response_bytes"]) == (100, 8192, 8292, 4096)
