@@ -1035,3 +1035,108 @@ def _git_status(repo: Path) -> str:
         ["git", "status", "--porcelain"], cwd=repo,
         capture_output=True, text=True, check=True)
     return result.stdout
+
+
+# --- the failed build's output survives in the durable artifacts --------------
+
+class _ScriptedBuildRunner(FakeBuildRunner):
+    """Return one scripted build result per call."""
+
+    def __init__(self, agent: Path, results) -> None:
+        super().__init__(agent)
+        self._results = list(results)
+
+    def run(self, recipe: str, clean: bool = False) -> BuildCommandResult:
+        self.calls.append(recipe)
+        return self._results.pop(0)
+
+
+def _build_result(agent: Path, *, returncode: int, tail: str,
+                  timed_out: bool = False) -> BuildCommandResult:
+    return BuildCommandResult(
+        returncode=returncode,
+        duration=1.5,
+        timed_out=timed_out,
+        tail=tail,
+        truncated=len(tail) > 100,
+        total_output_bytes=len(tail),
+        log_path=agent / BUILD_LOG_NAME,
+    )
+
+
+def _run_builds(tmp_path, results):
+    """Run a scripted session that builds once per result, then escalates."""
+    repo, agent, context = _repository(tmp_path)
+    runner = _ScriptedBuildRunner(agent, [_build_result(agent, **r) for r in results])
+    actions = [
+        _response(_call("context", "read_file", json.dumps({"path": str(context)}))),
+        *[_response(_call(f"build{i}", "build_recipe")) for i in range(len(results))],
+        _response(_call("finish", "finish",
+                        '{"status":"needs_human","reason":"cannot build"}')),
+    ]
+    backend, _ = _backend(actions, agent, build_runner=runner)
+    artifact_run = RunArtifacts.create(
+        "CVE-TEST", "openai", "primary", "scripted-model",
+        root=tmp_path / "artifacts")
+    token = artifact_run.activate()
+    try:
+        backend.run_session(
+            f"Read {context}", repo, {"a.c"}, "scripted-model", 30, False)
+    finally:
+        RunArtifacts.deactivate(token)
+    summary = json.loads((artifact_run.path / "build-summary.json").read_text())
+    events = [json.loads(line) for line in
+              (artifact_run.path / "agent-transcript.jsonl").read_text().splitlines()]
+    return summary, [e for e in events if e["event"] == "build_completed"]
+
+
+def test_failed_build_summary_keeps_the_exit_status_and_output_tail(tmp_path):
+    """A model that hits its step limit after a failed build leaves no trace of
+    why the build failed unless the build output is retained."""
+    noise = "NOTE: progress line\n" * 400
+    tail = noise + "ERROR: ssh.c:1204:5: error: 'opts' undeclared\nERROR: Task failed\n"
+
+    summary, completed = _run_builds(
+        tmp_path, [{"returncode": 1, "tail": tail}])
+
+    assert summary["status"] == "failed"
+    assert summary["exit_status"] == 1
+    assert summary["timed_out"] is False
+    assert summary["tail"].endswith("ERROR: Task failed\n")
+    assert "'opts' undeclared" in summary["tail"]
+    assert len(summary["tail"]) <= 3072
+    assert summary["log_path"].endswith(BUILD_LOG_NAME)
+    assert completed[0]["status"] == "failed"
+    assert "'opts' undeclared" in completed[0]["tail"]
+
+
+def test_each_failed_build_is_kept_in_the_transcript_not_only_the_last(tmp_path):
+    summary, completed = _run_builds(tmp_path, [
+        {"returncode": 1, "tail": "first failure: missing include\n"},
+        {"returncode": 1, "tail": "second failure: undefined symbol\n"},
+    ])
+
+    assert [e["status"] for e in completed] == ["failed", "failed"]
+    assert "missing include" in completed[0]["tail"]
+    assert "undefined symbol" in completed[1]["tail"]
+    assert "undefined symbol" in summary["tail"]
+
+
+def test_passed_build_summary_carries_no_output_tail(tmp_path):
+    """A successful build's log is noise; only the exit status is kept."""
+    summary, completed = _run_builds(
+        tmp_path, [{"returncode": 0, "tail": "NOTE: all tasks succeeded\n"}])
+
+    assert summary["status"] == "passed"
+    assert summary["exit_status"] == 0
+    assert "tail" not in summary
+    assert "tail" not in completed[0]
+
+
+def test_timed_out_build_is_summarized_with_its_tail(tmp_path):
+    summary, _ = _run_builds(tmp_path, [
+        {"returncode": -9, "tail": "do_compile: still running\n", "timed_out": True}])
+
+    assert summary["status"] == "failed"
+    assert summary["timed_out"] is True
+    assert "still running" in summary["tail"]

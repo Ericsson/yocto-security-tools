@@ -10,7 +10,11 @@ Each attempt contains:
 
 - `run-manifest.json`, with schema version, run ID, CVE, canonical backend,
   profile, model, and creation time;
-- `preflight.json`, `provider-summary.json`, and `build-summary.json`;
+- `preflight.json`, `provider-summary.json`, and `build-summary.json`. For the
+  native backend the last also records the latest build's exit status, whether
+  it timed out and its log path; a failed build adds the final 3 KiB of its
+  output, the only copy once the workspace is gone. Each `build_completed`
+  event carries the same facts, so earlier failed builds are kept too;
 - `agent-transcript.jsonl`, opened before preflight and flushed at privileged
   boundaries;
 - `corrector-handoff.json` once the corrector handoff validates, and
