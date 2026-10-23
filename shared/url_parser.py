@@ -292,6 +292,18 @@ def _savannah_domain(host: str) -> str | None:
     return None
 
 
+# A scheme-less "host.tld/path" link, as written in many OE Upstream-Status
+# lines. The first segment must look like a hostname; free text does not.
+_SCHEMELESS_URL_RE = re.compile(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/\S')
+
+
+def _with_scheme(url: str) -> str:
+    """Prefix ``https://`` to a bare ``host.tld/path`` link; keep all else."""
+    if _SCHEMELESS_URL_RE.match(url):
+        return f'https://{url}'
+    return url
+
+
 def deduce_repo_url(url: str) -> str | None:
     """Deduce the git repository URL from a commit/patch URL.
 
@@ -299,13 +311,18 @@ def deduce_repo_url(url: str) -> str | None:
     special-case, and other common forge patterns.
 
     Args:
-        url: A commit, patch, or pull request URL.
+        url: A commit, patch, or pull request URL. A bare ``host.tld/path``
+            link without a scheme is read as ``https://``.
 
     Returns:
         Repository URL string, or None if not deducible.
     """
     if any(p in url for p in _REPO_SKIP_PATTERNS):
         return None
+
+    # Without a scheme urlparse finds no host, and a repository returned
+    # without one cannot be fetched: git reads it as a local path.
+    url = _with_scheme(url)
 
     # ncurses special-case
     if 'ncurses' in url and 'commit' in url:
