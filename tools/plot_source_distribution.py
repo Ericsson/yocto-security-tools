@@ -26,8 +26,9 @@ registry) and generates PNG charts showing:
   7. unique_contribution.png   - hashes found by only one source (what would be
                                  lost if that source were dropped)
 
-Any source name found in the input file that is not registered by
-cve_metadata_extractor's own SOURCE_REGISTRY (see UPSTREAM_SOURCES below) is
+Any source name found in the input file that is neither registered by
+cve_metadata_extractor's own SOURCE_REGISTRY nor OE-derived (oe_patch,
+oe_patch_header; see PUBLIC_SOURCES below) is
 treated as closed enrichment data and visually distinguished (orange color
 + caption note) in every chart. This script never hardcodes the name of any
 specific closed source — the distinction is derived entirely from
@@ -65,10 +66,20 @@ from typing import Any
 # particular enrichment vendor.
 UPSTREAM_SOURCES = {'debian', 'osv', 'ubuntu', 'uct', 'cvelistv5', 'nvd'}
 
+# Sources that are public but live outside cve_metadata_extractor's
+# SOURCE_REGISTRY: hashes recovered from the Upstream-Status/From headers of
+# patches already shipped in OpenEmbedded layers (see
+# tests/integration/enrich_metadata_from_oe.py). They are derived from public
+# data, so they are NOT internal and must never be anonymized or colored as
+# closed enrichment.
+OE_SOURCES = {'oe_patch', 'oe_patch_header'}
+
+PUBLIC_SOURCES = UPSTREAM_SOURCES | OE_SOURCES
+
 
 def is_internal_source(source: str) -> bool:
-    """True if a source name is not part of the public extractor's registry."""
-    return source not in UPSTREAM_SOURCES
+    """True if a source name is neither a public extractor source nor OE-derived."""
+    return source not in PUBLIC_SOURCES
 
 # Display names for chart labels. The underlying data key ('uct') matches the
 # extractor's source name (cve_metadata_extractor/uct.py, Ubuntu CVE Tracker);
@@ -167,7 +178,7 @@ def compute_upstream_vs_combined_gain(index: dict, total_cves: int) -> dict:
     coverage? Unions sets across sources rather than summing per-source
     counts, so a CVE/hash found by multiple sources is not double-counted.
     """
-    external_sources = [s for s in index['all_sources'] if s not in UPSTREAM_SOURCES]
+    external_sources = [s for s in index['all_sources'] if is_internal_source(s)]
 
     def union_over(field: str, sources: list) -> set:
         result: set = set()
@@ -175,11 +186,11 @@ def compute_upstream_vs_combined_gain(index: dict, total_cves: int) -> dict:
             result |= index[field].get(s, set())
         return result
 
-    upstream_cves = union_over('cves_by_source', list(UPSTREAM_SOURCES))
-    upstream_hash_cves = union_over('cves_with_hash_by_source', list(UPSTREAM_SOURCES))
-    upstream_hashes = union_over('hashes_by_source', list(UPSTREAM_SOURCES))
+    upstream_cves = union_over('cves_by_source', list(PUBLIC_SOURCES))
+    upstream_hash_cves = union_over('cves_with_hash_by_source', list(PUBLIC_SOURCES))
+    upstream_hashes = union_over('hashes_by_source', list(PUBLIC_SOURCES))
 
-    all_sources = list(UPSTREAM_SOURCES) + external_sources
+    all_sources = list(PUBLIC_SOURCES) + external_sources
     combined_cves = union_over('cves_by_source', all_sources)
     combined_hash_cves = union_over('cves_with_hash_by_source', all_sources)
     combined_hashes = union_over('hashes_by_source', all_sources)
@@ -204,7 +215,7 @@ def filter_index_to_upstream(index: dict) -> dict:
     never read into a chart for upstream-only comparisons (not just hidden or
     re-colored after the fact).
     """
-    allowed = UPSTREAM_SOURCES
+    allowed = PUBLIC_SOURCES
     return {
         'cves_by_source': {s: v for s, v in index['cves_by_source'].items() if s in allowed},
         'cves_with_hash_by_source': {
@@ -326,8 +337,7 @@ def plot_coverage_by_source_upstream_only(index: dict, output_dir: Path,
     ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     fig.text(0.5, 0.01,
-              "Excludes any source not registered by cve-metadata-extractor's own "
-              "SOURCE_REGISTRY; shows only its public upstream sources.",
+              "Excludes every internal (closed) source; shows only public sources.",
               ha='center', va='bottom', fontsize=8, style='italic', color='#555555')
 
     out_path = output_dir / 'coverage_by_source_upstream_only.png'
