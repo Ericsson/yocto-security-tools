@@ -612,7 +612,17 @@ class FileToolPathPolicy:
                 continue
             relative_text = "." if not relative.parts else PurePosixPath(*relative.parts).as_posix()
             return AuthorizedPath(root, PurePosixPath(relative_text), None)
-        raise ToolPolicyError("absolute path is outside authorized read roots")
+        try:
+            inside = normalized.relative_to(self._workspace.path)
+        except ValueError:
+            raise ToolPolicyError(
+                "absolute path is outside authorized read roots") from None
+        # A model usually passes back the absolute repository path it was shown.
+        # The denial stands, but name the path that works so it need not guess.
+        hint = PurePosixPath(*inside.parts).as_posix() if inside.parts else "."
+        raise ToolPolicyError(
+            "absolute paths are not accepted inside the repository; "
+            f"use the repository-relative path '{hint}'")
 
     def authorize_write(self, path: str) -> AuthorizedPath:
         """Authorize exact matching against normalized session allowed_files."""
