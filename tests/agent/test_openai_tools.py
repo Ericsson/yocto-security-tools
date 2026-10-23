@@ -126,6 +126,53 @@ def test_absolute_workspace_paths_are_not_a_context_root(roots):
     assert result.error_kind == "policy"
 
 
+def test_absolute_path_inside_the_repository_is_denied_with_the_relative_path(roots):
+    """Models pass the absolute repository path they were shown; say what to use.
+
+    The denial stands: only the relative path is accepted. The message names it
+    so the model fixes the next call instead of retrying the same absolute one.
+    """
+    workspace, _, _ = roots
+    (workspace / "src").mkdir()
+    source = workspace / "src" / "jv.c"
+    source.write_text("data", encoding="utf-8")
+    runtime = _runtime(roots)
+
+    for tool in ("read_file", "list_directory", "search_text"):
+        args = {"read_file": {"path": str(source)},
+                "list_directory": {"path": str(source.parent)},
+                "search_text": {"query": "data", "paths": [str(source)]}}[tool]
+        result = runtime.dispatch(tool, args)
+        assert result.success is False, tool
+        assert result.error_kind == "policy", tool
+        message = result.payload["error"]
+        assert "relative" in message, (tool, message)
+        assert "src" in message, (tool, message)
+        assert str(workspace) not in message, (tool, message)
+
+
+def test_absolute_repository_root_is_denied_with_a_dot_hint(roots):
+    workspace, _, _ = roots
+    result = _runtime(roots).dispatch("list_directory", {"path": str(workspace)})
+
+    assert result.success is False
+    assert "'.'" in result.payload["error"]
+
+
+def test_absolute_path_outside_every_root_gets_no_repository_hint(roots):
+    """A sibling that merely shares the workspace's name prefix is outside it."""
+    workspace, _, outside = roots
+    sibling = workspace.parent / f"{workspace.name}-other"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("outside-data", encoding="utf-8")
+    runtime = _runtime(roots)
+
+    for target in (sibling / "secret.txt", outside):
+        result = runtime.dispatch("read_file", {"path": str(target)})
+        assert result.success is False
+        assert result.payload["error"] == "absolute path is outside authorized read roots"
+
+
 @pytest.mark.parametrize("tool,args", [
     ("read_file", {"path": ".git/config"}),
     ("list_directory", {"path": ".git"}),
