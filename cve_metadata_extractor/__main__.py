@@ -85,6 +85,12 @@ def parse_arguments(cfg):
                        help='Download .patch files and extract Debian source patches')
     output_group.add_argument('--reprocess-missing-series', action='store_true',
                        help='Re-fetch PR/issue data for CVEs that lack series in existing output')
+    output_group.add_argument('--reprocess-existing', action='store_true',
+                       help='Re-run every enabled source for all CVEs already '
+                            'in --output and merge the result into it, '
+                            'without needing --yocto-summary or --cve-id. '
+                            'Existing data is kept (merge is additive), so '
+                            'disabled or unreachable sources lose nothing')
     output_group.add_argument('--checkpoint-interval',
                        type=_non_negative_float, default=60.0,
                        help='Seconds between periodic result checkpoints; '
@@ -387,6 +393,35 @@ def _save_results(results, output):
             os.unlink(temp_output)
 
 
+def _cve_from_result(cve_id, result):
+    '''Rebuild a process_cve() input record from a stored output entry.'''
+    return {
+        'id': cve_id,
+        'name': result.get('name') or '',
+        'version': result.get('version') or '',
+        'cvss3 Score': result.get('cvss3_score'),
+        'vex_status': 'known_affected',
+    }
+
+
+def _load_existing_results(output):
+    '''Load a previous output file, returning {} if absent or unreadable.'''
+    if not os.path.isfile(output):
+        return {}
+    try:
+        with open(output, encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"WARNING: Could not load existing output: {e}", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        print("WARNING: Existing output is not a JSON object, ignoring it",
+              file=sys.stderr)
+        return {}
+    print(f"Loaded {len(data)} existing results from {output}")
+    return data
+
+
 def main():
     '''Main function.'''
     cfg = load_config()
@@ -402,14 +437,25 @@ def main():
             'to re-enable it.')
 
     # Check if at least one input source is provided (built-in or plugin)
-    has_builtin_input = any([args.cve_id, args.yocto_summary])
+    has_builtin_input = any([args.cve_id, args.yocto_summary,
+                             args.reprocess_existing])
     has_plugin_input = any(
         s.is_input_source and s.is_enabled(args)
         for s in SOURCE_REGISTRY
     )
     if not has_builtin_input and not has_plugin_input:
         print("ERROR: At least one input source required "
-              "(--yocto-summary or --cve-id)",
+              "(--yocto-summary, --cve-id or --reprocess-existing)",
+              file=sys.stderr)
+        from shared.exit_codes import EXIT_METADATA_ERROR
+        sys.exit(EXIT_METADATA_ERROR)
+
+    # Load existing output for incremental processing (before any source
+    # setup, so a bad --reprocess-existing request fails without cloning).
+    existing_results = _load_existing_results(args.output)
+    if args.reprocess_existing and not existing_results:
+        print(f"ERROR: --reprocess-existing needs a non-empty existing "
+              f"output file, but {args.output} has no usable results",
               file=sys.stderr)
         from shared.exit_codes import EXIT_METADATA_ERROR
         sys.exit(EXIT_METADATA_ERROR)
@@ -450,17 +496,14 @@ def main():
         args.cve_component_name, args.cve_component_version,
         args.historical, args.yocto_summary
     )
+    if args.reprocess_existing:
+        # Explicit inputs win; every other stored CVE is re-run as-is.
+        requested = {cve['id'] for cve in known_affected}
+        known_affected += [
+            _cve_from_result(cve_id, result)
+            for cve_id, result in existing_results.items()
+            if cve_id not in requested]
     print(f"Found {len(known_affected)} CVEs to process")
-
-    # Load existing output for incremental processing
-    existing_results = {}
-    if os.path.isfile(args.output):
-        try:
-            with open(args.output, encoding='utf-8') as f:
-                existing_results = json.load(f)
-            print(f"Loaded {len(existing_results)} existing results from {args.output}")
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"WARNING: Could not load existing output: {e}", file=sys.stderr)
 
     results = dict(existing_results)
 
@@ -486,7 +529,9 @@ def main():
         for idx, cve in enumerate(known_affected, 1):
             cve_id = cve['id']
             if cve_id in existing_results:
-                if (args.reprocess_missing_series
+                if args.reprocess_existing:
+                    reprocessed += 1
+                elif (args.reprocess_missing_series
                         and not existing_results[cve_id].get('series')):
                     # Invalidate cached PR/issue URLs so they get re-fetched
                     for ref in existing_results[cve_id].get('references', []):
@@ -534,7 +579,9 @@ def main():
     if skipped:
         print(f"\nSkipped {skipped} already-processed CVEs")
     if reprocessed:
-        print(f"Reprocessed {reprocessed} CVEs missing series data")
+        what = ('existing CVEs' if args.reprocess_existing
+                else 'CVEs missing series data')
+        print(f"Reprocessed {reprocessed} {what}")
 
     _print_summary(results, stats, args)
 
