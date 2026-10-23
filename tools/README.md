@@ -30,7 +30,8 @@ treated as closed enrichment data and visually
 distinguished (orange color) from public sources in every chart,
 with a caption note. The script never hardcodes the name of any specific
 closed source — whatever source names actually appear in the input
-`cve-metadata.json` are read and labeled as-is; the internal/public distinction is derived entirely from
+`cve-metadata.json` are read and labeled as-is (unless `--internal` is passed,
+see below); the internal/public distinction is derived entirely from
 `cve_metadata_extractor`'s actual registered sources, not from a fixed list of
 vendor names.
 
@@ -59,6 +60,17 @@ python3 tools/plot_source_distribution.py cve-metadata.json --output-dir plots/
 
 The script also prints a text summary (CVE coverage, hash/patch counts per
 source) to stdout before generating the charts.
+
+Pass `--internal` to anonymize the internal sources: their names become
+`internal-1`, `internal-2`, ... (numbered by sorted real name, so stable across
+runs on the same data). The rename happens on the data before anything is
+printed or plotted, so the real names appear in no chart label, caption or the
+stdout summary. Public sources, including `oe_patch` and `oe_patch_header`, keep
+their names, and the aliases are still drawn in the internal (orange) color.
+
+```bash
+python3 tools/plot_source_distribution.py cve-metadata.json --internal --output-dir plots/
+```
 
 ## plot_benchmark_results.py
 
