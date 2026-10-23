@@ -59,3 +59,39 @@ def test_oe_sources_count_as_public_in_gain():
     assert gain["upstream_hashes"] == 2
     assert gain["combined_hashes"] == 2
     assert gain["has_external_sources"] is True
+
+
+def test_anonymize_replaces_only_internal_names():
+    index = tool.build_source_index(_data())
+    anon = tool.anonymize_index(index)
+    assert set(anon["all_sources"]) == {
+        "osv", "oe_patch", "oe_patch_header", "internal-1", "internal-2"}
+    for field in ("cves_by_source", "cves_with_hash_by_source", "hashes_by_source",
+                  "hash_count_by_source", "patch_count_by_source"):
+        assert "secretvendor" not in anon[field]
+        assert "otherclosed" not in anon[field]
+
+
+def test_anonymize_preserves_data_and_stays_internal():
+    index = tool.build_source_index(_data())
+    mapping = tool.anonymization_map(index)
+    anon = tool.anonymize_index(index)
+    alias = mapping["secretvendor"]
+    assert anon["hashes_by_source"][alias] == index["hashes_by_source"]["secretvendor"]
+    assert anon["hash_count_by_source"][alias] == 1
+    assert tool.is_internal_source(alias)
+
+
+def test_anonymize_mapping_is_stable_and_collision_free():
+    index = tool.build_source_index(_data())
+    assert tool.anonymization_map(index) == tool.anonymization_map(index)
+
+    data = _data()
+    data["CVE-2"] = {"hash_details": [{"hash": "c", "source": "internal-1"}]}
+    index = tool.build_source_index(data)
+    mapping = tool.anonymization_map(index)
+    # 'internal-1' is itself an (internal) source name and gets renamed; no
+    # two sources may share an alias.
+    assert len(set(mapping.values())) == len(mapping)
+    anon = tool.anonymize_index(index)
+    assert len(anon["all_sources"]) == len(index["all_sources"])

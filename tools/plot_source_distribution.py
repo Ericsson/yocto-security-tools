@@ -32,7 +32,8 @@ oe_patch_header; see PUBLIC_SOURCES below) is
 treated as closed enrichment data and visually distinguished (orange color
 + caption note) in every chart. This script never hardcodes the name of any
 specific closed source — the distinction is derived entirely from
-cve_metadata_extractor's actual registered sources.
+cve_metadata_extractor's actual registered sources. Pass --internal to
+replace those names with internal-1, internal-2, ... everywhere.
 
 nvd is merged into cvelistv5 before any metric is computed (see MERGED_SOURCES
 below) since NVD mirrors CVEListV5 data and the two show 100% overlap in
@@ -226,6 +227,49 @@ def filter_index_to_upstream(index: dict) -> dict:
         'patch_count_by_source': {
             s: v for s, v in index['patch_count_by_source'].items() if s in allowed},
         'all_sources': sorted(s for s in index['all_sources'] if s in allowed),
+    }
+
+
+def anonymization_map(index: dict) -> dict[str, str]:
+    """Map each internal source name to a neutral 'internal-N' alias.
+
+    Numbering follows sorted real names so it is stable across runs on the
+    same data. Aliases never collide with a source name already in the index.
+    """
+    taken = set(index['all_sources'])
+    mapping: dict[str, str] = {}
+    n = 0
+    for source in sorted(s for s in index['all_sources'] if is_internal_source(s)):
+        while True:
+            n += 1
+            alias = f'internal-{n}'
+            if alias not in taken:
+                break
+        taken.add(alias)
+        mapping[source] = alias
+    return mapping
+
+
+def anonymize_index(index: dict) -> dict:
+    """Return a copy of the index with internal source names replaced by aliases.
+
+    Renames at the data level, before anything is plotted or printed, so the
+    real names appear in no chart label, caption or stdout summary. Public
+    sources (including the OE-derived ones) keep their names. Aliases are
+    still not in PUBLIC_SOURCES, so they stay classed and colored as internal.
+    """
+    mapping = anonymization_map(index)
+
+    def rename(d: dict) -> dict:
+        return {mapping.get(s, s): v for s, v in d.items()}
+
+    return {
+        'cves_by_source': rename(index['cves_by_source']),
+        'cves_with_hash_by_source': rename(index['cves_with_hash_by_source']),
+        'hashes_by_source': rename(index['hashes_by_source']),
+        'hash_count_by_source': rename(index['hash_count_by_source']),
+        'patch_count_by_source': rename(index['patch_count_by_source']),
+        'all_sources': sorted(mapping.get(s, s) for s in index['all_sources']),
     }
 
 
@@ -621,6 +665,12 @@ def main() -> int:
                               'optionally enriched with additional closed sources)')
     parser.add_argument('--output-dir', type=Path, default=Path('.'),
                          help='Directory to write PNG charts to (default: current directory)')
+    parser.add_argument('--internal', action='store_true',
+                         help='Anonymize internal (closed) source names as '
+                              'internal-1, internal-2, ... in all charts and '
+                              'the stdout summary. Public sources, including '
+                              'the OE-derived oe_patch/oe_patch_header, keep '
+                              'their names')
     args = parser.parse_args()
 
     try:
@@ -648,6 +698,9 @@ def main() -> int:
     if not index['all_sources']:
         print("error: no source attribution found in metadata file", file=sys.stderr)
         return 1
+
+    if args.internal:
+        index = anonymize_index(index)
 
     print_summary(index, total_cves)
     upstream_index = filter_index_to_upstream(index)
