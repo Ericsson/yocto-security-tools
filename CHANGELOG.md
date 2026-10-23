@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **cve-metadata-extractor**: merging into an existing entry no longer drops
+  keys the new run did not regenerate (for example `upstream_status` or
+  `downloaded_patches`).
+
 ## [1.3] - 2026-10-21
 
 ### Added
@@ -179,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **tests/benchmark**: Judge diff is passed via a temp file instead of an
   argument string, avoiding `ARG_MAX` on large diffs; the judge's full
   reason is persisted as an artifact alongside the score.
+
 
 ## [1.2] - 2026-09-21
 
