@@ -88,6 +88,9 @@ MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
 MAX_TOOL_ARGUMENT_DEPTH = 32
 MAX_TOOL_ARGUMENT_NODES = 20_000
 MAX_TRANSCRIPT_EVENT_BYTES = 16 * 1024
+# Tail of a failed build's output kept in the audit artifacts. Below
+# MAX_TRANSCRIPT_STRING_CHARS so the transcript never truncates it further.
+MAX_BUILD_EVIDENCE_CHARS = 3072
 MAX_TRANSCRIPT_STRING_CHARS = 4096
 MAX_TRANSCRIPT_NODES = 512
 # Best-effort, path-only argument echo for tool_request events. Bounded hard
@@ -391,17 +394,24 @@ class JSONLTranscript:
                 artifact_run.event("build_started")
             if kind == "tool_result" and data.get("tool") == "build_recipe":
                 build_status = "passed" if data.get("success") is True else "failed"
+                evidence = {
+                    key: data[f"build_{key}"]
+                    for key in ("exit_status", "timed_out", "log_path", "tail")
+                    if data.get(f"build_{key}") is not None
+                }
                 artifact_run.atomic_json("build-summary.json", {
                     "schema_version": 1,
                     "status": build_status,
                     "mutation_generation": data.get("mutation_generation"),
                     "validated_generation": data.get("validated_generation"),
+                    **evidence,
                 })
                 artifact_run.event(
                     "build_completed",
                     status=build_status,
                     mutation_generation=data.get("mutation_generation"),
                     validated_generation=data.get("validated_generation"),
+                    **evidence,
                 )
             if kind == "tool_result" and data.get("mutated") is True:
                 artifact_run.event(
@@ -1009,6 +1019,7 @@ class OpenAIAgentLoop:
         self, call_id: str, tool: str, result: ToolResult, dispatched: bool,
     ) -> None:
         error = result.payload.get("error") if not result.success else None
+        evidence = _build_evidence(result) if tool == "build_recipe" else {}
         self.transcript.write(
             "tool_result",
             tool_call_id=call_id,
@@ -1023,6 +1034,7 @@ class OpenAIAgentLoop:
             mutation_generation=result.audit.generation,
             validated_generation=self.runtime.validated_generation,
             payload_keys=sorted(result.payload),
+            **evidence,
         )
 
     def _handle_text_only_stop(self) -> str | None:
@@ -1353,6 +1365,30 @@ def _user_facing_client_error(error: OpenAIClientError) -> str:
             "The native request exceeded a local safety or schema limit; "
             "inspect the transcript and reduce supplied context.")
     return "The Chat Completions request failed safely; inspect the transcript."
+
+
+def _build_evidence(result: ToolResult) -> dict[str, object]:
+    """Return the bounded facts of a ``build_recipe`` result for the audit.
+
+    The exit status and log path are kept for every build. The output tail is
+    kept only for a failed build, where it is the one record of why it failed:
+    the workspace and build log are gone by the time anyone reads the artifacts.
+    """
+    payload = result.payload
+    evidence: dict[str, object] = {}
+    exit_status = payload.get("exit_status")
+    if isinstance(exit_status, int) and not isinstance(exit_status, bool):
+        evidence["build_exit_status"] = exit_status
+    timed_out = payload.get("timed_out")
+    if isinstance(timed_out, bool):
+        evidence["build_timed_out"] = timed_out
+    log_path = payload.get("log_path")
+    if isinstance(log_path, str):
+        evidence["build_log_path"] = log_path[:512]
+    tail = payload.get("tail")
+    if not result.success and isinstance(tail, str) and tail:
+        evidence["build_tail"] = tail[-MAX_BUILD_EVIDENCE_CHARS:]
+    return evidence
 
 
 def _tool_error_recoverable(result: ToolResult) -> bool:
