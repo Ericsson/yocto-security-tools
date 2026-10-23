@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **cve-metadata-extractor**: `--reprocess-existing` re-runs every enabled
+  source for all CVEs already in `--output` and merges the results back, with
+  no `--yocto-summary`/`--cve-id` needed. Use it to backfill a newly added
+  source or plugin, or to rebuild from local clones and caches without the
+  original CVE list. It exits with the metadata-error code, before any source
+  setup, if the output file is missing or empty.
+
 ### Fixed
 
 - **cve-metadata-extractor**: merging into an existing entry no longer drops
