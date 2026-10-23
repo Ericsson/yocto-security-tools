@@ -7,6 +7,7 @@ import pytest
 
 from shared.url_parser import (
     HASH_RE,
+    _with_scheme,
     deduce_repo_url,
     extract_commit_hash,
     fetch_github_pr_commits,
@@ -466,3 +467,46 @@ class TestDeduceRepoUrl:
     def test_github_commit_url(self):
         url = "https://github.com/owner/repo/commit/abc1234"
         assert deduce_repo_url(url) == "https://github.com/owner/repo"
+
+
+class TestDeduceRepoUrlWithoutScheme:
+    """OE patches often cite ``Upstream-Status: Backport [host/path/commit]``
+    with no ``https://``. A repository returned without a scheme cannot be
+    fetched: git reads it as a local path."""
+
+    SHA = "d44cd1cc4fbb70a9ae9e71890024ae8367fcb912"
+
+    def test_gitweb_commitdiff_url_gets_https(self):
+        # CVE-2026-56123: the fix was only on repo.or.cz, and the repository
+        # deduced from this URL was "repo.or.cz/socat.git".
+        url = f"repo.or.cz/socat.git/commitdiff/{self.SHA}"
+        assert deduce_repo_url(url) == "https://repo.or.cz/socat.git"
+
+    def test_github_commit_url_gets_https(self):
+        url = f"github.com/curl/curl/commit/{self.SHA}"
+        assert deduce_repo_url(url) == "https://github.com/curl/curl"
+
+    def test_forge_specific_rules_still_apply(self):
+        url = f"sourceware.org/cgit/bzip2/commit/?id={self.SHA}"
+        assert deduce_repo_url(url) == "https://sourceware.org/git/bzip2"
+
+    def test_an_explicit_scheme_is_kept(self):
+        url = f"http://repo.or.cz/socat.git/commitdiff/{self.SHA}"
+        assert deduce_repo_url(url) == "http://repo.or.cz/socat.git"
+
+    def test_a_skip_pattern_still_wins(self):
+        assert deduce_repo_url(f"lore.kernel.org/all/{self.SHA}/commit") is None
+
+    @pytest.mark.parametrize("text", [
+        "CVE-2026-56123.patch",
+        "files/CVE-2026-56123.patch/commit",
+        "see the upstream repository",
+        "https://github.com/curl/curl/commit/abc1234",
+        "ssh://git@github.com/curl/curl.git",
+        "",
+    ])
+    def test_text_that_is_not_a_bare_host_is_left_alone(self, text):
+        assert _with_scheme(text) == text
+
+    def test_a_bare_host_gets_https(self):
+        assert _with_scheme("repo.or.cz/socat.git") == "https://repo.or.cz/socat.git"
