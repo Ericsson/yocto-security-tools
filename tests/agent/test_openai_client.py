@@ -1105,3 +1105,99 @@ def test_deeply_nested_body_does_not_break_evidence():
 
     assert error.evidence is not None
     assert error.evidence.finish_reason is None
+
+
+# --- derived facts about a reply's reasoning (never its text) -----------------
+
+def _reasoning_failure(reasoning, *, finish_reason="stop", field="reasoning"):
+    payload = _text_payload(None, finish_reason=finish_reason)
+    payload["choices"][0]["message"][field] = reasoning
+    error, _ = _failure(payload)
+    return error.evidence
+
+
+def test_reasoning_facts_report_length_and_a_tool_call_written_into_reasoning():
+    """A reasoning parser can swallow a tool call the model wrote inside its
+    thinking; the reply then has no content and no tool call. The record must
+    show the markup so that cause can be told from the model just stopping."""
+    reasoning = ("I should inspect the file.\n"
+                 '<tool_call>{"name": "read_file", "arguments": {"path": "a.c"}}'
+                 "</tool_call>")
+
+    evidence = _reasoning_failure(reasoning)
+
+    assert evidence.reasoning_chars == len(reasoning)
+    assert evidence.reasoning_tool_markup is True
+    assert evidence.reasoning_repeats is False
+
+
+def test_plain_reasoning_has_no_tool_markup_and_no_repetition():
+    reasoning = " ".join(f"Step {i} considers a different header." for i in range(80))
+
+    evidence = _reasoning_failure(reasoning)
+
+    assert evidence.reasoning_chars == len(reasoning)
+    assert evidence.reasoning_tool_markup is False
+    assert evidence.reasoning_repeats is False
+
+
+def test_looping_reasoning_is_flagged_as_repeating():
+    """A reply that hit the output cap while repeating itself is a different
+    problem from one that simply needed more tokens."""
+    reasoning = "Intro. " + "Wait, let me re-check the hunk against the upstream diff. " * 90
+
+    evidence = _reasoning_failure(reasoning, finish_reason="length")
+
+    assert evidence.reasoning_repeats is True
+
+
+def test_short_reasoning_is_never_flagged_as_repeating():
+    evidence = _reasoning_failure("ok ok ok ok ok ok ok ok ok ok")
+
+    assert evidence.reasoning_repeats is False
+
+
+def test_repetition_in_a_short_reply_is_not_a_loop():
+    """Three repeats inside a few hundred characters is a list, not a runaway."""
+    reasoning = "Check the include guard in the header file. " * 8
+    assert 300 < len(reasoning) < 2000
+
+    evidence = _reasoning_failure(reasoning)
+
+    assert evidence.reasoning_repeats is False
+
+
+def test_reasoning_content_field_is_read_too():
+    evidence = _reasoning_failure("thinking <tool_call>", field="reasoning_content")
+
+    assert evidence.reasoning_chars == len("thinking <tool_call>")
+    assert evidence.reasoning_tool_markup is True
+
+
+@pytest.mark.parametrize("reasoning", [None, 7, ["a"], {"x": "y"}, True])
+def test_non_string_reasoning_yields_no_facts(reasoning):
+    evidence = _reasoning_failure(reasoning)
+
+    assert evidence.reasoning_chars is None
+    assert evidence.reasoning_tool_markup is None
+    assert evidence.reasoning_repeats is None
+
+
+def test_reply_without_a_reasoning_field_yields_no_reasoning_facts():
+    error, _ = _failure(_text_payload(None, finish_reason="stop"))
+
+    assert error.evidence.reasoning_chars is None
+
+
+def test_reasoning_facts_serialize_as_numbers_and_flags_only():
+    """The documented policy is that hidden reasoning is not stored."""
+    secret = "PRIVATE-REASONING-SENTINEL"
+    padding = "x" * 700  # pushes the sentinel past the 512-character excerpt
+    evidence = _reasoning_failure(padding + secret)
+
+    data = evidence.to_dict()
+
+    assert secret not in json.dumps(data)
+    assert data["reasoning_chars"] == len(padding + secret)
+    assert data["reasoning_tool_markup"] is False
+    assert data["reasoning_repeats"] is False

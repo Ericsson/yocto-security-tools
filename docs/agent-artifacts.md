@@ -43,7 +43,11 @@ excerpt and digest, plus the facts that say why it failed: the server's
 and total token counts (kept only as nonnegative integers), and the response size
 in bytes. They appear in `provider-primary.json` and in the `http_failure`
 transcript event, and tell a reply that ran out of output budget
-(`finish_reason: length`) from one that stopped on its own with no tool call. Hidden provider reasoning is not stored;
+(`finish_reason: length`) from one that stopped on its own with no tool call.
+For a reply that carries a reasoning field it also keeps three facts about that
+field, never its text: its length, whether it contains tool-call markup such as
+`<tool_call>` (a tool call the parser left inside the thinking), and whether it
+ends in a repeating loop. Hidden provider reasoning is not stored;
 only assistant content returned through the supported chat contract is
 eligible for the same bounded transcript treatment.
 

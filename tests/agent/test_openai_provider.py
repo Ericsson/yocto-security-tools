@@ -99,6 +99,9 @@ def test_failure_evidence_serializes_only_allowlisted_bounded_facts():
         "completion_tokens": None,
         "total_tokens": None,
         "response_bytes": None,
+        "reasoning_chars": None,
+        "reasoning_tool_markup": None,
+        "reasoning_repeats": None,
     }
 
 
@@ -111,6 +114,9 @@ def test_failure_evidence_serializes_finish_reason_and_token_counts():
         completion_tokens=8192,
         total_tokens=8292,
         response_bytes=4096,
+        reasoning_chars=1234,
+        reasoning_tool_markup=True,
+        reasoning_repeats=False,
     )
 
     data = evidence.to_dict()
@@ -118,3 +124,5 @@ def test_failure_evidence_serializes_finish_reason_and_token_counts():
     assert data["finish_reason"] == "length"
     assert (data["prompt_tokens"], data["completion_tokens"],
             data["total_tokens"], data["response_bytes"]) == (100, 8192, 8292, 4096)
+    assert (data["reasoning_chars"], data["reasoning_tool_markup"],
+            data["reasoning_repeats"]) == (1234, True, False)

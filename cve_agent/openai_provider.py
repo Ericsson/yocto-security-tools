@@ -137,6 +137,12 @@ class ProviderFailureEvidence:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     response_bytes: int | None = None
+    # Derived from the reply's reasoning field, never its text: hidden reasoning
+    # is not retained. They tell a reply that ended inside its own thinking from
+    # one that stopped, and a runaway loop from one that needed more tokens.
+    reasoning_chars: int | None = None
+    reasoning_tool_markup: bool | None = None
+    reasoning_repeats: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -152,4 +158,7 @@ class ProviderFailureEvidence:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "response_bytes": self.response_bytes,
+            "reasoning_chars": self.reasoning_chars,
+            "reasoning_tool_markup": self.reasoning_tool_markup,
+            "reasoning_repeats": self.reasoning_repeats,
         }
