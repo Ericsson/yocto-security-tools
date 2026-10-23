@@ -331,8 +331,10 @@ def _merge_results(existing, new):
         seen_series.setdefault(s['pull_url'], s)
     merged_series = list(seen_series.values())
 
-    # Start from new result (has updated scalar fields), override list fields
-    merged = dict(new)
+    # Start from existing so keys only it carries (upstream_status,
+    # downloaded_patches, ...) survive a re-run that did not regenerate them,
+    # then let new override scalar fields and the list fields below.
+    merged = {**existing, **new}
     merged['hash_details'] = merged_hashes
     merged['hashes'] = [h['hash'] for h in merged_hashes]
     merged['patch_details'] = merged_patches

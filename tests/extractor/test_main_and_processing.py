@@ -563,6 +563,18 @@ class TestMergeResults:
         merged = _merge_results(existing, new)
         assert 'is_poc' not in merged['references'][0]
 
+    def test_existing_only_keys_survive_merge(self):
+        '''Keys only the old entry carries must not be dropped by a re-run.'''
+        from cve_metadata_extractor.__main__ import _merge_results
+        existing = {'upstream_status': {'b': 'merged'},
+                    'downloaded_patches': ['p'], 'version': '1.0'}
+        new = {'version': '2.0', 'hashes': [], 'hash_details': [],
+               'patches': [], 'patch_details': [], 'references': []}
+        merged = _merge_results(existing, new)
+        assert merged['upstream_status'] == {'b': 'merged'}
+        assert merged['downloaded_patches'] == ['p']
+        assert merged['version'] == '2.0'
+
 
 def _plugin_active():
     """Check if the elin_sec_bulletin_input plugin has monkey-patched load_cves_from_sources."""
