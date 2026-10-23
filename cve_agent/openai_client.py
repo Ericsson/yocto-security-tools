@@ -18,7 +18,7 @@ import os
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 import requests
 
@@ -52,6 +52,36 @@ RESPONSE_CHUNK_BYTES = 16 * 1024
 MAX_HTTP_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 10.0
 _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
+
+
+# Text a reasoning parser can leave behind when the model wrote its tool call
+# inside its thinking, so the reply has neither content nor a tool call.
+_TOOL_MARKUP = ("<tool_call>", "</tool_call>", "<function=", "[TOOL_CALLS]",
+                '"tool_calls"')
+_REPEAT_MIN_CHARS = 2000
+_REPEAT_WINDOW_CHARS = 80
+_REPEAT_MIN_COUNT = 3
+
+
+def _reasoning_facts(message: dict[str, Any]) -> dict[str, Any]:
+    """Describe a message's reasoning field without keeping its text."""
+    for field in ("reasoning", "reasoning_content"):
+        reasoning = message.get(field)
+        if isinstance(reasoning, str):
+            break
+    else:
+        return {}
+    tail = reasoning[-_REPEAT_WINDOW_CHARS:]
+    repeats = (
+        len(reasoning) >= _REPEAT_MIN_CHARS
+        and len(tail.strip()) >= _REPEAT_WINDOW_CHARS // 2
+        and reasoning.count(tail) >= _REPEAT_MIN_COUNT
+    )
+    return {
+        "reasoning_chars": len(reasoning),
+        "reasoning_tool_markup": any(mark in reasoning for mark in _TOOL_MARKUP),
+        "reasoning_repeats": repeats,
+    }
 
 
 class OpenAIClientError(RuntimeError):
@@ -912,7 +942,6 @@ class OpenAIChatCompletionsClient:
         secret: str | None,
     ) -> ProviderFailureEvidence:
         request_id = self._safe_request_id(headers)
-        finish_reason, usage = self._response_facts(body)
         return ProviderFailureEvidence(
             code=code,
             status_code=status,
@@ -921,51 +950,45 @@ class OpenAIChatCompletionsClient:
             response_sha256=hashlib.sha256(body).hexdigest(),
             response_excerpt=self._safe_snippet(body, secret),
             request_features=self._last_request_features,
-            finish_reason=finish_reason,
-            prompt_tokens=usage[0],
-            completion_tokens=usage[1],
-            total_tokens=usage[2],
             response_bytes=len(body),
+            **self._response_facts(body),
         )
 
     @staticmethod
-    def _response_facts(
-        body: bytes,
-    ) -> tuple[str | None, tuple[int | None, int | None, int | None]]:
-        """Read the finish reason and token counts from a failed response.
+    def _response_facts(body: bytes) -> dict[str, Any]:
+        """Read the finish reason, token counts and reasoning shape of a reply.
 
         Best effort and never raising: the body may be any bytes, including
         deeply nested JSON, and a failure record must not itself fail. Every
-        value is server-controlled, so only a short printable string and
-        nonnegative integers are kept.
+        value is server-controlled, so only a short printable string,
+        nonnegative integers and flags derived from the reasoning are kept. The
+        reasoning text itself is never returned.
         """
-        none: tuple[int | None, int | None, int | None] = (None, None, None)
         try:
             decoded = json.loads(body)
         except (ValueError, RecursionError):
-            return None, none
+            return {}
         if not isinstance(decoded, dict):
-            return None, none
-        finish_reason: str | None = None
+            return {}
+        facts: dict[str, Any] = {}
         choices = decoded.get("choices")
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            value = choices[0].get("finish_reason")
+        choice = choices[0] if isinstance(choices, list) and choices else None
+        if isinstance(choice, dict):
+            value = choice.get("finish_reason")
             if (isinstance(value, str) and len(value) <= 64
                     and value.isprintable()):
-                finish_reason = value
+                facts["finish_reason"] = value
+            message = choice.get("message")
+            if isinstance(message, dict):
+                facts.update(_reasoning_facts(message))
         usage = decoded.get("usage")
-        if not isinstance(usage, dict):
-            return finish_reason, none
-
-        def count(name: str) -> int | None:
-            item = usage.get(name)
-            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
-                return None
-            return item
-
-        return finish_reason, (
-            count("prompt_tokens"), count("completion_tokens"),
-            count("total_tokens"))
+        if isinstance(usage, dict):
+            for name in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                item = usage.get(name)
+                if (isinstance(item, int) and not isinstance(item, bool)
+                        and item >= 0):
+                    facts[name] = item
+        return facts
 
     def _safe_request_id(self, headers: Mapping[str, str]) -> str | None:
         if not self.capabilities.supports_request_ids:
