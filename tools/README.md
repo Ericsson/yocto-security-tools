@@ -23,21 +23,22 @@ Generates 7 PNG charts:
 | `overlap_hash_level.png` | Pairwise Jaccard overlap — did both sources point to the *identical* fix commit |
 | `unique_contribution.png` | Fix-commit hashes found by only one source, exactly one other source (with that source named), or 3+ sources — shows what's lost if a source is dropped, and which other source it most overlaps with |
 
-Any source name found in the input file that is not registered by
-`cve_metadata_extractor`'s own `SOURCE_REGISTRY` (see `UPSTREAM_SOURCES` in
-the script) is treated as closed enrichment data and visually
-distinguished (orange color) from public upstream sources in every chart,
+Any source name found in the input file that is neither registered by
+`cve_metadata_extractor`'s own `SOURCE_REGISTRY` nor derived from OpenEmbedded
+patches (`oe_patch`, `oe_patch_header`; see `PUBLIC_SOURCES` in the script) is
+treated as closed enrichment data and visually
+distinguished (orange color) from public sources in every chart,
 with a caption note. The script never hardcodes the name of any specific
 closed source — whatever source names actually appear in the input
-`cve-metadata.json` are read and labeled as-is; the internal/upstream
-distinction is derived entirely from `cve_metadata_extractor`'s actual
-registered sources, not from a fixed list of vendor names.
+`cve-metadata.json` are read and labeled as-is; the internal/public distinction is derived entirely from
+`cve_metadata_extractor`'s actual registered sources, not from a fixed list of
+vendor names.
 
 `UPSTREAM_SOURCES` in the script is derived directly from
 `cve_metadata_extractor`'s actual `SOURCE_REGISTRY` (debian.py, osv.py,
-ubuntu.py, uct.py, cvelistv5.py) — not from a manually maintained list — so
-the upstream-only chart stays correct if a new source module is ever added
-to the extractor.
+ubuntu.py, uct.py, cvelistv5.py), and `OE_SOURCES` covers the sources written
+by `tests/integration/enrich_metadata_from_oe.py`. The OE-derived sources come
+from public data, so they are never treated as internal.
 
 `nvd` is merged into `cvelistv5` before any metric is computed: NVD mirrors
 CVEListV5 data, and the two show 100% CVE-level and hash-level overlap in
