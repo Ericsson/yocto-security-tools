@@ -29,6 +29,12 @@ This is a standalone, dev-only tool. It is NOT part of the installed
 yocto-security-tools package and requires matplotlib, which is not a runtime
 dependency of the project (see AGENTS.md "Minimize Dependencies").
 
+``--judge-csv`` adds a second opinion on the "needs review" rows: it reads the
+``judge_results.csv`` written by ``tests/benchmark/judge_campaign.py`` and splits
+that family by the judge's verdict (equivalent to the human reference,
+meaningfully different, or no comparable patch).  Rows without a verdict stay in
+"needs review".
+
 Usage:
     pip install matplotlib
     python3 tools/plot_corrector_results.py \\
@@ -56,6 +62,30 @@ FAMILY_NEEDS_REVIEW = 'produced a patch, needs review'
 FAMILY_SKIPPED = 'skipped'
 FAMILY_FAILED = 'failed'
 
+# Families that only exist when a judge CSV splits the "needs review" rows.
+FAMILY_REVIEW_EQUIVALENT = 'patch, judged equivalent to reference'
+FAMILY_REVIEW_DIVERGENT = 'patch, judged meaningfully different'
+FAMILY_REVIEW_NOT_COMPARABLE = 'review item without a comparable patch'
+
+# Pseudo-statuses substituted for a review row that has a judge verdict.
+STATUS_REVIEW_EQUIVALENT = 'REVIEW_JUDGED_EQUIVALENT'
+STATUS_REVIEW_DIVERGENT = 'REVIEW_JUDGED_DIVERGENT'
+STATUS_REVIEW_NOT_COMPARABLE = 'REVIEW_NOT_COMPARABLE'
+
+# judge_results.csv ``judgment`` -> pseudo-status.  ``identical``,
+# ``comment-only`` and ``structural-only`` need no model opinion.  A verdict not
+# listed (e.g. ``pending`` from a dry run) leaves the row in "needs review".
+JUDGMENT_STATUS = {
+    'identical': STATUS_REVIEW_EQUIVALENT,
+    'stylistic': STATUS_REVIEW_EQUIVALENT,
+    'comment-only': STATUS_REVIEW_EQUIVALENT,
+    'structural-only': STATUS_REVIEW_EQUIVALENT,
+    'meaningful': STATUS_REVIEW_DIVERGENT,
+    'no-patch': STATUS_REVIEW_NOT_COMPARABLE,
+    'no-reference': STATUS_REVIEW_NOT_COMPARABLE,
+    'file-mismatch': STATUS_REVIEW_NOT_COMPARABLE,
+}
+
 # Statuses cve-corrector reaches without any AI backend involvement at all.
 DIRECT_SUCCESS_STATUSES = ('IDENTICAL', 'SUCCESS', 'ALREADY_APPLIED')
 
@@ -79,17 +109,33 @@ FAMILY_ORDER = (
     FAMILY_FAILED,
 )
 
+# Left-to-right order of every family a chart can show; the judged families sit
+# beside the family they refine.  A chart shows only the families present.
+DISPLAY_ORDER = (
+    FAMILY_DIRECT_SUCCESS,
+    FAMILY_AGENT_VERIFIED,
+    FAMILY_REVIEW_EQUIVALENT,
+    FAMILY_REVIEW_DIVERGENT,
+    FAMILY_REVIEW_NOT_COMPARABLE,
+    FAMILY_NEEDS_REVIEW,
+    FAMILY_SKIPPED,
+    FAMILY_FAILED,
+)
+
 FAMILY_COLORS = {
     FAMILY_DIRECT_SUCCESS: '#009E73',
     FAMILY_AGENT_VERIFIED: '#0072B2',
     FAMILY_NEEDS_REVIEW: '#CC79A7',
     FAMILY_SKIPPED: '#999999',
     FAMILY_FAILED: '#D55E00',
+    FAMILY_REVIEW_EQUIVALENT: '#56B4E9',
+    FAMILY_REVIEW_DIVERGENT: '#E69F00',
+    FAMILY_REVIEW_NOT_COMPARABLE: '#4D4D4D',
 }
 
 
 def classify_family(status: str) -> str:
-    """Map a raw ``status`` CSV value to one of the five outcome families.
+    """Map a ``status`` CSV value to an outcome family.
 
     Args:
         status: The ``status`` column value for one CVE row.
@@ -103,6 +149,12 @@ def classify_family(status: str) -> str:
         return FAMILY_AGENT_VERIFIED
     if status in NEEDS_REVIEW_STATUSES:
         return FAMILY_NEEDS_REVIEW
+    if status == STATUS_REVIEW_EQUIVALENT:
+        return FAMILY_REVIEW_EQUIVALENT
+    if status == STATUS_REVIEW_DIVERGENT:
+        return FAMILY_REVIEW_DIVERGENT
+    if status == STATUS_REVIEW_NOT_COMPARABLE:
+        return FAMILY_REVIEW_NOT_COMPARABLE
     if status.startswith('SKIP'):
         return FAMILY_SKIPPED
     # Treat anything else (FAIL_*, and any future status not yet listed
@@ -163,6 +215,61 @@ def find_results_csv(results_dir: Path, mode: str | None) -> Path:
     )
 
 
+def read_judge_csv(path: Path) -> dict[str, str]:
+    """Read ``judge_results.csv`` into ``{cve_id: judgment}``.
+
+    Args:
+        path: Path to the judge results CSV.
+
+    Returns:
+        The judgment per CVE.
+
+    Raises:
+        SystemExit: If the file does not exist or lacks the expected columns.
+    """
+    if not path.is_file():
+        raise SystemExit(f'error: {path} does not exist')
+    with open(path, newline='', encoding='utf-8') as fh:
+        reader = csv.DictReader(fh)
+        if not {'cve_id', 'judgment'} <= set(reader.fieldnames or ()):
+            raise SystemExit(f'error: {path} has no cve_id/judgment columns')
+        return {row['cve_id']: row['judgment'] for row in reader}
+
+
+def apply_judge(rows: list[dict[str, str]], verdicts: dict[str, str]) -> list[dict[str, str]]:
+    """Refine the "needs review" rows with the judge's verdicts.
+
+    Only a row whose status is a review status and whose CVE has a recognised
+    verdict changes; its ``status`` becomes the matching pseudo-status.  Every
+    other row, and the input list itself, is left untouched.
+
+    Args:
+        rows: Parsed results rows.
+        verdicts: ``{cve_id: judgment}`` from :func:`read_judge_csv`.
+
+    Returns:
+        A new list of rows.
+    """
+    refined = []
+    for row in rows:
+        pseudo = JUDGMENT_STATUS.get(verdicts.get(row['cve_id'], ''))
+        if pseudo and row['status'] in NEEDS_REVIEW_STATUSES:
+            row = {**row, 'status': pseudo}
+        refined.append(row)
+    return refined
+
+
+def families_in_order(grouped: dict[str, Counter[str]]) -> list[str]:
+    """Return the families a chart should draw, in display order."""
+    return [family for family in DISPLAY_ORDER if family in grouped]
+
+
+def families_for_recipes(per_recipe: dict[str, Counter[str]]) -> list[str]:
+    """Return the families that occur in any recipe, in display order."""
+    present = {family for counter in per_recipe.values() for family in counter}
+    return [family for family in DISPLAY_ORDER if family in present]
+
+
 # --- Aggregation --------------------------------------------------------------
 
 
@@ -190,7 +297,7 @@ def family_counts(counts: Counter[str]) -> dict[str, Counter[str]]:
     """
     grouped: dict[str, Counter[str]] = {family: Counter() for family in FAMILY_ORDER}
     for status, count in counts.items():
-        grouped[classify_family(status)][status] = count
+        grouped.setdefault(classify_family(status), Counter())[status] = count
     return grouped
 
 
@@ -252,18 +359,46 @@ def plot_status_distribution(counts: Counter[str], out_path: Path) -> None:
     from matplotlib.patches import Patch
 
     ax.legend(
-        handles=[Patch(facecolor=FAMILY_COLORS[f], label=f) for f in FAMILY_ORDER],
+        handles=[Patch(facecolor=FAMILY_COLORS[f], label=f) for f in DISPLAY_ORDER
+                 if f in {classify_family(status) for status in labels}],
         loc='lower right', fontsize=8.5, frameon=False,
     )
     _caption(fig, 'Every distinct status the test runner can emit, colored by outcome family. '
-                  'See family_breakdown.png for the same data collapsed to five bars.')
+                  'See family_breakdown.png for the same data collapsed to outcome families.')
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
 
+# A bar narrower than this share of the total cannot hold its own label.
+NARROW_BAR_SHARE = 0.07
+
+
+def label_levels(counts: list[int], total: int) -> list[int | None]:
+    """Decide where each bar's label goes.
+
+    Args:
+        counts: Bar widths, left to right.
+        total: Total CVE count.
+
+    Returns:
+        ``None`` for a bar wide enough to label inside; otherwise a staggered
+        level (0, 1, 0, 1, ...) above the bar, so neighbouring narrow bars
+        do not print their labels on top of each other.
+    """
+    levels: list[int | None] = []
+    narrow = 0
+    for count in counts:
+        if total and count / total >= NARROW_BAR_SHARE:
+            levels.append(None)
+        else:
+            levels.append(narrow % 2)
+            narrow += 1
+    return levels
+
+
 def plot_family_breakdown(grouped: dict[str, Counter[str]], total: int, out_path: Path) -> None:
-    """Single stacked horizontal bar of the five outcome families.
+    """Single stacked horizontal bar of the outcome families.
 
     Args:
         grouped: Per-family raw-status counters, as returned by
@@ -271,30 +406,45 @@ def plot_family_breakdown(grouped: dict[str, Counter[str]], total: int, out_path
         total: Total CVE count, for the percentage labels.
         out_path: PNG output path.
     """
+    import textwrap
+
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(9.5, 2.6))
+    fig, ax = plt.subplots(figsize=(9.5, 3.0))
     left = 0.0
-    for family in FAMILY_ORDER:
-        count = sum(grouped[family].values())
-        if not count:
-            continue
+    drawn = [f for f in families_in_order(grouped) if sum(grouped[f].values())]
+    sizes = [sum(grouped[f].values()) for f in drawn]
+    for family, count, level in zip(drawn, sizes, label_levels(sizes, total), strict=True):
         ax.barh([0], [count], left=[left], height=0.55, color=FAMILY_COLORS[family],
                 edgecolor='white', linewidth=1.0, label=family)
         pct = 100 * count / total if total else 0.0
-        ax.text(left + count / 2, 0, f'{count}\n({pct:.0f}%)', ha='center', va='center',
-                color='white', fontsize=9.5, fontweight='bold')
+        centre = left + count / 2
+        if level is None:
+            ax.text(centre, 0, f'{count}\n({pct:.0f}%)', ha='center', va='center',
+                    color='white', fontsize=9.5, fontweight='bold')
+        else:
+            height = 0.34 + 0.2 * level
+            ax.plot([centre, centre], [0.275, height], color='#555555', linewidth=0.7)
+            ax.text(centre, height + 0.02, f'{count} ({pct:.0f}%)', ha='center', va='bottom',
+                    color='#222222', fontsize=9, fontweight='bold')
         left += count
 
     ax.set_xlim(0, total)
+    ax.set_ylim(-0.4, 0.85)
     ax.set_yticks([])
     ax.set_title(f'Outcome family breakdown  (n={total})', fontsize=13, fontweight='bold')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.25), ncol=5, fontsize=9, frameon=False)
-    _caption(fig, '"agent-resolved" passed the semantic security gate after a recoverable '
-                  'corrector failure. "needs review" produced a patch and a completed build '
-                  'but could not be auto-verified — it is a result worth looking at, not a '
-                  'confirmed fix.')
-    fig.tight_layout(rect=(0, 0.12, 1, 1))
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=min(len(drawn), 4),
+              fontsize=9, frameon=False)
+    caption = ('"agent-resolved" passed the semantic security gate after a recoverable '
+               'corrector failure. "needs review" produced a patch and a completed build '
+               'but could not be auto-verified — it is a result worth looking at, not a '
+               'confirmed fix.')
+    if any(family in drawn for family in (FAMILY_REVIEW_EQUIVALENT, FAMILY_REVIEW_DIVERGENT)):
+        caption += (' The judged families split those rows by a model\'s comparison with the '
+                    'human reference patch: it measures similarity only, with no build or '
+                    'test behind it.')
+    _caption(fig, textwrap.fill(caption, width=150))
+    fig.tight_layout(rect=(0, 0.14, 1, 1))
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 
@@ -318,7 +468,8 @@ def plot_recipe_breakdown(per_recipe: dict[str, Counter[str]], out_path: Path,
 
     fig, ax = plt.subplots(figsize=(9.5, 0.38 * len(recipes) + 2.2))
     left = [0.0] * len(recipes)
-    for family in FAMILY_ORDER:
+    drawn = families_for_recipes(per_recipe)
+    for family in drawn:
         widths = [float(per_recipe[r][family]) for r in recipes]
         if not any(widths):
             continue
@@ -337,7 +488,8 @@ def plot_recipe_breakdown(per_recipe: dict[str, Counter[str]], out_path: Path,
     title = f'Outcome by recipe (top {len(recipes)} by CVE count)' if len(per_recipe) > top_n \
         else 'Outcome by recipe'
     ax.set_title(title, fontsize=13, fontweight='bold')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=5, fontsize=8.5, frameon=False)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=min(len(drawn), 3),
+              fontsize=8.5, frameon=False)
     ax.grid(axis='x', alpha=0.25, linestyle=':')
     ax.set_axisbelow(True)
     _caption(fig, 'A recipe where every CVE needed agent involvement or review is a harder '
@@ -355,10 +507,10 @@ def print_summary(counts: Counter[str], grouped: dict[str, Counter[str]], total:
     print(f'Total CVEs: {total}')
     print()
     print('By family:')
-    for family in FAMILY_ORDER:
+    for family in families_in_order(grouped):
         count = sum(grouped[family].values())
         pct = 100 * count / total if total else 0.0
-        print(f'  {family:<30} {count:>4}  ({pct:5.1f}%)')
+        print(f'  {family:<40} {count:>4}  ({pct:5.1f}%)')
     print()
     print('By raw status:')
     for status, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -371,7 +523,7 @@ def print_summary(counts: Counter[str], grouped: dict[str, Counter[str]], total:
 
 CHART_BUILDERS = (
     ('status_distribution.png', 'every raw status value, colored by outcome family'),
-    ('family_breakdown.png', 'single stacked bar of the five outcome families'),
+    ('family_breakdown.png', 'single stacked bar of the outcome families'),
     ('recipe_breakdown.png', 'outcome family per recipe'),
 )
 
@@ -394,6 +546,11 @@ def main() -> None:
         '--output-dir', type=Path, default=None,
         help='Directory to write PNGs into (default: the results directory)',
     )
+    parser.add_argument(
+        '--judge-csv', type=Path, default=None,
+        help='judge_results.csv from tests/benchmark/judge_campaign.py; splits the '
+             '"needs review" rows by the judge verdict',
+    )
     args = parser.parse_args()
 
     try:
@@ -410,6 +567,8 @@ def main() -> None:
 
     csv_path = find_results_csv(args.results_dir, args.mode)
     rows = read_results_csv(csv_path)
+    if args.judge_csv:
+        rows = apply_judge(rows, read_judge_csv(args.judge_csv))
 
     counts = status_counts(rows)
     grouped = family_counts(counts)
