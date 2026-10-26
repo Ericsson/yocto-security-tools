@@ -124,6 +124,34 @@ def test_verify_cli_marker_success(monkeypatch):
     assert result.detail == ""
 
 
+def _verify_with_output(monkeypatch, stdout):
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout)
+
+    monkeypatch.setattr("cve_agent.backend.subprocess.run", fake_run)
+    return _verify_cli_marker(["some-cli", "chat"])
+
+
+def test_verify_cli_marker_ignores_bell_inside_marker(monkeypatch):
+    # kiro-cli streams the reply in chunks and rings the bell between them.
+    head, tail = VERIFY_MARKER[:-2], VERIFY_MARKER[-2:]
+    result = _verify_with_output(monkeypatch, f"> {head}\x07{tail}\n")
+    assert result.ok is True
+
+
+def test_verify_cli_marker_ignores_ansi_sequences_inside_marker(monkeypatch):
+    head, tail = VERIFY_MARKER[:-2], VERIFY_MARKER[-2:]
+    result = _verify_with_output(
+        monkeypatch, f"\x1b[?25l> \x1b[1m{head}\x1b[0m{tail}\x1b[?25h\n")
+    assert result.ok is True
+
+
+def test_verify_cli_marker_still_rejects_a_visible_character_inside(monkeypatch):
+    head, tail = VERIFY_MARKER[:-2], VERIFY_MARKER[-2:]
+    result = _verify_with_output(monkeypatch, f"{head} {tail}\n")
+    assert result.ok is False
+
+
 def test_verify_cli_marker_not_found(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError()
