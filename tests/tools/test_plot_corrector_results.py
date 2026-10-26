@@ -42,7 +42,8 @@ from plot_corrector_results import (  # noqa: E402
     families_in_order,
     family_counts,
     find_results_csv,
-    label_levels,
+    fits_label,
+    legend_label,
     plot_family_breakdown,
     plot_recipe_breakdown,
     plot_status_distribution,
@@ -407,6 +408,16 @@ class TestToolFailuresInTheCommand:
         assert 'failed (AI)' in done.stdout
 
 
+class TestFamilyChartText:
+    def test_only_wide_bars_get_a_label_on_the_chart(self, tmp_path, monkeypatch):
+        plt = pytest.importorskip('matplotlib.pyplot')
+        figures = []
+        monkeypatch.setattr(plt, 'close', figures.append)
+        counts = Counter({'IDENTICAL': 95, 'FAIL_GIT_ERROR': 2, 'FAIL_WORKFLOW_FAILED': 3})
+        plot_family_breakdown(family_counts(counts), 100, tmp_path / 'b.png')
+        assert [t.get_text() for t in figures[0].axes[0].texts] == ['95\n(95%)']
+
+
 class TestReadJudgeCsv:
     """read_judge_csv() returns the verdict per CVE and rejects bad input."""
 
@@ -442,19 +453,39 @@ class TestJudgedCharts:
         assert all((tmp_path / name).stat().st_size > 0 for name in ('a.png', 'b.png', 'c.png'))
 
 
-class TestLabelLevels:
-    """label_levels() keeps narrow bars' labels from overlapping."""
+class TestBarLabels:
+    """Wide bars are labelled in place; every family is labelled in the legend."""
 
     def test_wide_bars_are_labelled_inside(self):
-        assert label_levels([436, 122], 753) == [None, None]
+        assert fits_label(436, 753)
+        assert fits_label(122, 753)
 
-    def test_narrow_bars_alternate_between_two_levels(self):
-        # 37, 41, 10 and 52 of 753 are all under the 7% share.
-        assert label_levels([436, 37, 122, 41, 10, 52, 55], 753) == [
-            None, 0, None, 1, 0, 1, None]
+    def test_narrow_bars_are_not(self):
+        assert not fits_label(37, 753)
+        assert not fits_label(5, 753)
 
     def test_a_bar_exactly_at_the_share_is_labelled_inside(self):
-        assert label_levels([7, 93], 100) == [None, None]
+        assert fits_label(7, 100)
+        assert not fits_label(6, 100)
 
-    def test_empty_total_labels_nothing_inside(self):
-        assert label_levels([0], 0) == [0]
+    def test_empty_total_labels_nothing(self):
+        assert not fits_label(0, 0)
+
+    def test_legend_text_carries_the_count_and_share(self):
+        assert legend_label('failed (tool)', 5, 753) == 'failed (tool):  5 (1%)'
+        assert legend_label('direct success', 436, 753) == 'direct success:  436 (58%)'
+        assert legend_label('x', 0, 0) == 'x:  0 (0%)'
+
+    def test_the_family_chart_legend_lists_every_drawn_family_with_its_count(
+            self, tmp_path, monkeypatch):
+        plt = pytest.importorskip('matplotlib.pyplot')
+        figures = []
+        monkeypatch.setattr(plt, 'close', figures.append)
+        rows = apply_failure_codes(_failure_rows())
+        counts = status_counts(rows)
+        plot_family_breakdown(family_counts(counts), len(rows), tmp_path / 'b.png')
+        legend = figures[0].axes[0].get_legend()
+        texts = [t.get_text() for t in legend.get_texts()]
+        assert sorted(texts) == sorted([
+            'failed (pre-existing):  1 (12%)', 'failed (tool):  3 (38%)',
+            'failed (AI):  3 (38%)', 'produced a patch, needs review:  1 (12%)'])

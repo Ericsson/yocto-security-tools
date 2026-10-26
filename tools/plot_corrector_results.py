@@ -453,27 +453,19 @@ def plot_status_distribution(counts: Counter[str], out_path: Path) -> None:
 NARROW_BAR_SHARE = 0.07
 
 
-def label_levels(counts: list[int], total: int) -> list[int | None]:
-    """Decide where each bar's label goes.
+def fits_label(count: int, total: int) -> bool:
+    """Return whether a bar of ``count`` out of ``total`` is wide enough to label."""
+    return bool(total) and count / total >= NARROW_BAR_SHARE
 
-    Args:
-        counts: Bar widths, left to right.
-        total: Total CVE count.
 
-    Returns:
-        ``None`` for a bar wide enough to label inside; otherwise a staggered
-        level (0, 1, 0, 1, ...) above the bar, so neighbouring narrow bars
-        do not print their labels on top of each other.
+def legend_label(family: str, count: int, total: int) -> str:
+    """Return a family's legend text with its count and share.
+
+    The legend carries the figure of every family, so a bar too narrow for a
+    label of its own (and several of them side by side) is still readable.
     """
-    levels: list[int | None] = []
-    narrow = 0
-    for count in counts:
-        if total and count / total >= NARROW_BAR_SHARE:
-            levels.append(None)
-        else:
-            levels.append(narrow % 2)
-            narrow += 1
-    return levels
+    pct = 100 * count / total if total else 0.0
+    return f'{family}:  {count} ({pct:.0f}%)'
 
 
 def plot_family_breakdown(grouped: dict[str, Counter[str]], total: int, out_path: Path) -> None:
@@ -493,26 +485,20 @@ def plot_family_breakdown(grouped: dict[str, Counter[str]], total: int, out_path
     left = 0.0
     drawn = [f for f in families_in_order(grouped) if sum(grouped[f].values())]
     sizes = [sum(grouped[f].values()) for f in drawn]
-    for family, count, level in zip(drawn, sizes, label_levels(sizes, total), strict=True):
+    for family, count in zip(drawn, sizes, strict=True):
         ax.barh([0], [count], left=[left], height=0.55, color=FAMILY_COLORS[family],
-                edgecolor='white', linewidth=1.0, label=family)
-        pct = 100 * count / total if total else 0.0
-        centre = left + count / 2
-        if level is None:
-            ax.text(centre, 0, f'{count}\n({pct:.0f}%)', ha='center', va='center',
+                edgecolor='white', linewidth=1.0, label=legend_label(family, count, total))
+        if fits_label(count, total):
+            pct = 100 * count / total
+            ax.text(left + count / 2, 0, f'{count}\n({pct:.0f}%)', ha='center', va='center',
                     color='white', fontsize=9.5, fontweight='bold')
-        else:
-            height = 0.34 + 0.2 * level
-            ax.plot([centre, centre], [0.275, height], color='#555555', linewidth=0.7)
-            ax.text(centre, height + 0.02, f'{count} ({pct:.0f}%)', ha='center', va='bottom',
-                    color='#222222', fontsize=9, fontweight='bold')
         left += count
 
     ax.set_xlim(0, total)
-    ax.set_ylim(-0.4, 0.85)
+    ax.set_ylim(-0.4, 0.4)
     ax.set_yticks([])
     ax.set_title(f'Outcome family breakdown  (n={total})', fontsize=13, fontweight='bold')
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=min(len(drawn), 4),
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.2), ncol=min(len(drawn), 3),
               fontsize=9, frameon=False)
     caption = ('"agent-resolved" passed the semantic security gate after a recoverable '
                'corrector failure. "needs review" produced a patch and a completed build '
