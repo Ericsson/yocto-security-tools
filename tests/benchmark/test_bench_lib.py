@@ -431,6 +431,16 @@ class TestResolveModels:
         assert MODELS['minimax-m2.5']['tier'] == 'full'
         assert 'minimax-m2.5' not in {m['name'] for m in resolve_models('default')}
 
+    def test_opus_5_5_is_selectable_by_name_but_not_in_the_default_set(self):
+        """It joins an existing benchmark afterwards; a plain run must not pick it up."""
+        assert MODELS['claude-opus-5.5'] == {'multiplier': 2.00, 'tier': 'full'}
+        assert 'claude-opus-5.5' not in {m['name'] for m in resolve_models('default')}
+        assert [m['name'] for m in resolve_models('claude-opus-5.5')] == ['claude-opus-5.5']
+
+    def test_opus_5_5_is_a_different_model_from_opus_5(self):
+        names = [m['name'] for m in resolve_models('claude-opus-5,claude-opus-5.5')]
+        assert names == ['claude-opus-5', 'claude-opus-5.5']
+
     def test_full_returns_all_models(self):
         models = resolve_models('full')
         assert len(models) == len(MODELS)
