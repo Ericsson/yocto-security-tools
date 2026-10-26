@@ -21,6 +21,12 @@ completed) but automatic verification could not confirm it is a correct fix,
 so it is kept visually distinct from a verified success rather than folded
 into it.
 
+Failures are split in two so an AI shortfall is not conflated with a problem
+the AI never had a chance to fix: ``failed (AI)`` is a failure after (or
+during) cve-agent involvement, while ``failed (pre-existing)`` is an
+environment/infrastructure failure of the corrector run itself (devtool or
+git errors, a bad checkout, ...) that is independent of the AI backend.
+
 Colors come from the Okabe-Ito palette (distinguishable under the common
 forms of color blindness) and every bar is annotated with its value, so no
 chart depends on hue alone being read correctly.
@@ -53,14 +59,15 @@ from pathlib import Path
 #
 # One bucket per distinct status the shell runner can write to the CSV (see
 # classify_agent_summary() and run_loop() in test_cve_corrector.sh). Grouped
-# into five families so the chart legend stays readable regardless of how
+# into several families so the chart legend stays readable regardless of how
 # many distinct FAIL_*/SKIP_* codes a given run produced.
 
 FAMILY_DIRECT_SUCCESS = 'direct success'
 FAMILY_AGENT_VERIFIED = 'agent-resolved (verified)'
 FAMILY_NEEDS_REVIEW = 'produced a patch, needs review'
 FAMILY_SKIPPED = 'skipped'
-FAMILY_FAILED = 'failed'
+FAMILY_PREEXISTING_FAILED = 'failed (pre-existing)'
+FAMILY_AI_FAILED = 'failed (AI)'
 
 # Families that only exist when a judge CSV splits the "needs review" rows.
 FAMILY_REVIEW_EQUIVALENT = 'patch, judged equivalent to reference'
@@ -99,6 +106,24 @@ AGENT_VERIFIED_STATUSES = ('AGENT_RESOLVED',)
 # patch was "produced".
 NEEDS_REVIEW_STATUSES = ('SECURITY_REVIEW_REQUIRED', 'WORKFLOW_COMPLETED_UNVERIFIED')
 
+# ``FAIL_<exit_name>`` suffixes that come from the corrector run or its
+# environment rather than from the AI backend: cve-agent is only started for
+# the recoverable exit codes (conflict, ptest, build, patch error), so these
+# can never be an AI shortfall.  Any other ``FAIL_*`` status (agent summary
+# states such as WORKFLOW_FAILED/SECURITY_REJECTED/PROVIDER_TIMEOUT, the
+# recoverable corrector codes after a failed agent retry, TIMEOUT, and any
+# future code) is counted as an AI failure.
+PREEXISTING_FAIL_SUFFIXES = (
+    'CHECKOUT_ERROR',
+    'METADATA_ERROR',
+    'GIT_ERROR',
+    'DEVTOOL_ERROR',
+    'PTEST_PREEXISTING',
+    'BUILD_PREEXISTING',
+    'IGNORED_BY_STATUS',
+    'PREP_BASE_MISMATCH',
+)
+
 # Family membership is resolved by prefix for the open-ended SKIP_*/FAIL_*
 # codes, and by exact match for everything else.
 FAMILY_ORDER = (
@@ -106,7 +131,8 @@ FAMILY_ORDER = (
     FAMILY_AGENT_VERIFIED,
     FAMILY_NEEDS_REVIEW,
     FAMILY_SKIPPED,
-    FAMILY_FAILED,
+    FAMILY_PREEXISTING_FAILED,
+    FAMILY_AI_FAILED,
 )
 
 # Left-to-right order of every family a chart can show; the judged families sit
@@ -119,7 +145,8 @@ DISPLAY_ORDER = (
     FAMILY_REVIEW_NOT_COMPARABLE,
     FAMILY_NEEDS_REVIEW,
     FAMILY_SKIPPED,
-    FAMILY_FAILED,
+    FAMILY_PREEXISTING_FAILED,
+    FAMILY_AI_FAILED,
 )
 
 FAMILY_COLORS = {
@@ -127,7 +154,8 @@ FAMILY_COLORS = {
     FAMILY_AGENT_VERIFIED: '#0072B2',
     FAMILY_NEEDS_REVIEW: '#CC79A7',
     FAMILY_SKIPPED: '#999999',
-    FAMILY_FAILED: '#D55E00',
+    FAMILY_PREEXISTING_FAILED: '#8C510A',
+    FAMILY_AI_FAILED: '#D55E00',
     FAMILY_REVIEW_EQUIVALENT: '#56B4E9',
     FAMILY_REVIEW_DIVERGENT: '#E69F00',
     FAMILY_REVIEW_NOT_COMPARABLE: '#4D4D4D',
@@ -157,9 +185,11 @@ def classify_family(status: str) -> str:
         return FAMILY_REVIEW_NOT_COMPARABLE
     if status.startswith('SKIP'):
         return FAMILY_SKIPPED
+    if status.startswith('FAIL_') and status.removeprefix('FAIL_') in PREEXISTING_FAIL_SUFFIXES:
+        return FAMILY_PREEXISTING_FAILED
     # Treat anything else (FAIL_*, and any future status not yet listed
-    # above) as a failure rather than silently dropping it from the chart.
-    return FAMILY_FAILED
+    # above) as an AI failure rather than silently dropping it from the chart.
+    return FAMILY_AI_FAILED
 
 
 # --- Data loading ------------------------------------------------------------

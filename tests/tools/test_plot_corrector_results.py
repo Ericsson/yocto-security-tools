@@ -20,9 +20,10 @@ import pytest  # noqa: E402
 from plot_corrector_results import (  # noqa: E402
     DISPLAY_ORDER,
     FAMILY_AGENT_VERIFIED,
+    FAMILY_AI_FAILED,
     FAMILY_DIRECT_SUCCESS,
-    FAMILY_FAILED,
     FAMILY_NEEDS_REVIEW,
+    FAMILY_PREEXISTING_FAILED,
     FAMILY_REVIEW_DIVERGENT,
     FAMILY_REVIEW_EQUIVALENT,
     FAMILY_REVIEW_NOT_COMPARABLE,
@@ -76,14 +77,30 @@ class TestClassifyFamily:
         assert classify_family('SKIP_FETCH') == FAMILY_SKIPPED
 
     def test_any_fail_prefixed_status_is_failed(self):
-        assert classify_family('FAIL_WORKFLOW_FAILED') == FAMILY_FAILED
-        assert classify_family('FAIL_GIT_ERROR') == FAMILY_FAILED
-        assert classify_family('FAIL_UNKNOWN_17') == FAMILY_FAILED
+        assert classify_family('FAIL_WORKFLOW_FAILED') == FAMILY_AI_FAILED
+        assert classify_family('FAIL_UNKNOWN_17') == FAMILY_AI_FAILED
+
+    def test_agent_failures_are_ai_failed(self):
+        for status in ('FAIL_WORKFLOW_FAILED', 'FAIL_SECURITY_REJECTED',
+                       'FAIL_PROVIDER_TIMEOUT', 'FAIL_AGENT_NO_PROGRESS',
+                       'FAIL_CONFLICT', 'FAIL_BUILD_ERROR', 'FAIL_TIMEOUT'):
+            assert classify_family(status) == FAMILY_AI_FAILED, status
+
+    def test_corrector_and_environment_failures_are_preexisting_failed(self):
+        # cve-agent never runs for these exit codes, so they cannot be an AI fail.
+        for status in ('FAIL_GIT_ERROR', 'FAIL_DEVTOOL_ERROR', 'FAIL_CHECKOUT_ERROR',
+                       'FAIL_PREP_BASE_MISMATCH', 'FAIL_BUILD_PREEXISTING'):
+            assert classify_family(status) == FAMILY_PREEXISTING_FAILED, status
+
+    def test_preexisting_suffix_is_only_matched_on_fail_statuses(self):
+        # SKIP_BUILD_PREEXISTING stays skipped; a bare suffix is not a FAIL status.
+        assert classify_family('SKIP_BUILD_PREEXISTING') == FAMILY_SKIPPED
+        assert classify_family('GIT_ERROR') == FAMILY_AI_FAILED
 
     def test_unrecognized_status_defaults_to_failed_not_dropped(self):
         # A future status this script doesn't know about yet must still show
         # up on a chart as a failure rather than silently vanishing.
-        assert classify_family('SOME_NEW_STATUS_FROM_THE_FUTURE') == FAMILY_FAILED
+        assert classify_family('SOME_NEW_STATUS_FROM_THE_FUTURE') == FAMILY_AI_FAILED
 
     def test_review_statuses_are_distinct_from_agent_verified(self):
         # The whole point of the taxonomy: "produced a patch" must not read
@@ -111,11 +128,13 @@ class TestFamilyCounts:
     """family_counts() groups raw statuses under their family."""
 
     def test_groups_statuses_under_the_right_family(self):
-        counts = Counter({'IDENTICAL': 3, 'AGENT_RESOLVED': 1, 'FAIL_GIT_ERROR': 2})
+        counts = Counter({'IDENTICAL': 3, 'AGENT_RESOLVED': 1, 'FAIL_WORKFLOW_FAILED': 2,
+                          'FAIL_GIT_ERROR': 4})
         grouped = family_counts(counts)
         assert sum(grouped[FAMILY_DIRECT_SUCCESS].values()) == 3
         assert sum(grouped[FAMILY_AGENT_VERIFIED].values()) == 1
-        assert sum(grouped[FAMILY_FAILED].values()) == 2
+        assert sum(grouped[FAMILY_AI_FAILED].values()) == 2
+        assert sum(grouped[FAMILY_PREEXISTING_FAILED].values()) == 4
         assert sum(grouped[FAMILY_NEEDS_REVIEW].values()) == 0
         assert sum(grouped[FAMILY_SKIPPED].values()) == 0
 
@@ -125,7 +144,7 @@ class TestFamilyCounts:
         grouped = family_counts(Counter({'IDENTICAL': 1}))
         assert set(grouped) == {
             FAMILY_DIRECT_SUCCESS, FAMILY_AGENT_VERIFIED, FAMILY_NEEDS_REVIEW,
-            FAMILY_SKIPPED, FAMILY_FAILED,
+            FAMILY_SKIPPED, FAMILY_PREEXISTING_FAILED, FAMILY_AI_FAILED,
         }
 
     def test_preserves_raw_status_composition_within_a_family(self):
