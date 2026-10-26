@@ -519,6 +519,32 @@ available signal that one side is wrong. Skips with a mechanical cause (a
 pre-existing build failure, an empty cherry-pick) are listed separately, since
 those never involved the model's opinion.
 
+## Judging a bulk integration run
+
+`judge_campaign.py` gives the review-required rows of a `test_cve_corrector.sh`
+results directory (`SECURITY_REVIEW_REQUIRED`, `WORKFLOW_COMPLETED_UNVERIFIED`)
+the same judge the benchmark uses. It compares each row's
+`<cve>_full_artifacts/final-commits.patch` with the saved `full_<cve>_*.patch`
+reference, buckets the difference, and asks the judge about every row that is
+not identical. It needs no Yocto environment and can run while the campaign is
+still going.
+
+```bash
+# Bucket only: no judge call, nothing written (shows how many calls it would make)
+python3 judge_campaign.py ../integration/test-results/resume-seed --dry-run
+
+# Judge with claude-opus-5.5 (the default); resumable, one CSV row per CVE
+python3 judge_campaign.py ../integration/test-results/resume-seed
+```
+
+Output goes to `<results>/judge/judge_results.csv`, with the judge's full
+reasoning in `<cve>_judge-reason.txt`. Verdicts that need no judge call are
+`identical`, `file-mismatch`, `structural-only`, `comment-only`, `no-patch` (the
+agent escalated without committing anything) and `no-reference`. A judge reply
+with no usable content is not recorded, so a rerun retries it, and a results
+directory judged with one model refuses to mix in another. The verdict measures
+similarity to the human reference only: there is no build or test behind it.
+
 ## Files
 
 - `run_benchmark.sh` — main entry point (`--retier`, phase 1, phase 2)
@@ -526,6 +552,7 @@ those never involved the model's opinion.
   configurable judge and Kiro as the default judge
 - `bench_lib.py` — pure-Python helpers (conflict/file-complexity tiering, mirror-gap/conflict-marker/conflicted-file detection, cost weight, tool-call counting, judge call, CSV filtering)
 - `generate_benchmark_report.py` — markdown report generator
+- `judge_campaign.py` — judge the review-required rows of a bulk integration run (see above)
 - `benchmark-roster.json` — the default committed resolution roster, 6 CVEs (see [Roster files](#roster-files) above)
 - `benchmark-roster-balanced.json` — the balanced committed resolution roster, 8 CVEs (3/2/3)
 - `benchmark-roster-extended.json` — the extended committed resolution roster, 20 CVEs (the full mined pool)
