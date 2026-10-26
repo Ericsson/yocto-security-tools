@@ -149,7 +149,7 @@ Generates 3 PNG charts:
 | `recipe_breakdown.png` | Outcome family per recipe, so a recipe that always needs agent involvement or review stands out from one that resolves identically every time |
 
 The outcome taxonomy (`classify_family`) groups the raw `status` column into
-five families:
+outcome families:
 
 - **direct success** — `IDENTICAL`, `SUCCESS`, `ALREADY_APPLIED`: `cve-corrector`
   alone reached this result, no AI backend was ever invoked.
@@ -163,9 +163,17 @@ five families:
   was produced" is not the same claim as "the fix was confirmed correct".
 - **skipped** — any `SKIP*` status (pre-existing build/ptest failure, not
   applicable, fetch failed).
-- **failed** — any `FAIL*` status, and any future status this script does
-  not yet recognize (fails loud as a visible red bar rather than silently
-  vanishing from the chart).
+- **failed (pre-existing)** — `FAIL_*` statuses raised by the corrector run or
+  its environment before the AI could act: `CHECKOUT_ERROR`, `METADATA_ERROR`,
+  `GIT_ERROR`, `DEVTOOL_ERROR`, `PTEST_PREEXISTING`, `BUILD_PREEXISTING`,
+  `IGNORED_BY_STATUS`, `PREP_BASE_MISMATCH` (`PREEXISTING_FAIL_SUFFIXES`).
+  `cve-agent` is only started for the recoverable exit codes, so these are
+  never an AI shortfall.
+- **failed (AI)** — every other `FAIL*` status (agent outcomes such as
+  `WORKFLOW_FAILED`, `SECURITY_REJECTED`, `PROVIDER_TIMEOUT`, the recoverable
+  corrector codes after a failed agent retry, `TIMEOUT`), and any future status
+  this script does not yet recognize (fails loud as a visible red bar rather
+  than silently vanishing from the chart).
 
 Colors come from the Okabe-Ito palette (distinguishable under the common
 forms of color blindness) and every bar is annotated with its value, so no
