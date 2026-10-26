@@ -34,6 +34,11 @@ VERIFY_MARKER = "cve-agent-verify-v1"
 #: --session-timeout (which governs real, much longer conflict-resolution
 #: sessions).
 VERIFY_TIMEOUT = 30
+#: Terminal noise a CLI can stream into its reply: ANSI CSI sequences and
+#: control characters.  kiro-cli rings the bell (BEL) between streamed chunks,
+#: which splits the marker (``cve-agent-verify-<BEL>v1``) and defeats a plain
+#: substring match.  Newlines and tabs are kept.
+_TERMINAL_NOISE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]")
 VERIFY_PROMPT = f"Reply with exactly {VERIFY_MARKER} and nothing else."
 
 
@@ -70,7 +75,7 @@ def _verify_cli_marker(cmd: list[str], timeout: int = VERIFY_TIMEOUT,
             return VerifyResult(False, f"'{cmd[0]}' not found on PATH")
         except subprocess.TimeoutExpired:
             return VerifyResult(False, f"timed out after {timeout}s")
-    output = result.stdout or ""
+    output = _TERMINAL_NOISE_RE.sub("", result.stdout or "")
     if result.returncode != 0:
         return VerifyResult(False, f"exited {result.returncode}")
     if VERIFY_MARKER not in output:
