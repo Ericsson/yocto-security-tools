@@ -45,6 +45,7 @@ AGENT_MODEL=""
 AGENT_MODEL_SET=false
 CUSTOM_MODEL_LABEL=""
 RESUME_DIR=""
+ADD_MODELS=false
 # Per-cve-agent-invocation wall clock, in seconds (env override: RUN_TIMEOUT).
 # For the OpenAI backend, benchmark_manifest.build_run_manifest() rejects a
 # value that is too small relative to the model's connect_timeout +
@@ -162,6 +163,11 @@ tests/benchmark/README.md for what is in each and how to change them.
   --skip-judge        Do not run the judge phase at all
   --resume <dir>      Reuse an existing tests/benchmark/test-results/bench_*
                        directory and its agent_results.csv/judge_results.csv
+  --add-models        With --resume, let the run manifest grow by the models in
+                       --models that it does not list yet, placed after the
+                       recorded ones. Every other setting must still match, so
+                       a new model runs into an existing directory without
+                       touching its rows.
   -h, --help          Show this help
 EOF
 }
@@ -237,12 +243,16 @@ while [[ $# -gt 0 ]]; do
             RESUME_DIR="$1"
             [[ -d "$RESUME_DIR" ]] || die "Resume directory not found: $RESUME_DIR"
             ;;
+        --add-models) ADD_MODELS=true ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown option: $1 (see --help)" ;;
     esac
     shift
 done
 
+if [[ "$ADD_MODELS" == true && -z "$RESUME_DIR" ]]; then
+    die "--add-models only applies to --resume"
+fi
 if [[ "$AGENT_MODEL_SET" == true && "$MODELS_EXPLICIT" == true ]]; then
     die "--model and --models are mutually exclusive"
 fi
@@ -387,7 +397,7 @@ ensure_campaign_manifest() {
     python3 - "$RESULTS_DIR" "$resume" "$ROSTER_FILE" "$CVE_METADATA" \
         "$AGENT_BACKEND" "$AGENT_MODEL" "$CUSTOM_MODEL_LABEL" \
         "$MODELS_SELECTOR" "$JUDGE_BACKEND" "$JUDGE_MODEL" \
-        "$SESSION_TIMEOUT" "$RUN_TIMEOUT" <<'PY'
+        "$SESSION_TIMEOUT" "$RUN_TIMEOUT" "$ADD_MODELS" <<'PY'
 import sys
 from pathlib import Path
 
@@ -400,7 +410,7 @@ from tests.benchmark.benchmark_manifest import (
 
 (results_dir, resume, roster, metadata, agent_backend, agent_model,
  custom_label, models_selector, judge_backend, judge_model,
- session_timeout, run_timeout) = sys.argv[1:]
+ session_timeout, run_timeout, add_models) = sys.argv[1:]
 agent_models = (
     [agent_model or None]
     if custom_label else [entry['name'] for entry in resolve_models(models_selector)]
@@ -416,7 +426,8 @@ try:
         session_timeout=int(session_timeout) if session_timeout else None,
         run_timeout=int(run_timeout),
     )
-    ensure_run_manifest(Path(results_dir), manifest, resume=resume == 'true')
+    ensure_run_manifest(Path(results_dir), manifest, resume=resume == 'true',
+                        add_models=add_models == 'true')
 except (BenchmarkManifestError, OSError, ValueError) as error:
     print(f'ERROR: {error}', file=sys.stderr)
     raise SystemExit(2)
