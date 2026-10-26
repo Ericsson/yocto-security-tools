@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **cve-metadata-extractor**: merging into an existing entry no longer drops
   keys the new run did not regenerate (for example `upstream_status` or
   `downloaded_patches`).
+- **cve-corrector**: With `--bbappend`, a layer that ships the selected
+  recipe version itself (e.g. `foo_1.0.bb` and `foo_2.0.bb` side by side,
+  picked with `PREFERRED_VERSION`) now gets the fix in that version's own
+  `foo_<PV>.bbappend` and `${BP}` patch directory. Previously it could land
+  in a `foo_%.bbappend` shared by every version, overwrite another
+  version's patch of the same name, or replace an existing
+  `foo_<PV>.bbappend` with devtool's renamed wildcard bbappend.
 
 ## [1.3] - 2026-10-21
 

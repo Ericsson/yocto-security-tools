@@ -184,5 +184,5 @@ def update_patches_with_metadata(state: WorkflowState) -> None:
         logger.info("Renamed %s -> %s", original_patch.name, new_name)
 
     if len(original_patches) > 1 and state.meta_layer:
-        _split_src_uri_line(state.cve_id, state.meta_layer)
-        sort_cve_lines_in_recipe(state.cve_id, state.meta_layer)
+        _split_src_uri_line(state.cve_id, state.meta_layer, state.recipe)
+        sort_cve_lines_in_recipe(state.cve_id, state.meta_layer, state.recipe)

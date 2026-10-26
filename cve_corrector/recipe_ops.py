@@ -6,6 +6,8 @@ Handles SRC_URI editing, patch references, bbappend management,
 and CVE_STATUS line operations in Yocto recipe files.
 """
 import fnmatch
+import functools
+import os
 import re
 import shutil
 from pathlib import Path
@@ -28,15 +30,98 @@ def _matches_recipe(path: Path, recipe: str) -> bool:
     return stem.startswith(recipe + '_') or stem.startswith(recipe + '%')
 
 
+@functools.cache
+def _selected_recipe_file(recipe: str, bbpath: str) -> Path | None:
+    """Return the .bb file bitbake selected for ``recipe`` (its ``FILE``).
+
+    Cached per (recipe, BBPATH): bitbake-getvar costs a parse-cache load,
+    the selection cannot change within one corrector run, and
+    _find_recipe_file is called many times per CVE.
+    """
+    result = run_cmd_capture(['bitbake-getvar', 'FILE', '-r', recipe, '--value'])
+    lines = result.stdout.strip().splitlines() if result.returncode == 0 else []
+    return Path(lines[-1].strip()) if lines else None
+
+
+def versioned_bbappend(meta_layer: Path | None, recipe: str) -> Path | None:
+    """Return the per-version bbappend for a recipe the layer ships in several versions.
+
+    A layer can carry e.g. ``liburcu_0.13.4.bb`` and ``liburcu_0.15.7.bb``
+    side by side, plus a ``liburcu_%.bbappend`` meant for every version. A
+    fix for the selected version (PREFERRED_VERSION) must then go into
+    ``<FILE stem>.bbappend`` next to that recipe, never into the wildcard
+    bbappend, or it leaks into every other version. Single-version layers
+    keep their existing behaviour and never ask bitbake.
+
+    Returns:
+        ``<recipe dir>/<FILE stem>.bbappend`` (it may not exist yet), or None.
+    """
+    selected = layer_recipe_file(meta_layer, recipe, min_versions=2)
+    return selected.with_suffix('.bbappend') if selected else None
+
+
+def layer_recipe_file(meta_layer: Path | None, recipe: str,
+                      min_versions: int = 1) -> Path | None:
+    """Return the ``.bb`` bitbake selected for ``recipe`` if it lives in ``meta_layer``.
+
+    Only asks bitbake when the layer has at least ``min_versions``
+    ``<recipe>_<PV>.bb`` files.
+
+    Returns:
+        The recipe file, or None when the layer does not provide the
+        selected version (the common case of a layer of bbappends).
+    """
+    if not meta_layer:
+        return None
+    versions = [p for p in meta_layer.rglob(f'{recipe}_*.bb')
+                if _matches_recipe(p, recipe) and '%' not in p.stem]
+    if len(versions) < min_versions:
+        return None
+    selected = _selected_recipe_file(recipe, os.environ.get('BBPATH', ''))
+    if not selected or selected.suffix != '.bb':
+        return None
+    try:
+        selected.resolve().relative_to(meta_layer.resolve())
+    except ValueError:
+        return None
+    return selected
+
+
+def seed_versioned_bbappend(bbappend: Path) -> None:
+    """Make devtool write this version's patches to ``${THISDIR}/${BP}``.
+
+    FILESPATH already searches ``${FILE_DIRNAME}/${BP}``; naming it
+    explicitly makes devtool put new patches there (it reuses an existing
+    ``${THISDIR}/<dir>`` entry) instead of the ``${PN}`` directory every
+    version shares, where the same CVE's patch for two versions would
+    overwrite each other. Left alone if the file already has a
+    FILESEXTRAPATHS entry; created if missing.
+    """
+    original = bbappend.read_text(encoding='utf-8') if bbappend.exists() else ''
+    if re.search(r'^\s*FILESEXTRAPATHS', original, re.MULTILINE):
+        return
+    content = 'FILESEXTRAPATHS:prepend := "${THISDIR}/${BP}:"\n'
+    if original:
+        content += '\n' + original
+    bbappend.parent.mkdir(parents=True, exist_ok=True)
+    bbappend.write_text(content, encoding='utf-8')
+
+
 def _find_recipe_file(meta_layer: Path | None, recipe: str) -> Path | None:
     """Find the .bbappend or .bb file for a recipe in the meta-layer.
 
     Uses exact recipe name matching (recipe_version or recipe_%) to avoid
     false matches (e.g. 'busybox-utils' when looking for 'busybox').
-    Prefers .bbappend over .bb.
+    Prefers .bbappend over .bb. When the layer ships the recipe in several
+    versions, only the selected version's own bbappend — or, until it
+    exists, its .bb — is returned; see ``versioned_bbappend``.
     """
     if not meta_layer:
         return None
+
+    versioned = versioned_bbappend(meta_layer, recipe)
+    if versioned is not None:
+        return versioned if versioned.exists() else versioned.with_suffix('.bb')
 
     for pattern in (f'**/{recipe}*.bbappend', f'**/{recipe}*.bb',
                     f'**/{recipe}*.inc'):
@@ -74,7 +159,13 @@ def update_recipe_patch(recipe: str, new_patch_name: str, original_patch_name: s
     patch_found = False
     recipe_files = []
 
-    if meta_layer and meta_layer.exists():
+    # Several versions of the recipe in the layer: the same generic patch
+    # name can appear in another version's bbappend, so only this
+    # version's own bbappend may be edited.
+    versioned = versioned_bbappend(meta_layer, recipe)
+    if versioned is not None and versioned.exists():
+        recipe_files.append(versioned)
+    elif meta_layer and meta_layer.exists():
         for pattern in ('**/*.bbappend', '**/*.bb', '**/*.inc'):
             for f in meta_layer.glob(pattern):
                 try:
@@ -276,10 +367,23 @@ def _append_new_src_uri_append(recipe_file: Path, patch_names: list[str]) -> Non
     recipe_file.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
-def _split_src_uri_line(cve_id: str, meta_layer: Path) -> None:
+def _cve_candidate_files(meta_layer: Path, recipe: str | None) -> list[Path]:
+    """Recipe files a CVE's SRC_URI lines may live in.
+
+    With ``recipe`` given and the layer shipping it in several versions,
+    only the selected version's files: the same CVE can already be fixed
+    in another version's bbappend (see ``versioned_bbappend``).
+    """
+    versioned = versioned_bbappend(meta_layer, recipe) if recipe else None
+    if versioned is not None:
+        return [p for p in (versioned, versioned.with_suffix('.bb')) if p.exists()]
+    return [*meta_layer.glob('**/*.bb'), *meta_layer.glob('**/*.bbappend')]
+
+
+def _split_src_uri_line(cve_id: str, meta_layer: Path,
+                        recipe: str | None = None) -> None:
     """Split single-line SRC_URI with multiple file:// entries onto separate lines."""
-    for recipe_file in (*meta_layer.glob('**/*.bb'),
-                        *meta_layer.glob('**/*.bbappend')):
+    for recipe_file in _cve_candidate_files(meta_layer, recipe):
         try:
             content = recipe_file.read_text(encoding='utf-8')
         except (OSError, UnicodeDecodeError):
@@ -313,10 +417,10 @@ def _split_src_uri_line(cve_id: str, meta_layer: Path) -> None:
         return
 
 
-def sort_cve_lines_in_recipe(cve_id: str, meta_layer: Path) -> None:
+def sort_cve_lines_in_recipe(cve_id: str, meta_layer: Path,
+                             recipe: str | None = None) -> None:
     """Ensure CVE patch series lines in SRC_URI are in ascending order."""
-    for recipe_file in (*meta_layer.glob('**/*.bb'),
-                        *meta_layer.glob('**/*.bbappend')):
+    for recipe_file in _cve_candidate_files(meta_layer, recipe):
         try:
             content = recipe_file.read_text(encoding='utf-8')
         except (OSError, UnicodeDecodeError):
