@@ -151,3 +151,100 @@ def test_run_timeout_large_enough_for_slow_model_is_accepted(tmp_path):
         "--backend", "openai",
     )
     assert result.returncode == 0, result.stderr
+
+
+def _agent_models(results_dir):
+    import json
+    manifest = json.loads((results_dir / "run-manifest.json").read_text(encoding="utf-8"))
+    return [entry["model"] for entry in manifest["agent"]], manifest
+
+
+def _assert_rejected(result, *sections):
+    assert result.returncode != 0
+    assert "configuration mismatch" in result.stderr
+    for section in sections:
+        assert section in result.stderr
+
+
+def test_a_new_model_is_refused_on_resume_without_add_models(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    assert _dry_resume(results, environment, "--models", "claude-sonnet-5").returncode == 0
+    second = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5,claude-opus-5.5")
+    _assert_rejected(second, "agent")
+    assert _agent_models(results)[0] == ["claude-sonnet-5"]
+
+
+def test_add_models_appends_the_new_model_and_keeps_the_recorded_ones(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    assert _dry_resume(results, environment, "--models", "claude-sonnet-5").returncode == 0
+    before_models, before = _agent_models(results)
+
+    second = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5,claude-opus-5.5", "--add-models")
+    assert second.returncode == 0, second.stderr
+    models, after = _agent_models(results)
+    assert models == ["claude-sonnet-5", "claude-opus-5.5"]
+    assert before_models == ["claude-sonnet-5"]
+    assert after["agent"][0] == before["agent"][0]  # same config_id as recorded
+    assert {k: v for k, v in after.items() if k != "agent"} == {
+        k: v for k, v in before.items() if k != "agent"}
+
+
+def test_add_models_with_the_same_models_changes_nothing(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    assert _dry_resume(results, environment, "--models", "claude-sonnet-5").returncode == 0
+    recorded = (results / "run-manifest.json").read_bytes()
+    again = _dry_resume(results, environment, "--models", "claude-sonnet-5", "--add-models")
+    assert again.returncode == 0, again.stderr
+    assert (results / "run-manifest.json").read_bytes() == recorded
+
+
+def test_add_models_does_not_excuse_a_changed_judge(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    assert _dry_resume(results, environment, "--models", "claude-sonnet-5").returncode == 0
+    recorded = (results / "run-manifest.json").read_bytes()
+    second = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5,claude-opus-5.5",
+        "--add-models", "--judge-model", "judge-model-b")
+    _assert_rejected(second, "judge")
+    assert (results / "run-manifest.json").read_bytes() == recorded
+
+
+def test_add_models_does_not_excuse_a_changed_session_timeout(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    first = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5", "--session-timeout", "600")
+    assert first.returncode == 0, first.stderr
+    second = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5,claude-opus-5.5",
+        "--add-models", "--session-timeout", "900")
+    _assert_rejected(second, "agent_session_timeout")
+
+
+def test_add_models_does_not_reorder_or_drop_recorded_models(tmp_path):
+    environment = _environment(tmp_path)
+    results = tmp_path / "results"
+    first = _dry_resume(
+        results, environment, "--models", "claude-sonnet-5,claude-sonnet-4.6")
+    assert first.returncode == 0, first.stderr
+    recorded = (results / "run-manifest.json").read_bytes()
+    for selector in ("claude-sonnet-4.6,claude-sonnet-5,claude-opus-5.5",
+                     "claude-sonnet-5,claude-opus-5.5",
+                     "claude-sonnet-5"):
+        result = _dry_resume(results, environment, "--models", selector, "--add-models")
+        _assert_rejected(result, "agent")
+        assert (results / "run-manifest.json").read_bytes() == recorded
+
+
+def test_add_models_requires_resume(tmp_path):
+    result = subprocess.run(
+        [str(RUNNER), "--add-models", "--dry-run", "--skip-judge"],
+        capture_output=True, text=True, check=False, env=_environment(tmp_path))
+    assert result.returncode != 0
+    assert "--add-models only applies to --resume" in result.stdout + result.stderr

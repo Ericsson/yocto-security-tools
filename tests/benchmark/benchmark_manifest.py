@@ -253,13 +253,35 @@ def _write_manifest(path: Path, manifest: Mapping[str, object]) -> None:
             pass
 
 
+def _extends(current: Mapping[str, object], expected: Mapping[str, object]) -> bool:
+    """Return whether ``expected`` only appends agents to ``current``.
+
+    Every field except ``agent`` must be identical, and the existing agents must
+    stay first and unchanged, so every row already in the directory keeps the
+    configuration it was produced with.
+    """
+    if {k: v for k, v in current.items() if k != "agent"} != {
+            k: v for k, v in expected.items() if k != "agent"}:
+        return False
+    old_agents, new_agents = current.get("agent"), expected.get("agent")
+    # A shorter or reordered list fails the prefix test; an identical manifest
+    # never gets here (ensure_run_manifest returns early).
+    return (isinstance(old_agents, list) and isinstance(new_agents, list)
+            and new_agents[:len(old_agents)] == old_agents)
+
+
 def ensure_run_manifest(
     results_dir: Path,
     expected: Mapping[str, object],
     *,
     resume: bool,
+    add_models: bool = False,
 ) -> None:
-    """Create a manifest once or reject a resume with different configuration."""
+    """Create a manifest once or reject a resume with different configuration.
+
+    With ``add_models``, a resume whose only difference is extra agents after
+    the recorded ones extends the manifest instead of being rejected.
+    """
     path = results_dir / "run-manifest.json"
     if not path.exists() and not path.is_symlink():
         if resume and _has_result_rows(results_dir):
@@ -270,6 +292,9 @@ def ensure_run_manifest(
 
     current = _read_manifest(path)
     if current == dict(expected):
+        return
+    if add_models and _extends(current, expected):
+        _write_manifest(path, expected)
         return
     changed = sorted(
         key for key in set(current) | set(expected)

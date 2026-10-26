@@ -115,6 +115,12 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 
 # Resume an interrupted run (reuses its agent_results.csv/judge_results.csv):
 ./run_benchmark.sh --resume test-results/bench_20260814_120000
+
+# Run one more model into an existing directory. List every recorded model first,
+# in the recorded order, then the new one; the rows already there are skipped:
+RUN_TIMEOUT=32580 ./run_benchmark.sh --resume test-results/bench_20260925_133646-all \
+    --roster extended --session-timeout 600 --add-models \
+    --models claude-opus-5,claude-sonnet-5,claude-sonnet-4.6,claude-haiku-4.5,qwen3-coder-next,claude-opus-5.5
 ```
 
 ## Flags
@@ -134,6 +140,7 @@ See [Roster files](#roster-files) below for what is in each and how to change th
 | `--dry-run` | Print the planned run (rows, cost-weight) without invoking cve-agent, without running the judge, and without prompting for confirmation |
 | `--skip-judge` | Phase 2 (the judge pass) does not run at all |
 | `--resume <dir>` | Reuse an existing `test-results/bench_*` directory and its CSVs, skipping any `(cve_id, model)` pair already present. Resume is rejected if the roster, metadata, resolved agent configuration, or resolved judge configuration differs from the directory's immutable `run-manifest.json`. |
+| `--add-models` | With `--resume`, extend the run manifest by the `--models` it does not list yet (they must come after the recorded ones). Every other setting must still match, so a new model joins an existing directory without touching its rows |
 
 `--full` was removed along with dynamic per-tier candidate selection — each
 roster is a fixed set of CVEs, so there is no "per tier count" left to inflate.
