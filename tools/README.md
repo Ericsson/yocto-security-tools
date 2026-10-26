@@ -169,6 +169,13 @@ outcome families:
   `IGNORED_BY_STATUS`, `PREP_BASE_MISMATCH` (`PREEXISTING_FAIL_SUFFIXES`).
   `cve-agent` is only started for the recoverable exit codes, so these are
   never an AI shortfall.
+- **failed (tool)** — a `FAIL_*` row whose `failure_code` is a limit of the
+  corrector-to-agent handoff or the patch transfer rather than a model outcome:
+  `HANDOFF_REFERENCE_DRIFT`, `TRANSFER_NO_TARGET_PATH`,
+  `TRANSFER_UNSUPPORTED_FILE_TYPE` (`TOOL_FAILURE_CODES`). The status chart shows
+  them as `FAIL_TOOL_<code>`. Drawn only when a run has such a row. The list is
+  explicit because other `HANDOFF_*`/`TRANSFER_*` codes can follow from what the
+  model did; they stay under failed (AI).
 - **failed (AI)** — every other `FAIL*` status (agent outcomes such as
   `WORKFLOW_FAILED`, `SECURITY_REJECTED`, `PROVIDER_TIMEOUT`, the recoverable
   corrector codes after a failed agent retry, `TIMEOUT`), and any future status
