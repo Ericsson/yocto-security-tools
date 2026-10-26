@@ -33,12 +33,14 @@ from .meta_layer import create_layer_commit, write_cve_status
 from .patch_ops import update_patches_with_metadata
 from .ptest import check_ptest_in_recipe, compare_ptest_results, run_ptest
 from .recipe_ops import (
+    layer_recipe_file,
     recipe_bbappends,
     relocate_new_bbappends,
     remove_bbappend_leaks,
     resolve_bbappend_dir,
     restore_bbappend_extras,
     save_bbappend_extras,
+    seed_versioned_bbappend,
     snapshot_src_uri,
 )
 from .state import (
@@ -412,16 +414,30 @@ def finish_cve_workflow(state: WorkflowState) -> None:
             state.meta_layer, state.recipe,
             Path(state.bbappend_dir) if state.bbappend_dir else None)
         pre_finish_bbappends = recipe_bbappends(state.meta_layer, state.recipe)
+        # The layer provides the selected recipe version itself (e.g.
+        # liburcu 0.13.4/0.15.3/0.15.7 side by side in one layer): the fix
+        # belongs in that version's own bbappend and ${BP} patch directory,
+        # never in a <recipe>_%.bbappend shared by every version — nor
+        # renamed by _rename_new_wildcard_bbappends onto an existing
+        # <recipe>_<version>.bbappend, replacing its content.
+        layer_bb = layer_recipe_file(state.meta_layer, state.recipe) if state.bbappend else None
+        versioned = layer_bb.with_suffix('.bbappend') if layer_bb else None
         if state.bbappend:
             logger.info("Creating bbappend for %s in %s", state.recipe, state.meta_layer)
+            if versioned is not None:
+                # Without -w, devtool targets <FILE stem>.bbappend itself.
+                logger.info("Layer provides the selected recipe, using %s", versioned.name)
+                seed_versioned_bbappend(versioned)
             if run_cmd(['devtool', 'update-recipe', '-a', str(state.meta_layer),
-                        '-w', state.recipe]) != 0:
+                        *([] if versioned else ['-w']), state.recipe]) != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
-            # Only rename wildcard bbappends devtool just created; a pre-existing
-            # one (e.g. an earlier CVE fix) is meant for every recipe version.
-            _rename_new_wildcard_bbappends(
-                state.meta_layer, state.recipe, state.version, pre_finish_bbappends)
+            if versioned is None:
+                # Only rename wildcard bbappends devtool just created; a
+                # pre-existing one (e.g. an earlier CVE fix) is meant for
+                # every recipe version.
+                _rename_new_wildcard_bbappends(
+                    state.meta_layer, state.recipe, state.version, pre_finish_bbappends)
             if run_cmd(['devtool', 'reset', state.recipe]) != 0:
                 logger.warning("devtool reset failed, continuing anyway")
         else:
@@ -442,8 +458,11 @@ def finish_cve_workflow(state: WorkflowState) -> None:
             if ret != 0:
                 save_progress(state, 'finish')
                 raise GitError("Git operation failed")
-        relocate_new_bbappends(state.meta_layer, state.recipe, bbappend_dir,
-                               pre_finish_bbappends)
+        if versioned is None:
+            # devtool's placement next to the layer's own recipe is already
+            # right for a versioned bbappend.
+            relocate_new_bbappends(state.meta_layer, state.recipe, bbappend_dir,
+                                   pre_finish_bbappends)
         restore_bbappend_extras(state.meta_layer, state.recipe, saved_extras)
         remove_bbappend_leaks(state.meta_layer, state.recipe, pre_finish_entries)
 

@@ -10,7 +10,7 @@ from tempfile import NamedTemporaryFile
 
 from .bitbake_ops import get_build_path, get_layerseries_corename, supports_cve_status
 from .git_ops import get_git_user_info
-from .recipe_ops import _append_src_uri_entries, _find_recipe_file
+from .recipe_ops import _append_src_uri_entries, _find_recipe_file, versioned_bbappend
 from .utils import logger, run_cmd, run_cmd_capture
 
 
@@ -339,17 +339,19 @@ def write_cve_status(meta_layer: Path | None, recipe: str, cve_id: str,
 
     status_line = cve_status_line(cve_id, reason)
 
-    recipe_file = _find_recipe_file(meta_layer, recipe)
+    # A recipe the layer ships in several versions gets the status in the
+    # selected version's own bbappend, created if this is its first entry.
+    recipe_file = versioned_bbappend(meta_layer, recipe) or _find_recipe_file(meta_layer, recipe)
     if not recipe_file:
         logger.warning("No .bb or .bbappend found for %s in %s", recipe, meta_layer)
         return False
 
-    content = recipe_file.read_text(encoding='utf-8')
+    content = recipe_file.read_text(encoding='utf-8') if recipe_file.exists() else ''
     if cve_id in content:
         logger.info("CVE_STATUS for %s already in %s", cve_id, recipe_file)
         return True
 
-    if not content.endswith('\n'):
+    if content and not content.endswith('\n'):
         content += '\n'
     content += status_line + '\n'
     recipe_file.write_text(content, encoding='utf-8')
