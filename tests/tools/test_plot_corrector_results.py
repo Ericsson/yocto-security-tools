@@ -16,15 +16,32 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 
+import pytest  # noqa: E402
 from plot_corrector_results import (  # noqa: E402
+    DISPLAY_ORDER,
     FAMILY_AGENT_VERIFIED,
     FAMILY_DIRECT_SUCCESS,
     FAMILY_FAILED,
     FAMILY_NEEDS_REVIEW,
+    FAMILY_REVIEW_DIVERGENT,
+    FAMILY_REVIEW_EQUIVALENT,
+    FAMILY_REVIEW_NOT_COMPARABLE,
     FAMILY_SKIPPED,
+    JUDGMENT_STATUS,
+    STATUS_REVIEW_DIVERGENT,
+    STATUS_REVIEW_EQUIVALENT,
+    STATUS_REVIEW_NOT_COMPARABLE,
+    apply_judge,
     classify_family,
+    families_for_recipes,
+    families_in_order,
     family_counts,
     find_results_csv,
+    label_levels,
+    plot_family_breakdown,
+    plot_recipe_breakdown,
+    plot_status_distribution,
+    read_judge_csv,
     read_results_csv,
     recipe_breakdown,
     status_counts,
@@ -196,3 +213,129 @@ class TestFindResultsCsv:
             raise AssertionError('expected SystemExit')
         except SystemExit:
             pass
+
+
+def _review_rows():
+    return [
+        {'cve_id': 'CVE-1', 'recipe': 'a', 'status': 'SECURITY_REVIEW_REQUIRED'},
+        {'cve_id': 'CVE-2', 'recipe': 'a', 'status': 'WORKFLOW_COMPLETED_UNVERIFIED'},
+        {'cve_id': 'CVE-3', 'recipe': 'b', 'status': 'SECURITY_REVIEW_REQUIRED'},
+        {'cve_id': 'CVE-4', 'recipe': 'b', 'status': 'SECURITY_REVIEW_REQUIRED'},
+        {'cve_id': 'CVE-5', 'recipe': 'b', 'status': 'IDENTICAL'},
+    ]
+
+
+class TestJudgedFamilies:
+    """The judge verdict splits the "needs review" family, and nothing else."""
+
+    def test_pseudo_statuses_map_to_their_own_families(self):
+        assert classify_family(STATUS_REVIEW_EQUIVALENT) == FAMILY_REVIEW_EQUIVALENT
+        assert classify_family(STATUS_REVIEW_DIVERGENT) == FAMILY_REVIEW_DIVERGENT
+        assert classify_family(STATUS_REVIEW_NOT_COMPARABLE) == FAMILY_REVIEW_NOT_COMPARABLE
+
+    def test_every_verdict_maps_to_a_pseudo_status(self):
+        assert JUDGMENT_STATUS['stylistic'] == STATUS_REVIEW_EQUIVALENT
+        assert JUDGMENT_STATUS['identical'] == STATUS_REVIEW_EQUIVALENT
+        assert JUDGMENT_STATUS['comment-only'] == STATUS_REVIEW_EQUIVALENT
+        assert JUDGMENT_STATUS['structural-only'] == STATUS_REVIEW_EQUIVALENT
+        assert JUDGMENT_STATUS['meaningful'] == STATUS_REVIEW_DIVERGENT
+        for verdict in ('no-patch', 'no-reference', 'file-mismatch'):
+            assert JUDGMENT_STATUS[verdict] == STATUS_REVIEW_NOT_COMPARABLE
+
+    def test_apply_judge_refines_only_review_rows_with_a_known_verdict(self):
+        verdicts = {'CVE-1': 'stylistic', 'CVE-2': 'meaningful', 'CVE-3': 'pending',
+                    'CVE-5': 'meaningful'}
+        statuses = {r['cve_id']: r['status'] for r in apply_judge(_review_rows(), verdicts)}
+        assert statuses == {
+            'CVE-1': STATUS_REVIEW_EQUIVALENT,
+            'CVE-2': STATUS_REVIEW_DIVERGENT,
+            'CVE-3': 'SECURITY_REVIEW_REQUIRED',   # unknown verdict: unchanged
+            'CVE-4': 'SECURITY_REVIEW_REQUIRED',   # no verdict: unchanged
+            'CVE-5': 'IDENTICAL',                  # not a review row: unchanged
+        }
+
+    def test_apply_judge_does_not_modify_its_input(self):
+        rows = _review_rows()
+        apply_judge(rows, {'CVE-1': 'stylistic'})
+        assert rows[0]['status'] == 'SECURITY_REVIEW_REQUIRED'
+
+    def test_family_counts_adds_judged_families_only_when_present(self):
+        plain = family_counts(Counter({'SECURITY_REVIEW_REQUIRED': 2}))
+        assert FAMILY_REVIEW_EQUIVALENT not in plain
+        judged = family_counts(Counter({STATUS_REVIEW_EQUIVALENT: 2, 'IDENTICAL': 1}))
+        assert sum(judged[FAMILY_REVIEW_EQUIVALENT].values()) == 2
+        assert sum(judged[FAMILY_NEEDS_REVIEW].values()) == 0
+
+    def test_families_in_order_puts_judged_families_beside_needs_review(self):
+        grouped = family_counts(Counter({
+            'IDENTICAL': 1, STATUS_REVIEW_DIVERGENT: 1, STATUS_REVIEW_EQUIVALENT: 1,
+            'SECURITY_REVIEW_REQUIRED': 1, 'FAIL_X': 1}))
+        ordered = families_in_order(grouped)
+        assert ordered == [f for f in DISPLAY_ORDER if f in grouped]
+        assert ordered.index(FAMILY_REVIEW_EQUIVALENT) < ordered.index(
+            FAMILY_REVIEW_DIVERGENT) < ordered.index(FAMILY_NEEDS_REVIEW)
+
+    def test_recipe_chart_draws_the_judged_families_in_display_order(self):
+        rows = apply_judge(_review_rows(), {'CVE-1': 'stylistic', 'CVE-3': 'meaningful'})
+        assert families_for_recipes(recipe_breakdown(rows)) == [
+            FAMILY_DIRECT_SUCCESS, FAMILY_REVIEW_EQUIVALENT, FAMILY_REVIEW_DIVERGENT,
+            FAMILY_NEEDS_REVIEW]
+
+    def test_recipe_breakdown_counts_the_judged_families(self):
+        rows = apply_judge(_review_rows(), {'CVE-1': 'stylistic', 'CVE-3': 'meaningful'})
+        per_recipe = recipe_breakdown(rows)
+        assert per_recipe['a'][FAMILY_REVIEW_EQUIVALENT] == 1
+        assert per_recipe['b'][FAMILY_REVIEW_DIVERGENT] == 1
+
+
+class TestReadJudgeCsv:
+    """read_judge_csv() returns the verdict per CVE and rejects bad input."""
+
+    def test_reads_the_verdicts(self, tmp_path):
+        path = tmp_path / 'judge_results.csv'
+        path.write_text('cve_id,recipe,judgment,reason\nCVE-1,a,stylistic,"x, y"\n',
+                        encoding='utf-8')
+        assert read_judge_csv(path) == {'CVE-1': 'stylistic'}
+
+    def test_missing_file_raises_system_exit(self, tmp_path):
+        with pytest.raises(SystemExit, match='does not exist'):
+            read_judge_csv(tmp_path / 'nope.csv')
+
+    def test_wrong_columns_raise_system_exit(self, tmp_path):
+        path = tmp_path / 'judge_results.csv'
+        path.write_text('cve_id,model,judgment_x\nCVE-1,m,stylistic\n', encoding='utf-8')
+        with pytest.raises(SystemExit, match='no cve_id/judgment columns'):
+            read_judge_csv(path)
+
+
+class TestJudgedCharts:
+    """The three charts render with judged families (skipped without matplotlib)."""
+
+    def test_all_charts_render(self, tmp_path):
+        pytest.importorskip('matplotlib')
+        rows = apply_judge(_review_rows(), {'CVE-1': 'stylistic', 'CVE-2': 'meaningful',
+                                            'CVE-3': 'no-patch'})
+        counts = status_counts(rows)
+        grouped = family_counts(counts)
+        plot_status_distribution(counts, tmp_path / 'a.png')
+        plot_family_breakdown(grouped, len(rows), tmp_path / 'b.png')
+        plot_recipe_breakdown(recipe_breakdown(rows), tmp_path / 'c.png')
+        assert all((tmp_path / name).stat().st_size > 0 for name in ('a.png', 'b.png', 'c.png'))
+
+
+class TestLabelLevels:
+    """label_levels() keeps narrow bars' labels from overlapping."""
+
+    def test_wide_bars_are_labelled_inside(self):
+        assert label_levels([436, 122], 753) == [None, None]
+
+    def test_narrow_bars_alternate_between_two_levels(self):
+        # 37, 41, 10 and 52 of 753 are all under the 7% share.
+        assert label_levels([436, 37, 122, 41, 10, 52, 55], 753) == [
+            None, 0, None, 1, 0, 1, None]
+
+    def test_a_bar_exactly_at_the_share_is_labelled_inside(self):
+        assert label_levels([7, 93], 100) == [None, None]
+
+    def test_empty_total_labels_nothing_inside(self):
+        assert label_levels([0], 0) == [0]

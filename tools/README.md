@@ -116,6 +116,14 @@ python3 tools/plot_benchmark_results.py \
     tests/benchmark/test-results/bench_20260828_145923
 ```
 
+`--judge-csv <judge_results.csv>` (written by `tests/benchmark/judge_campaign.py`)
+splits the "needs review" family by the judge's verdict: **patch, judged
+equivalent to reference** (identical, stylistic, comment-only or
+structural-only), **patch, judged meaningfully different**, and **review item
+without a comparable patch** (no patch, no reference, or no files in common).
+A review row without a recognised verdict stays in "needs review". The verdict
+measures similarity to the human reference only, with no build or test behind it.
+
 PNGs are written into the results directory by default; use `--output-dir` to
 send them elsewhere. The script also prints the same figures as a text table
 (plus a per-CVE equivalent rate across models) to stdout, so a run can be
@@ -137,7 +145,7 @@ Generates 3 PNG charts:
 | File | Shows |
 |------|-------|
 | `status_distribution.png` | Every distinct `status` value the test runner can emit, colored by outcome family |
-| `family_breakdown.png` | The same data collapsed into a single stacked bar of five outcome families |
+| `family_breakdown.png` | The same data collapsed into a single stacked bar of outcome families |
 | `recipe_breakdown.png` | Outcome family per recipe, so a recipe that always needs agent involvement or review stands out from one that resolves identically every time |
 
 The outcome taxonomy (`classify_family`) groups the raw `status` column into
