@@ -26,6 +26,9 @@ the AI never had a chance to fix: ``failed (AI)`` is a failure after (or
 during) cve-agent involvement, while ``failed (pre-existing)`` is an
 environment/infrastructure failure of the corrector run itself (devtool or
 git errors, a bad checkout, ...) that is independent of the AI backend.
+``failed (tool)`` is a third kind: a FAIL_* row whose ``failure_code`` names a
+limit of the corrector-to-agent handoff or the patch transfer (see
+TOOL_FAILURE_CODES), so no model could have changed the outcome.
 
 Colors come from the Okabe-Ito palette (distinguishable under the common
 forms of color blindness) and every bar is annotated with its value, so no
@@ -69,6 +72,9 @@ FAMILY_SKIPPED = 'skipped'
 FAMILY_PREEXISTING_FAILED = 'failed (pre-existing)'
 FAMILY_AI_FAILED = 'failed (AI)'
 
+# Only drawn when a run has such a row; see apply_failure_codes().
+FAMILY_TOOL_FAILED = 'failed (tool)'
+
 # Families that only exist when a judge CSV splits the "needs review" rows.
 FAMILY_REVIEW_EQUIVALENT = 'patch, judged equivalent to reference'
 FAMILY_REVIEW_DIVERGENT = 'patch, judged meaningfully different'
@@ -92,6 +98,22 @@ JUDGMENT_STATUS = {
     'no-reference': STATUS_REVIEW_NOT_COMPARABLE,
     'file-mismatch': STATUS_REVIEW_NOT_COMPARABLE,
 }
+
+# ``failure_code`` values of a FAIL_* row that come from a limit of the
+# corrector-to-agent handoff or of the verified patch transfer, not from the
+# model: the reference changes under the repository (reference drift), no path
+# in the target tree matches a changed file, or the change is a binary file.
+# An explicit list on purpose: most other HANDOFF_*/TRANSFER_* codes can follow
+# from what the model did, so they stay "failed (AI)" until shown otherwise.
+TOOL_FAILURE_CODES = (
+    'HANDOFF_REFERENCE_DRIFT',
+    'TRANSFER_NO_TARGET_PATH',
+    'TRANSFER_UNSUPPORTED_FILE_TYPE',
+)
+
+# Pseudo-status prefix substituted for a FAIL_* row with a tool failure code;
+# the code follows, so the status chart still tells the causes apart.
+STATUS_TOOL_PREFIX = 'FAIL_TOOL_'
 
 # Statuses cve-corrector reaches without any AI backend involvement at all.
 DIRECT_SUCCESS_STATUSES = ('IDENTICAL', 'SUCCESS', 'ALREADY_APPLIED')
@@ -146,6 +168,7 @@ DISPLAY_ORDER = (
     FAMILY_NEEDS_REVIEW,
     FAMILY_SKIPPED,
     FAMILY_PREEXISTING_FAILED,
+    FAMILY_TOOL_FAILED,
     FAMILY_AI_FAILED,
 )
 
@@ -155,6 +178,7 @@ FAMILY_COLORS = {
     FAMILY_NEEDS_REVIEW: '#CC79A7',
     FAMILY_SKIPPED: '#999999',
     FAMILY_PREEXISTING_FAILED: '#8C510A',
+    FAMILY_TOOL_FAILED: '#6A3D9A',
     FAMILY_AI_FAILED: '#D55E00',
     FAMILY_REVIEW_EQUIVALENT: '#56B4E9',
     FAMILY_REVIEW_DIVERGENT: '#E69F00',
@@ -185,6 +209,8 @@ def classify_family(status: str) -> str:
         return FAMILY_REVIEW_NOT_COMPARABLE
     if status.startswith('SKIP'):
         return FAMILY_SKIPPED
+    if status.startswith(STATUS_TOOL_PREFIX):
+        return FAMILY_TOOL_FAILED
     if status.startswith('FAIL_') and status.removeprefix('FAIL_') in PREEXISTING_FAIL_SUFFIXES:
         return FAMILY_PREEXISTING_FAILED
     # Treat anything else (FAIL_*, and any future status not yet listed
@@ -287,6 +313,29 @@ def apply_judge(rows: list[dict[str, str]], verdicts: dict[str, str]) -> list[di
             row = {**row, 'status': pseudo}
         refined.append(row)
     return refined
+
+
+def apply_failure_codes(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Mark the FAIL_* rows whose failure is a tool limit, not a model outcome.
+
+    Only a row whose status starts with ``FAIL_`` and whose ``failure_code`` is
+    in :data:`TOOL_FAILURE_CODES` changes; its ``status`` becomes
+    ``FAIL_TOOL_<code>``.  Every other row, and the input list itself, is left
+    untouched, and a CSV without a ``failure_code`` column is left as it is.
+
+    Args:
+        rows: Parsed results rows.
+
+    Returns:
+        A new list of rows.
+    """
+    marked = []
+    for row in rows:
+        code = row.get('failure_code') or ''
+        if row['status'].startswith('FAIL_') and code in TOOL_FAILURE_CODES:
+            row = {**row, 'status': STATUS_TOOL_PREFIX + code}
+        marked.append(row)
+    return marked
 
 
 def families_in_order(grouped: dict[str, Counter[str]]) -> list[str]:
@@ -596,7 +645,7 @@ def main() -> None:
         raise SystemExit(f'error: {args.results_dir} is not a directory')
 
     csv_path = find_results_csv(args.results_dir, args.mode)
-    rows = read_results_csv(csv_path)
+    rows = apply_failure_codes(read_results_csv(csv_path))
     if args.judge_csv:
         rows = apply_judge(rows, read_judge_csv(args.judge_csv))
 

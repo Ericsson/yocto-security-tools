@@ -28,10 +28,14 @@ from plot_corrector_results import (  # noqa: E402
     FAMILY_REVIEW_EQUIVALENT,
     FAMILY_REVIEW_NOT_COMPARABLE,
     FAMILY_SKIPPED,
+    FAMILY_TOOL_FAILED,
     JUDGMENT_STATUS,
     STATUS_REVIEW_DIVERGENT,
     STATUS_REVIEW_EQUIVALENT,
     STATUS_REVIEW_NOT_COMPARABLE,
+    STATUS_TOOL_PREFIX,
+    TOOL_FAILURE_CODES,
+    apply_failure_codes,
     apply_judge,
     classify_family,
     families_for_recipes,
@@ -305,6 +309,102 @@ class TestJudgedFamilies:
         per_recipe = recipe_breakdown(rows)
         assert per_recipe['a'][FAMILY_REVIEW_EQUIVALENT] == 1
         assert per_recipe['b'][FAMILY_REVIEW_DIVERGENT] == 1
+
+
+def _failure_rows():
+    return [
+        {'cve_id': 'CVE-1', 'recipe': 'a', 'status': 'FAIL_WORKFLOW_FAILED',
+         'failure_code': 'HANDOFF_REFERENCE_DRIFT'},
+        {'cve_id': 'CVE-2', 'recipe': 'a', 'status': 'FAIL_WORKFLOW_FAILED',
+         'failure_code': 'TRANSFER_UNSUPPORTED_FILE_TYPE'},
+        {'cve_id': 'CVE-3', 'recipe': 'b', 'status': 'FAIL_WORKFLOW_FAILED',
+         'failure_code': 'TRANSFER_NO_TARGET_PATH'},
+        {'cve_id': 'CVE-4', 'recipe': 'b', 'status': 'FAIL_WORKFLOW_FAILED',
+         'failure_code': 'HANDOFF_UNKNOWN_OUT_OF_SCOPE'},
+        {'cve_id': 'CVE-5', 'recipe': 'b', 'status': 'FAIL_AGENT_NO_PROGRESS',
+         'failure_code': 'model_no_progress'},
+        {'cve_id': 'CVE-6', 'recipe': 'c', 'status': 'FAIL_PREP_BASE_MISMATCH',
+         'failure_code': 'PREP_BASE_MISMATCH'},
+        {'cve_id': 'CVE-7', 'recipe': 'c', 'status': 'SECURITY_REVIEW_REQUIRED',
+         'failure_code': 'HANDOFF_REFERENCE_DRIFT'},
+        {'cve_id': 'CVE-8', 'recipe': 'c', 'status': 'FAIL_WORKFLOW_FAILED'},
+    ]
+
+
+class TestToolFailures:
+    """A FAIL_* row with a handoff/transfer failure code is "failed (tool)"."""
+
+    def test_the_listed_codes_are_the_ones_agreed(self):
+        assert TOOL_FAILURE_CODES == (
+            'HANDOFF_REFERENCE_DRIFT', 'TRANSFER_NO_TARGET_PATH',
+            'TRANSFER_UNSUPPORTED_FILE_TYPE')
+
+    def test_tool_status_is_its_own_family(self):
+        assert classify_family(STATUS_TOOL_PREFIX + 'HANDOFF_REFERENCE_DRIFT') == (
+            FAMILY_TOOL_FAILED)
+        assert FAMILY_TOOL_FAILED not in (FAMILY_AI_FAILED, FAMILY_PREEXISTING_FAILED)
+
+    def test_only_listed_codes_on_fail_rows_are_marked(self):
+        statuses = {r['cve_id']: r['status'] for r in apply_failure_codes(_failure_rows())}
+        assert statuses == {
+            'CVE-1': 'FAIL_TOOL_HANDOFF_REFERENCE_DRIFT',
+            'CVE-2': 'FAIL_TOOL_TRANSFER_UNSUPPORTED_FILE_TYPE',
+            'CVE-3': 'FAIL_TOOL_TRANSFER_NO_TARGET_PATH',
+            'CVE-4': 'FAIL_WORKFLOW_FAILED',        # unlisted handoff code stays AI
+            'CVE-5': 'FAIL_AGENT_NO_PROGRESS',
+            'CVE-6': 'FAIL_PREP_BASE_MISMATCH',
+            'CVE-7': 'SECURITY_REVIEW_REQUIRED',    # not a FAIL_ row
+            'CVE-8': 'FAIL_WORKFLOW_FAILED',        # no failure_code at all
+        }
+
+    def test_the_failure_families_end_up_separate(self):
+        grouped = family_counts(status_counts(apply_failure_codes(_failure_rows())))
+        assert sum(grouped[FAMILY_TOOL_FAILED].values()) == 3
+        assert sum(grouped[FAMILY_PREEXISTING_FAILED].values()) == 1
+        assert sum(grouped[FAMILY_AI_FAILED].values()) == 3
+
+    def test_input_rows_are_not_modified(self):
+        rows = _failure_rows()
+        apply_failure_codes(rows)
+        assert rows[0]['status'] == 'FAIL_WORKFLOW_FAILED'
+
+    def test_a_csv_without_failure_codes_is_left_alone(self):
+        rows = [{'cve_id': 'CVE-1', 'recipe': 'a', 'status': 'FAIL_WORKFLOW_FAILED'}]
+        assert apply_failure_codes(rows) == rows
+
+    def test_tool_family_is_drawn_only_when_present_and_before_ai(self):
+        without = family_counts(Counter({'FAIL_WORKFLOW_FAILED': 1}))
+        assert FAMILY_TOOL_FAILED not in without
+        grouped = family_counts(status_counts(apply_failure_codes(_failure_rows())))
+        ordered = families_in_order(grouped)
+        assert ordered.index(FAMILY_PREEXISTING_FAILED) < ordered.index(
+            FAMILY_TOOL_FAILED) < ordered.index(FAMILY_AI_FAILED)
+
+    def test_all_charts_render_with_the_tool_family(self, tmp_path):
+        pytest.importorskip('matplotlib')
+        rows = apply_failure_codes(_failure_rows())
+        counts = status_counts(rows)
+        plot_status_distribution(counts, tmp_path / 'a.png')
+        plot_family_breakdown(family_counts(counts), len(rows), tmp_path / 'b.png')
+        plot_recipe_breakdown(recipe_breakdown(rows), tmp_path / 'c.png')
+        assert all((tmp_path / n).stat().st_size > 0 for n in ('a.png', 'b.png', 'c.png'))
+
+
+class TestToolFailuresInTheCommand:
+    def test_the_command_reports_the_tool_family(self, tmp_path):
+        pytest.importorskip('matplotlib')
+        import subprocess
+        header = 'cve_id,recipe,status,failure_code\n'
+        (tmp_path / 'results_full.csv').write_text(
+            header + 'CVE-1,a,FAIL_WORKFLOW_FAILED,HANDOFF_REFERENCE_DRIFT\n'
+                     'CVE-2,b,FAIL_AGENT_NO_PROGRESS,model_no_progress\n', encoding='utf-8')
+        script = Path(__file__).resolve().parents[2] / 'tools' / 'plot_corrector_results.py'
+        done = subprocess.run(
+            [sys.executable, str(script), str(tmp_path), '--output-dir', str(tmp_path / 'out')],
+            capture_output=True, text=True, check=True)
+        assert 'failed (tool)' in done.stdout
+        assert 'FAIL_TOOL_HANDOFF_REFERENCE_DRIFT' in done.stdout
+        assert 'failed (AI)' in done.stdout
 
 
 class TestReadJudgeCsv:
