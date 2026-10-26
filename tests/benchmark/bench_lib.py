@@ -684,6 +684,10 @@ MODELS: dict[str, dict] = {
     'claude-opus-5': {'multiplier': 2.20, 'tier': 'default'},
     'claude-sonnet-5': {'multiplier': 1.30, 'tier': 'default'},
     'claude-sonnet-4.6': {'multiplier': 1.30, 'tier': 'default'},
+    # An experimental preview, priced below opus-5 in kiro-cli's model list.
+    # Not in the default set: bench_20260925_133646-all was run without it and
+    # its rows are merged in afterwards (tests/benchmark/merge_results.py).
+    'claude-opus-5.5': {'multiplier': 2.00, 'tier': 'full'},
     'claude-opus-4.8': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.7': {'multiplier': 2.20, 'tier': 'full'},
     'claude-opus-4.6': {'multiplier': 2.20, 'tier': 'full'},
