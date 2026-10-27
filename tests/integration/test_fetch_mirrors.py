@@ -116,3 +116,40 @@ def test_running_the_script_converts_an_existing_partial_mirror(tmp_path):
                                  'PATH': f'{stub}:/usr/bin:/bin'})
     assert 'Converting partial mirror xz to a complete one' in result.stdout
     assert 'Updating xz' not in result.stdout
+
+
+def test_update_mirror_brings_new_branches_and_tags_and_prunes_deleted_ones(mirrors):
+    up = mirrors['dir'].parent / 'up'
+    _git(up, 'branch', 'gone')
+    _git(mirrors['complete'], 'fetch', '-q', 'origin', '+refs/heads/gone:refs/heads/gone')
+    _git(up, 'branch', '-D', 'gone')
+    _git(up, 'branch', 'feature')
+
+    result = _sh(mirrors['dir'], f'update_mirror "{mirrors["complete"]}"')
+
+    assert result.returncode == 0, result.stderr
+    assert {'v1', 'v2', 'v3'} <= set(_git(mirrors['complete'], 'tag').stdout.split())
+    branches = _git(mirrors['complete'], 'branch', '--format=%(refname:short)').stdout.split()
+    assert 'feature' in branches
+    assert 'gone' not in branches
+
+
+def test_update_mirror_reports_a_failed_fetch(mirrors):
+    _git(mirrors['complete'], 'config', 'remote.origin.url', 'file:///nonexistent')
+    assert _sh(mirrors['dir'], f'update_mirror "{mirrors["complete"]}"').returncode != 0
+
+
+def test_running_the_script_updates_a_complete_mirror_with_explicit_refspecs(tmp_path):
+    stub = tmp_path / 'bin'
+    stub.mkdir()
+    calls = tmp_path / 'calls'
+    (stub / 'git').write_text(f'#!/bin/bash\necho "$*" >> "{calls}"\nexit 1\n')
+    (stub / 'git').chmod(0o755)
+    (tmp_path / 'm' / 'xz').mkdir(parents=True)
+    result = subprocess.run(['bash', str(SCRIPT)], check=False, capture_output=True, text=True,
+                            env={'MIRROR_DIR': str(tmp_path / 'm'),
+                                 'PATH': f'{stub}:/usr/bin:/bin'})
+    assert 'Updating xz' in result.stdout
+    xz_calls = [c for c in calls.read_text().splitlines() if str(tmp_path / 'm' / 'xz') in c]
+    assert any('fetch --prune origin +refs/heads/*:refs/heads/*' in c for c in xz_calls)
+    assert not any('remote update' in c for c in xz_calls)
