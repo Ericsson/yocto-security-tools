@@ -233,11 +233,39 @@ fetch_pr_refs() {
         '+refs/pull/*/head:refs/pr/*' >/dev/null 2>&1 || true
 }
 
+# A partial clone (--filter=tree:0 or blob:none) cannot serve a fetch: upload-pack
+# does not lazily fetch the objects it lacks on behalf of a client, so the
+# corrector's `git fetch` from it dies with "could not fetch ... from promisor
+# remote" and no upstream tag or fix commit arrives. A mirror must be complete.
+is_partial_mirror() {
+    [[ "$(git -C "$1" config --get remote.origin.promisor 2>/dev/null || true)" == true ]]
+}
+
+# Download everything the partial mirror lacks, then drop its promisor settings.
+make_mirror_full() {
+    local dest="$1"
+    git -C "$dest" fetch --refetch --no-filter origin \
+        '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' || return 1
+    git -C "$dest" config --unset-all remote.origin.promisor
+    git -C "$dest" config --unset-all remote.origin.partialclonefilter || true
+    git -C "$dest" config --unset-all extensions.partialclone || true
+}
+
+main() {
 ok=0; fail=0
 for name in $(printf '%s\n' "${!MIRRORS[@]}" | grep -v '^busybox$' | sort; echo busybox); do
     url="${MIRRORS[$name]}"
     dest="$MIRROR_DIR/$name"
-    if [[ -d "$dest" ]]; then
+    if [[ -d "$dest" ]] && is_partial_mirror "$dest"; then
+        log "Converting partial mirror $name to a complete one..."
+        if make_mirror_full "$dest"; then
+            fetch_pr_refs "$dest" "$url"
+            ok=$((ok+1))
+        else
+            log "WARN: could not complete the partial mirror $name"
+            fail=$((fail+1))
+        fi
+    elif [[ -d "$dest" ]]; then
         log "Updating $name..."
         if git -C "$dest" remote update --prune; then
             fetch_pr_refs "$dest" "$url"
@@ -259,3 +287,9 @@ for name in $(printf '%s\n' "${!MIRRORS[@]}" | grep -v '^busybox$' | sort; echo 
 done
 
 log "Done: $ok succeeded, $fail failed"
+}
+
+# Sourced by the tests for the functions above; run the loop only when executed.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
