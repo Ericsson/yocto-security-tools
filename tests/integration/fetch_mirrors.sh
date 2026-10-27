@@ -241,6 +241,15 @@ is_partial_mirror() {
     [[ "$(git -C "$1" config --get remote.origin.promisor 2>/dev/null || true)" == true ]]
 }
 
+# Bring a mirror up to date. `git remote update` is not enough: a bare clone has
+# no fetch refspec, so it would fetch nothing but HEAD and the mirror would never
+# see a new branch or tag. Name the refs explicitly instead.
+update_mirror() {
+    local dest="$1"
+    git -C "$dest" fetch --prune origin \
+        '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'
+}
+
 # Download everything the partial mirror lacks, then drop its promisor settings.
 make_mirror_full() {
     local dest="$1"
@@ -267,7 +276,7 @@ for name in $(printf '%s\n' "${!MIRRORS[@]}" | grep -v '^busybox$' | sort; echo 
         fi
     elif [[ -d "$dest" ]]; then
         log "Updating $name..."
-        if git -C "$dest" remote update --prune; then
+        if update_mirror "$dest"; then
             fetch_pr_refs "$dest" "$url"
             ok=$((ok+1))
         else
