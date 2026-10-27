@@ -706,3 +706,54 @@ class TestRewriteUrlForPremirror:
             'https://github.com/libexpat/libexpat',
             'https://git.example.com/mirror/')
         assert result == 'https://git.example.com/mirror/github.com.libexpat.libexpat'
+
+
+def _git_init(path, *, partial=False):
+    """Create a repository; *partial* marks it as a partial clone (promisor remote)."""
+    import subprocess
+    path.mkdir(parents=True)
+    subprocess.run(['git', 'init', '-q', str(path)], check=True)
+    if partial:
+        subprocess.run(['git', '-C', str(path), 'config', 'remote.origin.url',
+                        'https://example.invalid/x.git'], check=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'remote.origin.promisor', 'true'],
+                       check=True)
+        subprocess.run(['git', '-C', str(path), 'config', 'remote.origin.partialclonefilter',
+                        'tree:0'], check=True)
+
+
+def test_find_mirror_repo_prefers_the_complete_alias_over_a_partial_clone(tmp_path):
+    """libpam is a tree:0 clone that cannot serve a fetch; linux-pam is complete.
+
+    The two libpam CVEs ended FAIL_WORKFLOW_FAILED because the exact-name
+    mirror won and no upstream objects arrived.
+    """
+    _git_init(tmp_path / "libpam", partial=True)
+    _git_init(tmp_path / "linux-pam")
+    assert find_mirror_repo(tmp_path, "libpam") == tmp_path / "linux-pam"
+
+
+def test_find_mirror_repo_keeps_a_partial_clone_when_it_is_the_only_mirror(tmp_path):
+    _git_init(tmp_path / "libpam", partial=True)
+    assert find_mirror_repo(tmp_path, "libpam") == tmp_path / "libpam"
+
+
+def test_find_mirror_repo_keeps_a_complete_exact_name_match(tmp_path):
+    _git_init(tmp_path / "libpam")
+    _git_init(tmp_path / "linux-pam")
+    assert find_mirror_repo(tmp_path, "libpam") == tmp_path / "libpam"
+
+
+def test_find_mirror_repo_maps_hostapd_to_the_hostap_mirror(tmp_path):
+    """The recipe was filed as wpa-supplicant before; hostapd has the same upstream."""
+    (tmp_path / "hostap").mkdir()
+    assert find_mirror_repo(tmp_path, "hostapd") == tmp_path / "hostap"
+
+
+def test_find_mirror_repo_does_not_treat_promisor_false_as_partial(tmp_path):
+    import subprocess
+    _git_init(tmp_path / "libpam")
+    subprocess.run(['git', '-C', str(tmp_path / "libpam"), 'config',
+                    'remote.origin.promisor', 'false'], check=True)
+    _git_init(tmp_path / "linux-pam")
+    assert find_mirror_repo(tmp_path, "libpam") == tmp_path / "libpam"
