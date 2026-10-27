@@ -152,6 +152,7 @@ _MIRROR_ALIASES = {
     'gstreamer1.0-plugins-base': 'gst-plugins-base',
     'gstreamer1.0-plugins-good': 'gst-plugins-good',
     'gstreamer1.0-rtsp-server': 'gst-plugins-bad',
+    'hostapd': 'hostap',
     'international_components_for_unicode': 'icu',
     'libpam': 'linux-pam',
     'libsndfile1': 'libsndfile',
@@ -183,11 +184,25 @@ def find_mirror_repo(mirror_dir: Path, recipe_name: str,
                 if part in ('github.com', 'gitlab.com') and i + 2 < len(parts):
                     names.append(parts[i + 2])
                     break
-    for name in dict.fromkeys(names):
-        for candidate in [mirror_dir / name, mirror_dir / f"{name}.git"]:
-            if candidate.exists():
-                return candidate
-    return None
+    found = [candidate
+             for name in dict.fromkeys(names)
+             for candidate in (mirror_dir / name, mirror_dir / f"{name}.git")
+             if candidate.exists()]
+    # A --filter=tree:0 clone cannot serve a fetch: upload-pack does not
+    # lazily fetch the trees it lacks for a client. Prefer a complete mirror
+    # (libpam is such a clone, while its alias linux-pam is complete) and fall
+    # back to the partial one only when it is all there is.
+    for candidate in found:
+        if not _is_partial_clone(candidate):
+            return candidate
+    return found[0] if found else None
+
+
+def _is_partial_clone(repo: Path) -> bool:
+    """True if *repo* is a partial clone (it has a promisor remote)."""
+    result = run_cmd_capture(
+        ['git', '-C', str(repo), 'config', '--get-regexp', r'^remote\..*\.promisor$'])
+    return any(line.split()[-1] == 'true' for line in result.stdout.splitlines() if line.strip())
 
 
 def deduce_meta_layer_from_recipe(recipe: str) -> Path | None:
