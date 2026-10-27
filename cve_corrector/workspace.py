@@ -939,6 +939,49 @@ def _replay_devtool_commits(workspace_path: Path, base_branch: str,
     }
 
 
+def _start_from_recipe_source(workspace_path: Path, base_branch: str) -> bool:
+    """Move a fresh CVE branch from the release tag to the recipe's own source.
+
+    A recipe that tracks a stable branch builds from a SRCREV some commits past
+    the release tag (``devtool-base``), and its patches are written against
+    that source. Replayed onto the bare tag they conflict in generated files
+    (binutils: ``configure``), the conflicted paths are dropped, and the tree
+    no longer builds ("libtool: Version mismatch error").
+
+    Only a tag that is an ancestor of the base is moved: a tarball recipe's
+    ``devtool-base`` has an unrelated history, and a base equal to the tag
+    needs no move.
+
+    Args:
+        workspace_path: Devtool workspace repository, on the new CVE branch.
+        base_branch: The devtool base ref found for this workspace.
+
+    Returns:
+        Whether the branch was moved.
+
+    Raises:
+        GitError: The branch could not be moved.
+    """
+    head = run_cmd_capture(['git', 'rev-parse', 'HEAD'], cwd=workspace_path)
+    base = run_cmd_capture(['git', 'rev-parse', f'{base_branch}^{{commit}}'],
+                           cwd=workspace_path)
+    if head.returncode != 0 or base.returncode != 0:
+        return False
+    if head.stdout.strip() == base.stdout.strip():
+        return False
+    if run_cmd_capture(['git', 'merge-base', '--is-ancestor', head.stdout.strip(),
+                        base.stdout.strip()], cwd=workspace_path).returncode != 0:
+        return False
+    ahead = run_cmd_capture(['git', 'rev-list', '--count',
+                             f'{head.stdout.strip()}..{base.stdout.strip()}'],
+                            cwd=workspace_path).stdout.strip()
+    logger.info("The recipe's source is %s commit(s) past the release tag; "
+                "basing the CVE branch on %s", ahead, base_branch)
+    if run_cmd(['git', 'reset', '--hard', base.stdout.strip()], cwd=workspace_path) != 0:
+        raise GitError("Git operation failed")
+    return True
+
+
 def prepare_cve_branch(workspace_path: Path, version: str | None,
                        cve_id: str, subproject: str | None = None,
                        hash_details: list[dict] | None = None,
@@ -971,6 +1014,7 @@ def prepare_cve_branch(workspace_path: Path, version: str | None,
             also changes.
     """
     checkout_ok = True
+    fresh_from_tag = False
     _remove_dangling_gitfiles(workspace_path)
     if version:
         logger.info("Checking out version %s", version)
@@ -985,6 +1029,10 @@ def prepare_cve_branch(workspace_path: Path, version: str | None,
             logger.warning("Version checkout failed, will try format-patch fallback...")
             run_cmd(['git', 'checkout', '-b', cve_id], cwd=workspace_path)
             checkout_ok = False
+        else:
+            # A subproject extract commit is never an ancestor of devtool-base,
+            # so it is left where it is by _start_from_recipe_source().
+            fresh_from_tag = True
 
     # Initialize submodules before cherry-picking devtool commits or copying
     # missing files.  Without this, repos with submodules (e.g. jq with
@@ -1004,6 +1052,8 @@ def prepare_cve_branch(workspace_path: Path, version: str | None,
     if not base_branch:
         logger.error("Failed to find base branch (main/master/devtool-base)")
         raise GitError("Git operation failed")
+    if fresh_from_tag:
+        _start_from_recipe_source(workspace_path, base_branch)
     try:
         report = _replay_devtool_commits(
             workspace_path, base_branch, protected_paths or set())
