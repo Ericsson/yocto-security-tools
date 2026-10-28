@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **cve-corrector**: A fix commit that is only a release/version bump (e.g.
+  OSV recording "Version bump to 6.1.0" because the advisory links only the
+  release tag) is no longer used by the applicability check. Previously,
+  blaming its `configure.ac` change found the *previous* bump (6.1.0rc1), and
+  a vulnerable recipe (strongswan 5.9.14, CVE-2026-78135) was wrongly marked
+  not affected with a `CVE_STATUS`. Such commits are now ignored by the origin
+  check, and if every fix commit is a version bump the corrector exits with a
+  metadata error asking for the real fix (`--fix-url`) instead of skipping
+  the CVE or backporting a version change.
 - **cve-metadata-extractor**: merging into an existing entry no longer drops
   keys the new run did not regenerate (for example `upstream_status` or
   `downloaded_patches`).

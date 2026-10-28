@@ -9,8 +9,10 @@ from cve_corrector.blame import (
     _tag_to_version_str,
     blame_line_ranges,
     check_vulnerability_origin,
+    filter_version_bump_commits,
     find_introducing_version,
     is_cve_applicable,
+    is_version_bump_commit,
     parse_diff_line_ranges,
 )
 
@@ -442,3 +444,103 @@ class TestFindIntroducingVersionFiltersBranchpoints:
 
         version = find_introducing_version(repo, {initial_hash})
         assert version is None
+
+
+# --- version-bump fix commits (e.g. OSV recording the release commit) ---
+
+def _commit(repo: Path, files: dict[str, str], message: str) -> str:
+    for name, content in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        _git(repo, 'add', name)
+    _git(repo, 'commit', '-m', message)
+    return _git(repo, 'rev-parse', 'HEAD')
+
+
+def _strongswan_like_repo(tmp_path: Path) -> tuple[Path, str]:
+    """Model CVE-2026-78135: vulnerable code since 5.9.7, OSV "fix" is the
+    6.1.0 version bump.  Returns (repo, version_bump_sha)."""
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    _git(repo, 'init')
+    _git(repo, 'config', 'user.email', 'test@test.com')
+    _git(repo, 'config', 'user.name', 'Test')
+    _commit(repo, {'configure.ac': 'AC_INIT([pkg],[5.9.7])\n',
+                   'task_manager.c': 'ok\nvulnerable_check\nok\n'},
+            'Version bump to 5.9.7')
+    _git(repo, 'tag', '5.9.7')
+    _commit(repo, {'configure.ac': 'AC_INIT([pkg],[5.9.14])\n'},
+            'Version bump to 5.9.14')
+    _git(repo, 'tag', '5.9.14')
+    _commit(repo, {'configure.ac': 'AC_INIT([pkg],[6.1.0rc1])\n',
+                   'testing/testing.conf': 'SWANVERSION=6.1.0rc1\n'},
+            'Version bump to 6.1.0rc1')
+    _git(repo, 'tag', '6.1.0rc1')
+    _commit(repo, {'task_manager.c': 'ok\nfixed_check\nok\n'},
+            'ikev2: Properly reject CREATE_CHILD_SA requests')
+    bump = _commit(repo, {'configure.ac': 'AC_INIT([pkg],[6.1.0])\n',
+                          'testing/testing.conf': 'SWANVERSION=6.1.0\n'},
+                   'Version bump to 6.1.0')
+    _git(repo, 'tag', '6.1.0')
+    return repo, bump
+
+
+class TestIsVersionBumpCommit:
+    def test_configure_ac_only(self, tmp_path):
+        repo, bump = _strongswan_like_repo(tmp_path)
+        assert is_version_bump_commit(repo, bump) is True
+
+    def test_real_fix_is_not_a_bump(self, tmp_path):
+        repo, bump = _strongswan_like_repo(tmp_path)
+        assert is_version_bump_commit(repo, f'{bump}~1') is False
+
+    def test_bump_subject_with_source_change_is_not_a_bump(self, tmp_path):
+        repo = _init_repo(tmp_path)
+        sha = _commit(repo, {'file.c': 'patched\n', 'VERSION': '2.0\n'},
+                      'Release 2.0: fix overflow')
+        assert is_version_bump_commit(repo, sha) is False
+
+    def test_bump_subject_with_non_version_files(self, tmp_path):
+        repo = _init_repo(tmp_path)
+        sha = _commit(repo, {'debian/changelog': 'x\n', 'doc/index.txt': '2.0\n'},
+                      'Prepare release 2.0')
+        assert is_version_bump_commit(repo, sha) is True
+
+    def test_source_change_with_plain_subject(self, tmp_path):
+        repo = _init_repo(tmp_path)
+        sha = _commit(repo, {'file.c': 'fixed\n'}, 'fix overflow')
+        assert is_version_bump_commit(repo, sha) is False
+
+    def test_unknown_commit(self, tmp_path):
+        repo = _init_repo(tmp_path)
+        assert is_version_bump_commit(repo, 'deadbeef' * 5) is False
+
+    def test_filter_preserves_order(self, tmp_path):
+        repo, bump = _strongswan_like_repo(tmp_path)
+        fix = _git(repo, 'rev-parse', f'{bump}~1')
+        usable, bumps = filter_version_bump_commits(repo, [bump, fix])
+        assert usable == [fix]
+        assert bumps == [bump]
+
+
+class TestCheckVulnerabilityOriginVersionBump:
+    def test_version_bump_fix_is_not_used_to_rule_out(self, tmp_path):
+        """Regression: blaming the 6.1.0 bump found the 6.1.0rc1 bump, and a
+        5.9.14 recipe was wrongly marked not affected."""
+        repo, bump = _strongswan_like_repo(tmp_path)
+        assert check_vulnerability_origin(repo, [bump], '5.9.14') is None
+
+    def test_real_fix_still_evaluated_alongside_bump(self, tmp_path):
+        repo, bump = _strongswan_like_repo(tmp_path)
+        fix = _git(repo, 'rev-parse', f'{bump}~1')
+        # Real fix blames to 5.9.7 → applicable to 5.9.14
+        assert check_vulnerability_origin(repo, [bump, fix], '5.9.14') is None
+        # ...and still rules out a recipe older than the vulnerable code
+        reason = check_vulnerability_origin(repo, [bump, fix], '5.9.6')
+        assert reason is not None and '5.9.7' in reason
+
+    def test_version_bump_in_series_ignored(self, tmp_path):
+        repo, bump = _strongswan_like_repo(tmp_path)
+        assert check_vulnerability_origin(
+            repo, [], '5.9.14', series=[{'commits': [bump]}]) is None

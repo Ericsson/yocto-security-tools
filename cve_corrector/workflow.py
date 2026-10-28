@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .bitbake_ops import check_cve_patch_in_src_uri, check_cve_status, get_state_dir
-from .blame import check_vulnerability_origin
+from .blame import check_vulnerability_origin, filter_version_bump_commits
 from .cherry_pick import (
     apply_series,
     apply_single_commits,
@@ -864,6 +864,20 @@ def initialize_cve_workflow(
         logger.info("CVE %s: already patched in recipe — %s",
                     cve_id, existing.stdout.strip().splitlines()[0])
         raise AlreadyAppliedError("CVE already applied")
+
+    # The metadata sometimes records only the release commit (e.g. "Version
+    # bump to 6.1.0") as the fix.  That is neither a usable patch nor a valid
+    # basis for an applicability decision, so stop and ask for real fix
+    # commits instead of skipping the CVE or backporting a version change.
+    fix_commits = list(hashes) + [c for s in series for c in s.get('commits', [])]
+    _, bumps = filter_version_bump_commits(workspace_path, fix_commits)
+    if fix_commits and len(bumps) == len(fix_commits):
+        logger.error(
+            "CVE %s: every fix commit (%s) is a version bump/release commit, "
+            "not the actual fix. The metadata is unreliable — supply the real "
+            "fix with --fix-url or correct --cve-info.",
+            cve_id, ', '.join(sha[:12] for sha in bumps))
+        raise MetadataError("Fix commits are version bumps, not fixes")
 
     # Check if the vulnerable code exists in this recipe version
     if not config.skip_cve_applicability and version:
