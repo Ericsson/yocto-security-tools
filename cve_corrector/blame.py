@@ -18,6 +18,76 @@ _DIFF_FILE_RE = re.compile(r'^diff --git a/(.+) b/')
 # Matches the commit hash line in porcelain blame output
 _BLAME_HASH_RE = re.compile(r'^([0-9a-f]{40}) ')
 
+# Files that only carry release/version bookkeeping.  A commit touching
+# nothing but these cannot be a security fix.
+_VERSION_FILE_NAMES = frozenset({
+    'configure.ac', 'configure.in', 'meson.build', 'cmakelists.txt',
+    'version', 'version.txt', 'version.in', '.version', 'release',
+    'news', 'news.md', 'changes', 'changes.md', 'changelog', 'changelog.md',
+    'release-notes', 'release-notes.md', 'releasenotes', 'releasenotes.md',
+    'setup.py', 'setup.cfg', 'pyproject.toml', 'package.json', 'cargo.toml',
+    'cargo.lock', 'pom.xml', 'build.gradle', 'version.go', 'version.h.in',
+})
+# Commit subjects used for version bumps / release preparation.
+_VERSION_BUMP_SUBJECT_RE = re.compile(
+    r'\b(?:version\s+bump|bump(?:ed)?\s+(?:the\s+)?version|'
+    r'(?:prepare|preparing|prep)\s+(?:for\s+)?(?:the\s+)?(?:release|v?\d)|'
+    r'release\s+v?\d[\w.-]*|v?\d+(?:\.\d+)+\s+release|'
+    r'(?:update|set|change)\s+(?:the\s+)?version\s+(?:to|number))',
+    re.IGNORECASE)
+# Extensions of real source code.  A commit touching any of these is never
+# treated as a version bump, even if its subject looks like one.
+_SOURCE_EXT_RE = re.compile(
+    r'\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx|m|mm|s|asm|rs|go|py|pl|pm|rb|java|kt|'
+    r'js|mjs|ts|tsx|jsx|php|lua|cs|swift|scala|sh|y|l)$',
+    re.IGNORECASE)
+
+
+def is_version_bump_commit(workspace_path: Path, commit_hash: str) -> bool:
+    """Return True if a commit is a release/version bump, not a code change.
+
+    Vulnerability databases sometimes record the release commit (e.g.
+    "Version bump to 6.1.0") as the fix, because the advisory only links the
+    release tag.  Blaming such a diff finds the *previous* version bump and
+    yields a bogus "introduced in" version, so these commits must not be used
+    for applicability decisions or backporting.
+
+    A commit counts as a version bump when either:
+
+    * every file it touches is a version/release metadata file
+      (configure.ac, meson.build, NEWS, VERSION, ...), or
+    * its subject reads like a version bump and it touches no source code.
+
+    Returns False if the commit cannot be inspected.
+    """
+    result = run_cmd_capture(
+        ['git', 'show', '--no-renames', '--format=%s', '--name-only',
+         commit_hash, '--'],
+        cwd=workspace_path)
+    if result.returncode != 0:
+        return False
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    subject, files = lines[0], lines[1:]
+    if not files:
+        return False
+
+    if all(Path(f).name.lower() in _VERSION_FILE_NAMES for f in files):
+        return True
+    return (bool(_VERSION_BUMP_SUBJECT_RE.search(subject))
+            and not any(_SOURCE_EXT_RE.search(f) for f in files))
+
+
+def filter_version_bump_commits(workspace_path: Path,
+                                commits: list[str]) -> tuple[list[str], list[str]]:
+    """Split commits into (usable, version_bumps), preserving order."""
+    usable: list[str] = []
+    bumps: list[str] = []
+    for sha in commits:
+        (bumps if is_version_bump_commit(workspace_path, sha) else usable).append(sha)
+    return usable, bumps
+
 
 def parse_diff_line_ranges(workspace_path: Path,
                            commit_hash: str,
@@ -319,6 +389,19 @@ def check_vulnerability_origin(workspace_path: Path,
     for s in (series or []):
         all_commits.extend(s.get('commits', []))
     if not all_commits:
+        return None
+
+    # A release/version-bump commit recorded as the "fix" says nothing about
+    # where the vulnerable code came from: blaming it only finds the previous
+    # version bump.  Never use one to rule a version out.
+    all_commits, bumps = filter_version_bump_commits(workspace_path, all_commits)
+    if bumps:
+        logger.warning(
+            "Ignoring version-bump commit(s) %s in origin check — the fix "
+            "metadata points at a release commit, not the actual fix",
+            ', '.join(sha[:12] for sha in bumps))
+    if not all_commits:
+        logger.warning("No real fix commits left — origin check is indeterminate")
         return None
 
     # Union diff ranges from all fix commits, tracking parent revision per file
