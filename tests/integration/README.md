@@ -76,6 +76,14 @@ an end-to-end pipeline result rather than a pure model-capability score.
 (unless `--full-only` is given): `skip-build-ptest` (corrector only, no
 build/ptest) and `full`.
 
+`--agent-only` skips `cve-corrector`'s own cherry-pick/build/ptest attempt
+entirely and invokes `cve-agent` directly for every CVE (implies
+`--full-only`, since the skipped `skip-build-ptest` round never reaches the
+agent anyway). Use this when you already know from a prior run which CVEs
+need the agent — e.g. resuming with a different backend/model against a set
+of CVEs previously marked `SECURITY_REVIEW_REQUIRED` — and want to skip the
+corrector-only attempt that would otherwise run first on every CVE.
+
 `--enriched-round` adds a second pass over the *same* CVE list, using a
 corrected copy of `$CVE_METADATA` instead of the original. The copy is
 produced with `enrich_metadata_from_oe.py --correct-existing` against
