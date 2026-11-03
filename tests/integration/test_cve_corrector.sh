@@ -22,6 +22,7 @@ TEST_TIMEOUT="${TEST_TIMEOUT:-3600}"  # seconds per CVE agent run (default: 60 m
 MIN_YEAR="${MIN_YEAR:-2024}"  # Skip CVEs older than this year
 SKIP_MIRRORS=false
 FULL_ONLY=false
+AGENT_ONLY=false
 ENRICHED_ROUND=false
 REQUIRE_SECURITY_STATUS="${REQUIRE_SECURITY_STATUS:-}"
 COMPONENTS=()  # empty = all
@@ -96,13 +97,27 @@ test_single_cve() {
         GIT_ERROR) CVE_CORRECTOR_RESULT="7:-:-:-"; return ;;
     esac
 
-    run_cve_corrector "$cve_id" "$log_file" "$extra_flags"
+    local exit_code
+    if [[ "$AGENT_ONLY" == true ]]; then
+        # Skip cve_corrector's own cherry-pick/build/ptest attempt entirely and
+        # go straight to cve_agent. setup_cve_branch above already removed the
+        # CVE's existing patch and committed the baseline, which is the only
+        # corrector-side prerequisite the agent path actually depends on.
+        # exit_code=1 reuses the same "recoverable, needs agent" trigger the
+        # corrector would normally report on a cherry-pick conflict.
+        log "  --agent-only: skipping corrector, going straight to cve_agent..."
+        exit_code=1
+        CVE_CORRECTOR_RESULT="1:-:-:-"
+    else
+        run_cve_corrector "$cve_id" "$log_file" "$extra_flags"
+        exit_code=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f1)
+    fi
 
     # If corrector failed with a recoverable error, retry with cve_agent (skip for skip-build-ptest mode)
-    local exit_code
-    exit_code=$(echo "$CVE_CORRECTOR_RESULT" | cut -d: -f1)
     if [[ "$exit_code" =~ ^(1|3|4|5)$ && "$mode" != "skip-build-ptest" ]]; then
-        log "  Corrector failed (exit $exit_code), retrying with cve_agent..."
+        if [[ "$AGENT_ONLY" != true ]]; then
+            log "  Corrector failed (exit $exit_code), retrying with cve_agent..."
+        fi
         local agent_log="${LOG_DIR}/${cve_id}_${mode}_agent.log"
         setup_cve_branch "$cve_id" "$agent_log" "${mode}_agent"
         # The second setup saves another reference snapshot with an _agent_
@@ -560,6 +575,7 @@ main() {
         case "$1" in
             --skip-mirrors) SKIP_MIRRORS=true ;;
             --full-only) FULL_ONLY=true ;;
+            --agent-only) AGENT_ONLY=true; FULL_ONLY=true ;;
             --enriched-round) ENRICHED_ROUND=true ;;
             --resume)
                 shift

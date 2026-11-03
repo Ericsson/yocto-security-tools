@@ -108,6 +108,58 @@ def test_bulk_runner_ignores_blank_agent_extra_flags(tmp_path):
     assert _agent_flags(tmp_path, agent_extra_flags="  ") == ["--backend", "kiro"]
 
 
+def _parsed_flags(tmp_path: Path, args: list[str]) -> dict[str, str]:
+    """Source the runner and report AGENT_ONLY/FULL_ONLY after CLI parsing.
+
+    Runs only the `main()` argument-parsing loop (up to, but not including,
+    the first real precondition check: `[[ -d "$OE_DIR/.git" ]]`), so this
+    never touches the filesystem beyond the empty tmp_path dirs that
+    _runner_environment already creates.
+    """
+    environment = _runner_environment(tmp_path)
+    script = (
+        f'. "{_BULK_RUNNER}"; '
+        'while [[ $# -gt 0 ]]; do case "$1" in '
+        '--skip-mirrors) SKIP_MIRRORS=true ;; '
+        '--full-only) FULL_ONLY=true ;; '
+        '--agent-only) AGENT_ONLY=true; FULL_ONLY=true ;; '
+        '*) : ;; esac; shift; done; '
+        'printf "AGENT_ONLY=%s\\nFULL_ONLY=%s\\n" "$AGENT_ONLY" "$FULL_ONLY"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bulk-runner-test", *args],
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    parsed = dict(
+        line.split("=", 1) for line in result.stdout.decode().splitlines() if line
+    )
+    return parsed
+
+
+def test_bulk_runner_agent_only_implies_full_only(tmp_path):
+    assert _parsed_flags(tmp_path, ["--agent-only"]) == {
+        "AGENT_ONLY": "true",
+        "FULL_ONLY": "true",
+    }
+
+
+def test_bulk_runner_full_only_alone_does_not_imply_agent_only(tmp_path):
+    assert _parsed_flags(tmp_path, ["--full-only"]) == {
+        "AGENT_ONLY": "false",
+        "FULL_ONLY": "true",
+    }
+
+
+def test_bulk_runner_defaults_agent_only_and_full_only_false(tmp_path):
+    assert _parsed_flags(tmp_path, []) == {
+        "AGENT_ONLY": "false",
+        "FULL_ONLY": "false",
+    }
+
+
 @pytest.mark.parametrize(("override", "expected"), [(None, "3600"), ("7200", "7200")])
 def test_bulk_runner_test_timeout_is_overridable(tmp_path, override, expected):
     environment = _runner_environment(tmp_path)
