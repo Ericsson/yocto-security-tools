@@ -9,8 +9,9 @@ found identical to, equivalent to, or meaningfully different from the human
 reference patch.  Nothing else from the run is shown, so the chart stays
 readable next to the much larger outcome charts of ``plot_corrector_results.py``.
 
-The verdicts fall into three groups, shown by colour (Okabe-Ito palette) and
-annotated with their counts, so no bar depends on hue alone:
+The verdicts fall into three groups, shown by colour (Okabe-Ito palette, matching
+the equivalent/divergent/no-patch colors used in ``plot_benchmark_results.py``)
+and annotated with their counts, so no bar depends on hue alone:
 
   * equivalent to the reference: identical, stylistic, comment-only,
     structural-only (the shared files are identical; only the set of touched
@@ -44,10 +45,14 @@ GROUP_DIVERGENT = 'meaningfully different'
 GROUP_NOT_COMPARABLE = 'no comparable patch'
 GROUP_OTHER = 'other / unrecognised verdict'
 
+# Matches the OUTCOME_COLORS semantics in plot_benchmark_results.py (also
+# Okabe-Ito) so the same verdict reads as the same color across both tools:
+# equivalent -> green, meaningfully different -> orange, not comparable ->
+# the no-patch blue, with gray reserved for a verdict neither tool knows.
 GROUP_COLORS = {
-    GROUP_EQUIVALENT: '#56B4E9',
+    GROUP_EQUIVALENT: '#009E73',
     GROUP_DIVERGENT: '#E69F00',
-    GROUP_NOT_COMPARABLE: '#4D4D4D',
+    GROUP_NOT_COMPARABLE: '#56B4E9',
     GROUP_OTHER: '#999999',
 }
 
