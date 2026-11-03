@@ -79,10 +79,11 @@ def reference_patches(results_dir: Path, cve_id: str, mode: str = "full") -> lis
     ]
 
 
-def read_review_rows(csv_path: Path) -> list[dict[str, str]]:
-    """Return the review-required rows of a results CSV."""
+def read_review_rows(csv_path: Path,
+                     statuses: tuple[str, ...] = REVIEW_STATUSES) -> list[dict[str, str]]:
+    """Return the rows of a results CSV whose status is in ``statuses``."""
     with csv_path.open(newline="", encoding="utf-8") as handle:
-        return [row for row in csv.DictReader(handle) if row["status"] in REVIEW_STATUSES]
+        return [row for row in csv.DictReader(handle) if row["status"] in statuses]
 
 
 def read_judged(output_csv: Path) -> dict[str, str]:
@@ -163,12 +164,20 @@ def judge_row(results_dir: Path, out_dir: Path, row: dict[str, str], *,
 def run(results_dir: Path, *, csv_name: str = "results_full.csv",
         judge_model: str = DEFAULT_JUDGE_MODEL, backend: str = DEFAULT_JUDGE_BACKEND,
         limit: int | None = None, dry_run: bool = False,
+        statuses: tuple[str, ...] = REVIEW_STATUSES, cve_ids: set[str] | None = None,
         judge: Judge = judge_diff, log: Callable[[str], None] = print) -> Counter:
-    """Judge the review-required rows and return a count per judgment."""
+    """Judge the selected rows and return a count per judgment.
+
+    ``statuses`` picks which rows to judge (the review-required ones by
+    default; add ``AGENT_RESOLVED`` to also rate patches that passed the
+    semantic security gate); ``cve_ids``, if given, narrows that to those CVEs.
+    """
     csv_path = results_dir / csv_name
     out_dir = results_dir / "judge"
     output_csv = out_dir / "judge_results.csv"
-    rows = read_review_rows(csv_path)
+    rows = read_review_rows(csv_path, statuses)
+    if cve_ids is not None:
+        rows = [row for row in rows if row["cve_id"] in cve_ids]
     judged = read_judged(output_csv)
     mixed = sorted({model for model in judged.values() if model and model != judge_model})
     if mixed:
@@ -177,7 +186,7 @@ def run(results_dir: Path, *, csv_name: str = "results_full.csv",
             f"{judge_model}. Use another results copy or remove the file.")
     pending = [row for row in rows if row["cve_id"] not in judged]
     todo = pending if limit is None else pending[:limit]
-    log(f"{len(rows)} review-required rows, {len(rows) - len(pending)} already judged, "
+    log(f"{len(rows)} selected rows, {len(rows) - len(pending)} already judged, "
         f"{len(todo)} to do ({'dry run' if dry_run else judge_model})")
 
     out_dir.mkdir(exist_ok=True)
@@ -227,13 +236,26 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Judge at most this many rows")
     parser.add_argument("--dry-run", action="store_true",
                         help="Compare and bucket only; make no judge calls, write no CSV")
+    parser.add_argument("--status", action="append", dest="statuses", metavar="STATUS",
+                        help="Judge rows with this status; repeatable (default: "
+                             f"{', '.join(REVIEW_STATUSES)}). E.g. --status AGENT_RESOLVED")
+    parser.add_argument("--cve-list", type=Path, metavar="FILE",
+                        help="Only judge the CVE IDs in this file (one per line)")
     args = parser.parse_args()
 
     results_dir = args.results_dir.resolve()
     if not (results_dir / args.csv).is_file():
         parser.error(f"no {args.csv} in {results_dir}")
+    cve_ids = None
+    if args.cve_list:
+        if not args.cve_list.is_file():
+            parser.error(f"no such file: {args.cve_list}")
+        cve_ids = {line.strip() for line in args.cve_list.read_text(encoding="utf-8").splitlines()
+                   if line.strip() and not line.startswith("#")}
+    statuses = tuple(args.statuses) if args.statuses else REVIEW_STATUSES
     counts = run(results_dir, csv_name=args.csv, judge_model=args.judge_model,
-                 backend=args.judge_backend, limit=args.limit, dry_run=args.dry_run)
+                 backend=args.judge_backend, limit=args.limit, dry_run=args.dry_run,
+                 statuses=statuses, cve_ids=cve_ids)
     print("\nVerdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
 

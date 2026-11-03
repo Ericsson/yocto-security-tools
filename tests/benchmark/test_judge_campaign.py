@@ -146,6 +146,27 @@ def test_only_review_required_rows_are_considered(tmp_path):
     assert [r["cve_id"] for r in _output(results)] == ["CVE-2026-0003"]
 
 
+def test_statuses_selects_agent_resolved_rows_too(tmp_path):
+    rows = [("CVE-2026-0002", "AGENT_RESOLVED"), ("CVE-2026-0003", "SECURITY_REVIEW_REQUIRED")]
+    results = _make(tmp_path, rows,
+                    candidates={"CVE-2026-0002": SAME, "CVE-2026-0003": SAME},
+                    references={"CVE-2026-0002": REFERENCE, "CVE-2026-0003": REFERENCE})
+    _run(results, FakeJudge(), statuses=("AGENT_RESOLVED",))
+    out = _output(results)
+    assert [r["cve_id"] for r in out] == ["CVE-2026-0002"]
+    assert out[0]["status"] == "AGENT_RESOLVED"
+
+
+def test_cve_ids_narrows_the_selected_rows(tmp_path):
+    rows = [("CVE-2026-0002", "SECURITY_REVIEW_REQUIRED"),
+            ("CVE-2026-0003", "SECURITY_REVIEW_REQUIRED")]
+    results = _make(tmp_path, rows,
+                    candidates={"CVE-2026-0002": SAME, "CVE-2026-0003": SAME},
+                    references={"CVE-2026-0002": REFERENCE, "CVE-2026-0003": REFERENCE})
+    _run(results, FakeJudge(), cve_ids={"CVE-2026-0003"})
+    assert [r["cve_id"] for r in _output(results)] == ["CVE-2026-0003"]
+
+
 def test_an_empty_judge_reply_is_not_recorded_and_is_retried(tmp_path):
     results = _make(tmp_path, [(CVE, "SECURITY_REVIEW_REQUIRED")],
                     candidates={CVE: DIFFERENT}, references={CVE: REFERENCE})
