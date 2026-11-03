@@ -86,7 +86,11 @@ def extract_commit_hash(url: str) -> str | None:
     if any(p in url for p in IGNORED_URL_PATTERNS):
         return None
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Malformed netloc such as an unclosed IPv6 bracket ("http://[x/...").
+        return None
     for path_re in _COMMIT_PATH_RES:
         path_match = path_re.search(parsed.path)
         if path_match:
@@ -329,7 +333,11 @@ def deduce_repo_url(url: str) -> str | None:
         return 'https://github.com/ThomasDickey/ncurses-snapshots'
 
     from urllib.parse import urlparse  # pylint: disable=import-outside-toplevel
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Malformed netloc such as an unclosed IPv6 bracket ("http://[x/...").
+        return None
     host = parsed.hostname or ''
 
     # Gitweb ?p=<repo> style (e.g. ?p=binutils-gdb.git;a=commit;h=... or

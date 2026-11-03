@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **shared**: `extract_commit_hash` and `deduce_repo_url` no longer raise
+  `ValueError` on a malformed URL such as an unclosed IPv6 bracket
+  (`http://[x/commit/...`); they return `None`. Found by fuzzing.
+
 - **cve-corrector**: A fix commit that is only a release/version bump (e.g.
   OSV recording "Version bump to 6.1.0" because the advisory links only the
   release tag) is no longer used by the applicability check. Previously,
