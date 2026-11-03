@@ -552,6 +552,13 @@ with no usable content is not recorded, so a rerun retries it, and a results
 directory judged with one model refuses to mix in another. The verdict measures
 similarity to the human reference only: there is no build or test behind it.
 
+`--status STATUS` (repeatable) picks other rows, e.g. `--status AGENT_RESOLVED`
+for patches that passed the security gate; `--cve-list FILE` narrows a run to
+some CVEs; `--output-dir DIR` writes somewhere other than `<results>/judge`, so
+one run can be rated by several judge models. To compare two models' campaigns
+under several judges, use `tests/integration/compare_campaigns.py` (see
+"Comparing two models' bulk campaigns" in `tests/integration/README.md`).
+
 ## Files
 
 - `run_benchmark.sh` — main entry point (`--retier`, phase 1, phase 2)
