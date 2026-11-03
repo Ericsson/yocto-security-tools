@@ -165,15 +165,19 @@ def run(results_dir: Path, *, csv_name: str = "results_full.csv",
         judge_model: str = DEFAULT_JUDGE_MODEL, backend: str = DEFAULT_JUDGE_BACKEND,
         limit: int | None = None, dry_run: bool = False,
         statuses: tuple[str, ...] = REVIEW_STATUSES, cve_ids: set[str] | None = None,
+        out_dir: Path | None = None,
         judge: Judge = judge_diff, log: Callable[[str], None] = print) -> Counter:
     """Judge the selected rows and return a count per judgment.
 
     ``statuses`` picks which rows to judge (the review-required ones by
     default; add ``AGENT_RESOLVED`` to also rate patches that passed the
     semantic security gate); ``cve_ids``, if given, narrows that to those CVEs.
+    ``out_dir`` is where ``judge_results.csv`` and the per-CVE files go
+    (default ``<results_dir>/judge``); give each judge model its own, e.g.
+    ``<results_dir>/judge-<model>``, to rate one run with several judges.
     """
     csv_path = results_dir / csv_name
-    out_dir = results_dir / "judge"
+    out_dir = out_dir or results_dir / "judge"
     output_csv = out_dir / "judge_results.csv"
     rows = read_review_rows(csv_path, statuses)
     if cve_ids is not None:
@@ -189,7 +193,7 @@ def run(results_dir: Path, *, csv_name: str = "results_full.csv",
     log(f"{len(rows)} selected rows, {len(rows) - len(pending)} already judged, "
         f"{len(todo)} to do ({'dry run' if dry_run else judge_model})")
 
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     counts: Counter = Counter()
     new_file = not output_csv.is_file()
     handle = None if dry_run else output_csv.open("a", newline="", encoding="utf-8")
@@ -241,6 +245,9 @@ def main() -> None:
                              f"{', '.join(REVIEW_STATUSES)}). E.g. --status AGENT_RESOLVED")
     parser.add_argument("--cve-list", type=Path, metavar="FILE",
                         help="Only judge the CVE IDs in this file (one per line)")
+    parser.add_argument("--output-dir", type=Path, metavar="DIR",
+                        help="Write judge_results.csv here (default: <results_dir>/judge). "
+                             "Use one directory per judge model to rate a run with several")
     args = parser.parse_args()
 
     results_dir = args.results_dir.resolve()
@@ -255,7 +262,8 @@ def main() -> None:
     statuses = tuple(args.statuses) if args.statuses else REVIEW_STATUSES
     counts = run(results_dir, csv_name=args.csv, judge_model=args.judge_model,
                  backend=args.judge_backend, limit=args.limit, dry_run=args.dry_run,
-                 statuses=statuses, cve_ids=cve_ids)
+                 statuses=statuses, cve_ids=cve_ids,
+                 out_dir=args.output_dir.resolve() if args.output_dir else None)
     print("\nVerdicts: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
 

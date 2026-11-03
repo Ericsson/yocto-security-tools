@@ -206,6 +206,18 @@ def test_a_different_judge_model_is_refused_rather_than_mixed(tmp_path):
         _run(results, FakeJudge(), judge_model="claude-opus-5.5")
 
 
+def test_a_separate_output_dir_per_judge_model_rates_the_same_run_twice(tmp_path):
+    results = _make(tmp_path, [(CVE, "SECURITY_REVIEW_REQUIRED")],
+                    candidates={CVE: DIFFERENT}, references={CVE: REFERENCE})
+    for model in ("claude-opus-4.8", "claude-opus-5.5"):
+        _run(results, FakeJudge(), judge_model=model, out_dir=results / f"judge-{model}")
+    for model in ("claude-opus-4.8", "claude-opus-5.5"):
+        with (results / f"judge-{model}" / "judge_results.csv").open(
+                newline="", encoding="utf-8") as handle:
+            assert [r["judge_model"] for r in csv.DictReader(handle)] == [model]
+    assert not (results / "judge").exists()
+
+
 def test_limit_caps_the_rows_done(tmp_path):
     cves = [f"CVE-2026-000{i}" for i in range(1, 4)]
     results = _make(tmp_path, [(c, "SECURITY_REVIEW_REQUIRED") for c in cves],
