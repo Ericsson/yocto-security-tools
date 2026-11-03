@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source or plugin, or to rebuild from local clones and caches without the
   original CVE list. It exits with the metadata-error code, before any source
   setup, if the output file is missing or empty.
+- **ci**: ClusterFuzzLite fuzzing (atheris targets in `fuzz/` for the URL,
+  patch and commit-note parsers) on PRs and weekly.
 
 ### Fixed
 
