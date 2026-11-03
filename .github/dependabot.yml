@@ -9,6 +9,10 @@ updates:
       actions-deps:
         patterns:
           - "*"
+  - package-ecosystem: "docker"
+    directory: "/.clusterfuzzlite"
+    schedule:
+      interval: "weekly"
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
