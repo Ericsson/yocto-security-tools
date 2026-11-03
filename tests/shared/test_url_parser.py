@@ -510,3 +510,21 @@ class TestDeduceRepoUrlWithoutScheme:
 
     def test_a_bare_host_gets_https(self):
         assert _with_scheme("repo.or.cz/socat.git") == "https://repo.or.cz/socat.git"
+
+
+class TestMalformedNetloc:
+    """Found by ClusterFuzzLite: urlparse raises on an unclosed IPv6 bracket."""
+
+    @pytest.mark.parametrize("url", [
+        "https://[::1",
+        "http://[x/commit/abcdef1234567",
+    ])
+    def test_extract_commit_hash_returns_none(self, url):
+        assert extract_commit_hash(url) is None
+
+    @pytest.mark.parametrize("url", [
+        "https://[::1",
+        "http://[x/commit/abcdef1234567",
+    ])
+    def test_deduce_repo_url_returns_none(self, url):
+        assert deduce_repo_url(url) is None
