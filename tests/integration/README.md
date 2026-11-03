@@ -123,6 +123,49 @@ Yocto build environment, see `tests/agent/test_claude_live.py`:
 CLAUDE_LIVE_TESTS=1 pytest -m live -v
 ```
 
+### Comparing two models' bulk campaigns
+
+`compare_campaigns.py` reproduces a model-vs-model comparison in three
+resumable steps. Model A's run already exists (here `test-results/qwen`):
+
+```bash
+# 1. Start model B's run from the rows no model can influence (direct
+#    success, skipped, failed before the AI); every agent CVE is left out
+./compare_campaigns.py seed test-results/qwen test-results/opus
+
+# 2. Let model B attempt every remaining CVE (OE_DIR, BUILD_DIR and
+#    CVE_METADATA as for model A's run)
+AGENT_BACKEND=kiro AGENT_MODEL=claude-opus-5.5 \
+    ./test_cve_corrector.sh --agent-only --resume "$PWD/test-results/opus"
+
+# 3. Judge both runs' review-required and agent-resolved patches with each
+#    judge (resumable; --dry-run shows how many calls it would make)
+./compare_campaigns.py judge test-results/qwen test-results/opus \
+    -j claude-opus-5.5 -j claude-sonnet-5.5 -j claude-opus-4.6
+
+# 4. Draw the charts
+./compare_campaigns.py plot -a "Qwen3.8-27B=test-results/qwen" \
+    -b "Claude Opus 5.5=test-results/opus" \
+    -j claude-opus-5.5 -j claude-sonnet-5.5 -j claude-opus-4.6 \
+    -o test-results/qwen-vs-opus
+```
+
+`seed` records the copied CVEs in `<run-b>/seeded-from.txt`. Each judge writes
+`<run>/judge-<model>/judge_results.csv`. `plot` writes:
+
+- `outcomes.png`: each model's outcome families over all CVEs
+  (`tools/plot_model_outcome_comparison.py`)
+- `judge_comparison.png`: the majority verdict of the judges for every CVE
+  either model produced a patch for; a side that failed counts as "failed
+  to generate a patch" (`tools/plot_model_judge_comparison.py`)
+- `judge_agreement_<model>.png`: how often the judges agree, per run
+  (`tools/plot_judge_agreement.py`)
+- `attempted-by-both.txt`: the CVEs neither run copied from the other
+
+The verdicts measure similarity to the human reference patch, not
+correctness; see "Judging a bulk integration run" in
+`tests/benchmark/README.md`.
+
 ## Test Cases
 
 | # | Scenario | CVE | Expected |
@@ -150,6 +193,8 @@ CLAUDE_LIVE_TESTS=1 pytest -m live -v
 - `test_cve_corrector_cases.sh` — Main test runner
 - `test_cve_corrector.sh` — Bulk runner over `$CVE_METADATA`; see
   [Bulk runner modes](#bulk-runner-modes) for `--enriched-round`
+- `compare_campaigns.py` — Seed, judge and plot a two-model campaign
+  comparison; see [Comparing two models' bulk campaigns](#comparing-two-models-bulk-campaigns)
 - `test_common.sh` — Shared helper functions
 - `test_utils.py` — Python utilities (patch removal, comparison)
 - `enrich_metadata_from_oe.py` — Recovers/corrects ground-truth upstream
