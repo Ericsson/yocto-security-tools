@@ -119,9 +119,14 @@ def assert_patch_correctness(meta_layer: Path, cve_id: str,
                 parts = line.split()
                 if len(parts) >= 4:
                     files_touched.add(parts[3].lstrip('b/'))
-            elif line.startswith('+') and not line.startswith('+++'):
-                if not re.match(r'^\+(From |Date:|Subject:|Signed-off-by:|CVE:|Upstream-Status:|index )', line):
-                    additions.add(line)
+            elif (
+                line.startswith('+')
+                and not line.startswith('+++')
+                and not re.match(
+                    r'^\+(From |Date:|Subject:|Signed-off-by:|CVE:|Upstream-Status:|index )', line
+                )
+            ):
+                additions.add(line)
 
     assert expected_files <= files_touched, (
         f"Missing files: {expected_files - files_touched}")

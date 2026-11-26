@@ -131,13 +131,17 @@ class ProgressTracker:
                 progressed = True
                 kind = "inspection"
                 detail = "new repository evidence was inspected"
-        elif dispatched and not result.success and tool == "finish":
-            if result_digest not in self._finish_corrections:
-                self._finish_corrections.add(result_digest)
-                progressed = True
-                kind = "host_blocker"
-                action_class = "finish_or_escalate"
-                detail = "host supplied a new verifiable terminal blocker"
+        elif (
+            dispatched
+            and not result.success
+            and tool == "finish"
+            and result_digest not in self._finish_corrections
+        ):
+            self._finish_corrections.add(result_digest)
+            progressed = True
+            kind = "host_blocker"
+            action_class = "finish_or_escalate"
+            detail = "host supplied a new verifiable terminal blocker"
 
         self._track_inspection_budget(
             tool, result, dispatched=dispatched, conflict_reduced=conflict_reduced)
