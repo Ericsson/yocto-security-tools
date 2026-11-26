@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# Hash-pinned closure of yocto-security-tools' runtime dependencies
+# (requests, packaging) for the ClusterFuzzLite build container.
+# Regenerate with: pip download + pip hash, or let Dependabot's
+# pip ecosystem (see .github/dependabot.yml) refresh this file.
+#
+# Wheel variants are pinned per supported CPython version (3.11-3.15,
+# matching pyproject.toml's classifiers) plus the universal/abi3
+# wheel and sdist, since the exact interpreter ABI inside the pinned
+# oss-fuzz-base/base-builder-python image is not otherwise known.
+
+certifi==2026.11.20 \
+    --hash=sha256:7422df25243767b9877031a2248cb14d09ddac9beee846f4cef3d5c9191d488f \
+    --hash=sha256:af1cb240a8133f105aa52684a3a3258339d7f2fd0bd4e2812698ff5cf5588c4e
+
+charset-normalizer==3.5.3 \
+    --hash=sha256:2a6f937e0b70133d1f826d0a253331b6fe1a4c874808cc12e16f2fb8177042f4 \
+    --hash=sha256:e5e4785d8a0adeadfbdf75f4efc357911842674651cbafd7e97f69b11ec3cbc6 \
+    --hash=sha256:656b9744bac4493561d28b56d7d646afd7a8471254ef7004d849aa8368020037 \
+    --hash=sha256:ee9de080e8d6221bbe4ba2667367b1cee0f47a53f60ffc5e431b698cd2f2b214 \
+    --hash=sha256:ef8b925f2b331a1f17d6fb32625e09fd571cf41844f578379f934dab0067cf0d \
+    --hash=sha256:26c6ad87bb79628954b52f8f7b9e18ab5cd9667546712ded9689fb7677e630d6 \
+    --hash=sha256:96e268b0cbda016ac519513294fcd17032264085b600abaac58b93049477e132 \
+    --hash=sha256:a250888753faa289e2997962fbb17c4960cbdb58575533ca6fceee68c224bdff
+
+idna==3.20 \
+    --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c \
+    --hash=sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44
+
+packaging==26.4 \
+    --hash=sha256:81383611a09c1bc0b08b76e0fd5829d7c6824c65b27a6aee339da133f4233ea2 \
+    --hash=sha256:c4b671c41ddb9bf26e543c37723610d28fb6bf7affc4da17cf048d419d2c062a
+
+requests==2.32.5 \
+    --hash=sha256:2462f94637a34fd532264295e186976db0f5d453d1cdd31473c85a6a161affb6 \
+    --hash=sha256:dbba0bac56e100853db0ea71b82b4dfd5fe2bf6d3754a8893c3af500cec7d7cf
+
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
+    --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
